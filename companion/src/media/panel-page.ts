@@ -322,9 +322,13 @@ export function videoPeer(s: PanelState): MatchPlayerId | 'self' | null {
 }
 
 /** The line over an empty stage. */
-export function stageText(s: PanelState | null, hasVideo: boolean): string {
+export function stageText(s: PanelState | null, hasVideo: boolean, voiceUp = false): string {
   if (!s || hasVideo) return '';
-  if (s.phase === 'over' || s.phase === 'idle') return '';
+  // A17 (2026-11-24): the voice is connected from the join on. In the lobby, where the stage has nothing to show, it
+  // says so in words as soon as a connection to another player is up (`voiceUp`) and the microphone is open: until
+  // 0.2.50 nobody heard anybody before the match started.
+  if (s.phase === 'idle') return voiceUp && s.mic === 'open' ? 'YOUR MICROPHONE IS ON · THE OTHERS HEAR YOU' : '';
+  if (s.phase === 'over') return '';
   if (s.myTurn) return 'NO PICTURE FROM YOUR TABLE';
   const up = s.players.find((p) => p.id === s.playerUp);
   return up ? 'WAITING FOR ' + up.name.toUpperCase() + "'S TABLE" : '';
@@ -1213,6 +1217,15 @@ function report() {
   ipcRenderer.send(C.status, { sending: sending, peers: peers, mic: micState, capturing: !!videoTrack, error: noPathMessage() || localError, captureStalled: stalled, stats: stats });
 }
 
+/** A17: a connection to another player is up (the lobby's stage then says that the microphone is heard, stageText). */
+function voiceUp() {
+  for (const r of remote.values()) {
+    const st = r.pc.iceConnectionState;
+    if (st === 'connected' || st === 'completed') return true;
+  }
+  return false;
+}
+
 function fail(msg) {
   localError = msg;
   report();
@@ -1244,7 +1257,7 @@ function render() {
     video.srcObject = stream;
   }
   const hasVideo = !!stream && stream.getVideoTracks().some((t) => t.readyState === 'live' && (who === 'self' || !t.muted));
-  $('idle').textContent = bench ? (bench.drawn > 0 && stream ? '' : 'WAITING FOR FRAMES') : stageText(panel, hasVideo);
+  $('idle').textContent = bench ? (bench.drawn > 0 && stream ? '' : 'WAITING FOR FRAMES') : stageText(panel, hasVideo, voiceUp());
   const strip = $('strip');
   strip.replaceChildren();
   for (const row of panel ? stripRows(panel) : []) {
@@ -1940,6 +1953,8 @@ function openPeer(peer) {
     roundSeen(peer, r);
     iceWatch(peer, r);
     report();
+    // A17: the lobby's stage says whether the others hear this player (stageText).
+    if (panel && panel.phase === 'idle') render();
   });
   pc.addEventListener('signalingstatechange', () => {
     roundSeen(peer, r);

@@ -66,7 +66,7 @@
 import { io, type Socket } from 'socket.io-client';
 import { decodeFrame, encodeFrame, type AnyMessage, type PlayerId } from '@castcade/protocol';
 import type { MessageHandler, PeerHandler, Transport } from './transport.js';
-import { foreignVersionRefusal, type ErrorHandler } from './transport-ws.js';
+import { foreignVersionRefusal, undecodable, type ErrorHandler } from './transport-ws.js';
 
 /** Host -> client, in `data`: "your link to me is gone; open it again with RECONNECT". Never a protocol frame. */
 export const RELINK = 'castcade-relay:relink';
@@ -785,10 +785,11 @@ export class RelayHostTransport extends RelayBase implements Transport {
       msg = decodeFrame(text);
     } catch (e) {
       if (!link) {
+        // A17 (2026-11-24): a frame already, written in the asker's version (a HELLO's REFUSE, a RECONNECT's RECONNECT_ACK).
         const refuse = foreignVersionRefusal(text, this.localId, this.seqForRefuse + 1);
         if (refuse) {
           this.seqForRefuse += 1;
-          this.emitTo(relayPeer, encodeFrame(refuse), false);
+          this.emitTo(relayPeer, refuse, false);
         }
       }
       this.fail(e, link?.player ?? null);
@@ -1011,7 +1012,8 @@ export class RelayClientTransport extends RelayBase implements Transport {
       try {
         msg = decodeFrame(p.data);
       } catch (e) {
-        this.fail(e, this.hostId);
+        // A17 (2026-11-24): an answer in another protocol version (a host up to 0.2.50) is said as that.
+        this.fail(undecodable(p.data, e), this.hostId);
         return;
       }
       if (this.hostId === null) this.hostId = msg.from;

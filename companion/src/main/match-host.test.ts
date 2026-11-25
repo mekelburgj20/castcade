@@ -1615,6 +1615,55 @@ describe('D10.8 (2026-11-12): match control through ArcAid, and the router port 
     expect(C.lines.some((l) => l.startsWith('match: the link to the host was away for a moment and is back ('))).toBe(true);
   }, 30_000);
 
+  it('A17 step 1 (2026-11-24): two PCs hold each other\'s voice connection from the join on, before anything is started; Start match, every turn, the result and Next game open and close nothing', async () => {
+    const r = await fakeRelay();
+    const H = a18Seat('a17-host', 'h', r, 111, 4000);
+    const C = a18Seat('a17-client', 'c', r, 222, 4000);
+    const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
+    // Alone in the lobby: nobody to talk to yet.
+    expect(H.page).toEqual({ added: [], removed: [] });
+    await C.mh.join(hs.invite!, 'Krobs');
+    await until(() => H.mh.status().participants.length === 2 && C.mh.status().participants.length === 2);
+    // The lobby, with nothing started: each page was given the other player.
+    await until(() => H.page.added.length === 1 && C.page.added.length === 1);
+    expect([H.mh.status().phase, C.mh.status().phase]).toEqual(['lobby', 'lobby']);
+    const pages = { h: { added: [C.mh.status().localId], removed: [] }, c: { added: [H.mh.status().localId], removed: [] } };
+    const same = (): void => expect({ h: H.page, c: C.page }).toEqual(pages);
+    same();
+    expect(H.lines.filter((l) => l.includes('voice with Krobs is being connected now, in the lobby'))).toHaveLength(1);
+    expect(C.lines.filter((l) => l.includes('voice with Owner is being connected now, in the lobby'))).toHaveLength(1);
+
+    // MATCH_READY.
+    await H.mh.start();
+    await until(() => C.mh.status().phase === 'playing' && H.mh.status().panel?.myTurn === true);
+    same();
+    /** A game of three balls each, reported by each table. */
+    const playGame = async (base: number): Promise<void> => {
+      for (let ball = 1; ball <= 3; ball++) {
+        for (const seat of [H, C]) {
+          await until(() => seat.mh.status().panel?.myTurn === true && seat.mh.status().panel?.ball === ball, 8000);
+          const s = base * ball;
+          seat.feed({ kind: 'current_scores', scores: [s], ball });
+          seat.feed({ kind: 'ball_end', ball, extraBalls: 0 });
+          seat.feed({ kind: 'current_scores', scores: [s], ball });
+          await until(() => seat.mh.status().panel?.myTurn !== true || seat.mh.status().phase === 'over', 8000);
+        }
+      }
+      await until(() => H.mh.status().phase === 'over' && C.mh.status().phase === 'over', 8000);
+    };
+    await playGame(1000);
+    same();
+
+    // NEXT_GAME, and a second game to its result.
+    await until(() => H.mh.status().series?.nextGameBlocker === null, 12_000);
+    await H.mh.start();
+    await until(() => C.mh.status().series?.game === 2 && C.mh.status().phase === 'playing');
+    same();
+    await playGame(2000);
+    same();
+    expect(H.lines.concat(C.lines).filter((l) => l.includes('is being connected now'))).toHaveLength(2);
+  }, 60_000);
+
   it("A18: the player who is up loses the host for longer than the grace: the others wait, and on that player's own PC the table is never locked, its sound and its picture are never cut, through the pause it finds at its return", async () => {
     const r = await fakeRelay();
     const H = a18Seat('a18b-host', 'h', r, 111, 0);

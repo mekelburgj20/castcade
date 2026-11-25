@@ -79,7 +79,7 @@ import type { JournalMark } from '../witness/types.js';
 import { HOST_WAIT_MS, RESUME_FILE, RESUME_HEARTBEAT_MS, TableBacklog, createResumeStore, resumeFreshness, turnEndsOf, type ResumeRecord } from './match-resume.js';
 import type { Transport } from '../match/transport.js';
 import { CompositeTransport, RelayClientTransport, RelayError, RelayHostTransport, type RejoinPolicy } from '../match/transport-relay.js';
-import { WsPeerTransport, type ErrorHandler } from '../match/transport-ws.js';
+import { ForeignVersionError, WsPeerTransport, type ErrorHandler } from '../match/transport-ws.js';
 import type { MatchMedia, MediaSignalling, MediaStatus, PanelState, PanelVolume, VrOverlay, VrOverlayStatus, VrViewMode } from '../media/match-media-types.js';
 import { DEFAULT_MEDIA_SETTINGS, iceServers, type MediaSettingsStore, type TurnServer, type VideoPath } from '../media/media-settings.js';
 import type { MicDevice } from '../media/panel-page.js';
@@ -2351,6 +2351,9 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     const answer = new Promise<'joined' | PayloadOf<'REFUSE'>>((resolve) => {
       offs.push(engine.on('joined', () => resolve('joined')));
       offs.push(engine.on('refused', (r) => resolve(r)));
+      // A17 (2026-11-24): a host on another protocol version, whose answer this PC cannot decode (a host up to 0.2.50
+      // answers in its own version): the sentence now, in place of "The host did not answer" ten seconds later.
+      offs.push(transport.onError((e) => void (e instanceof ForeignVersionError && resolve({ code: 'protocol_version', message: e.message, mismatches: [] }))));
     });
     const cleanup = async (): Promise<void> => {
       await controller.close();
@@ -2488,9 +2491,12 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     const engine = ClientMatch.adopt(session, { participant: meInfo, game, throwdownCode: rec.code, companionVersion: opts.appVersion.slice(0, 32), ...clientLink });
     const controller = makeController(engine, undefined, true);
     const offs: (() => void)[] = [];
-    const answer = new Promise<{ ok: true } | { ok: false; code: string | null }>((resolve) => {
+    const answer = new Promise<{ ok: true } | { ok: false; code: string | null }>((resolve, reject) => {
       offs.push(engine.on('reconnected', () => resolve({ ok: true })));
       offs.push(engine.on('reconnectRejected', (r) => resolve({ ok: false, code: r.code })));
+      // A17 (2026-11-24): the host answers in another protocol version: said at once, and the saved match is kept
+      // (the same version on both PCs, and Rejoin works again).
+      offs.push(transport.onError((e) => void (e instanceof ForeignVersionError && reject(e))));
     });
     const cleanup = async (): Promise<void> => {
       await controller.close();
@@ -2505,6 +2511,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       r = await withTimeout(answer, opts.rejoinTimeoutMs ?? REJOIN_TIMEOUT_MS, `The host of ${rec.code} did not answer`);
     } catch (e) {
       await cleanup();
+      if (e instanceof ForeignVersionError) throw e;
       throw new Error(`${describeError(e)}. The match may be over, or its host away for the moment: Rejoin tries again, Forget it drops it.`, { cause: e });
     } finally {
       for (const off of offs) off();

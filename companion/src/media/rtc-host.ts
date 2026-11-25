@@ -1718,6 +1718,11 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     attach: (sig, initial) => attach(sig, initial),
     addPeer(peer) {
       if (!attached || !signalling || peer === signalling.localId) return;
+      // A17 (2026-11-24): a peer the page already holds is left as it is. The page's `mesh.add` closes the connection
+      // and makes a new one (that is what `reset` and a stale offer need), so passing this on would rebuild a voice
+      // connection that is up: the peers are added at the join now, and the match's start names them again. A caller
+      // that does want the connection made again says so: `removePeer`, then `addPeer`.
+      if (peers.has(peer)) return;
       peers.add(peer);
       toPage(PANEL_CHANNELS.addPeer, peer);
     },

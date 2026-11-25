@@ -6,7 +6,8 @@
  * can become host, the old host can become its client, and a dropped client can reconnect.
  * Frames are `encodeFrame`/`decodeFrame`; undecodable frames are dropped and reported through
  * `onError`. A HELLO with a foreign protocol version is answered with REFUSE(protocol_version)
- * here, because such a frame never parses into a typed message.
+ * here, because such a frame never parses into a typed message; A17 (2026-11-24): in the asker's own version,
+ * and a RECONNECT of a foreign version is answered as well (`foreignVersionRefusal`).
  */
 import { WebSocket, WebSocketServer } from 'ws';
 import { buildMessage, decodeFrame, encodeFrame, PROTOCOL_VERSION, type AnyMessage, type PlayerId } from '@castcade/protocol';
@@ -24,10 +25,70 @@ function rawToString(data: RawData): string {
 }
 
 /**
- * A HELLO whose `v` differs never decodes: the REFUSE(protocol_version) that answers it per SPEC, or null when the
- * text is anything else. Shared with the relay transport (D10.8), which has no socket to close.
+ * A17 (2026-11-24): the first Castcade release that speaks `PROTOCOL_VERSION`, for the sentence a PC on an older
+ * version is shown. Changed together with the version (`transport-relay.test.ts` holds the two side by side).
  */
-export function foreignVersionRefusal(text: string, from: PlayerId, seq: number): AnyMessage | null {
+export const PROTOCOL_SINCE_RELEASE = '0.2.46';
+
+const ZERO_HASH = '0'.repeat(64);
+
+/** The `v` of a frame that is JSON with a whole-number version other than ours; null for anything else. */
+export function foreignVersionOf(text: string): number | null {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (typeof value !== 'object' || value === null) return null;
+  const v = (value as { v?: unknown }).v;
+  return typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 && v !== PROTOCOL_VERSION ? v : null;
+}
+
+/**
+ * A17 (2026-11-24): what a joining PC shows when the host's answer does not decode because the host speaks another
+ * protocol version (a host up to 0.2.50 answers in its own version, see `foreignVersionRefusal`): the sentence in
+ * place of "The host did not answer" ten seconds later. Raised through a client transport's `onError`.
+ */
+export class ForeignVersionError extends Error {
+  constructor(readonly theirs: number) {
+    super(
+      `The host's PC runs another version of Castcade (protocol ${theirs}; this PC has ${PROTOCOL_VERSION}). Both need the same: ${
+        theirs > PROTOCOL_VERSION ? 'update Castcade on this PC (Settings, Check for updates)' : 'the host updates Castcade (Settings, Check for updates)'
+      }, then join again.`,
+    );
+    this.name = 'ForeignVersionError';
+  }
+}
+
+/** What a client transport reports for a frame that does not decode: the sentence when the frame is of another version. */
+export function undecodable(text: string, e: unknown): unknown {
+  const theirs = foreignVersionOf(text);
+  return theirs !== null ? new ForeignVersionError(theirs) : e;
+}
+
+/** The sentence the PC that asked is shown ("The host refused: …"); it names what that PC, or the host, has to do. */
+function refusalSentence(theirs: unknown): string {
+  if (typeof theirs === 'number' && theirs > PROTOCOL_VERSION) {
+    return `The host's Castcade is older than this PC's (it speaks protocol ${PROTOCOL_VERSION}, this PC ${theirs}). The host updates Castcade (Settings, Check for updates); then join again.`;
+  }
+  return `This match needs Castcade ${PROTOCOL_SINCE_RELEASE} or newer (protocol ${PROTOCOL_VERSION}; this PC sent ${String(theirs)}). Update Castcade on this PC (Settings, Check for updates) and join again.`;
+}
+
+/**
+ * A HELLO or a RECONNECT whose `v` differs never decodes: the frame that answers it, or null when the text is
+ * anything else. Shared with the relay transport (D10.8), which has no socket to close.
+ *
+ * A17 (2026-11-24): the answer is written **in the asker's version** (its `v` on the envelope). Until 0.2.50 it went
+ * out in the host's own, and the envelope's `v` is a literal, so the PC that asked could not decode it and reported a
+ * host that did not answer. `REFUSE` and `RECONNECT_ACK` have had the same shape since protocol 2, so the asker reads
+ * the frame and shows the sentence. And a RECONNECT is answered too (it got nothing: its sender waited out the whole
+ * host wait): with a `RECONNECT_ACK` that does not accept, `unknown_player` being the nearest code every version
+ * knows; the asker then says at once that the host did not take it back. Its `seq` is the wall clock, because the
+ * asker drops a frame whose `seq` is not above the last it took from this host, in an earlier run or version (A15's
+ * rule for a restarted sender); a HELLO opens a new connection, so its REFUSE keeps the caller's counter.
+ */
+export function foreignVersionRefusal(text: string, from: PlayerId, seq: number): string | null {
   let value: unknown;
   try {
     value = JSON.parse(text);
@@ -37,19 +98,24 @@ export function foreignVersionRefusal(text: string, from: PlayerId, seq: number)
   if (typeof value !== 'object' || value === null) return null;
   const v = (value as { v?: unknown }).v;
   const type = (value as { type?: unknown }).type;
-  if (type !== 'HELLO' || v === PROTOCOL_VERSION) return null;
-  return buildMessage(
-    'REFUSE',
-    { code: 'protocol_version', message: `host speaks protocol ${PROTOCOL_VERSION}, client sent ${String(v)}` },
-    { matchId: null, seq, from },
-  );
+  if ((type !== 'HELLO' && type !== 'RECONNECT') || v === PROTOCOL_VERSION) return null;
+  let answer: AnyMessage;
+  if (type === 'HELLO') {
+    answer = buildMessage('REFUSE', { code: 'protocol_version', message: refusalSentence(v) }, { matchId: null, seq, from });
+  } else {
+    const asked = (value as { matchId?: unknown }).matchId;
+    const matchId = typeof asked === 'string' && asked.length > 0 && asked.length <= 64 ? asked : null;
+    answer = buildMessage('RECONNECT_ACK', { accept: false, code: 'unknown_player', entries: [], logHash: ZERO_HASH, logLength: 0 }, { matchId, seq: Math.max(seq, Date.now()), from });
+  }
+  // A version that is not a whole number is nobody's: the answer stays in ours.
+  return JSON.stringify({ ...answer, v: foreignVersionOf(text) ?? PROTOCOL_VERSION });
 }
 
-/** Answer a foreign-version HELLO and close. True when it answered. */
+/** Answer a foreign-version HELLO or RECONNECT and close. True when it answered. */
 function refuseForeignVersion(socket: WebSocket, text: string, from: PlayerId, seq: number): boolean {
   const refuse = foreignVersionRefusal(text, from, seq);
   if (!refuse) return false;
-  socket.send(encodeFrame(refuse), () => socket.close());
+  socket.send(refuse, () => socket.close());
   return true;
 }
 
@@ -209,11 +275,12 @@ export class WsClientTransport implements Transport {
         resolve();
       });
       socket.on('message', (data: RawData) => {
+        const text = rawToString(data);
         let msg: AnyMessage;
         try {
-          msg = decodeFrame(rawToString(data));
+          msg = decodeFrame(text);
         } catch (e) {
-          this.fail(e);
+          this.fail(undecodable(text, e));
           return;
         }
         if (this.peer === null) {
@@ -355,11 +422,12 @@ export class WsPeerTransport implements Transport {
         resolve();
       });
       socket.on('message', (data: RawData) => {
+        const text = rawToString(data);
         let msg: AnyMessage;
         try {
-          msg = decodeFrame(rawToString(data));
+          msg = decodeFrame(text);
         } catch (e) {
-          this.fail(e, link.peer);
+          this.fail(undecodable(text, e), link.peer);
           return;
         }
         if (link.peer === null) {

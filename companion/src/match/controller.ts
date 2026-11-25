@@ -409,6 +409,16 @@ export class MatchController {
   private readonly left = new Set<PlayerId>();
   /** A18: players in `left` whose media connection was closed too, because it was not up any more: made again at their return. */
   private readonly mediaClosed = new Set<PlayerId>();
+  /**
+   * A17 (2026-11-24): the voice from the join on. `voiceWanted`: the players this PC should hold a media connection
+   * to (the lobby's roster while there is a lobby; the match's players after); `voiceHeld`: the ones the media layer
+   * was told to open. Only the difference is ever sent (`syncVoice`), so naming a player again at MATCH_READY, at the
+   * next game or at a reconnect opens and closes nothing.
+   */
+  private voiceWanted = new Set<PlayerId>();
+  private readonly voiceHeld = new Set<PlayerId>();
+  /** A17: the media layer has attached (or failed to): peers can be given to it. */
+  private mediaReady = false;
   private result: PanelState['result'] = null;
   private message: string | null = null;
   private lastStateAt = Number.NEGATIVE_INFINITY;
@@ -520,11 +530,9 @@ export class MatchController {
     // Forced either way: the lock file is whatever the last run left.
     this.locked = mine;
     this.setLocked(!mine && !(st.phase === 'ended' && isHostRole(this.role)));
-    const peers = st.participants.map((p) => p.playerId).filter((id) => id !== this.localId);
-    void this.ensureAttached().then(() => {
-      if (this.closed) return;
-      for (const id of peers) this.opts.media?.addPeer(id);
-    });
+    // A17: this process is new, so every connection is (the others take its offer on a fresh one, D2.7).
+    this.wantVoice(st.participants.map((p) => p.playerId));
+    void this.ensureAttached();
     this.opts.log(`match: picked up again from the saved log: game ${this.gameNumber()}, ${this.phase}${g ? `, ${g.player === this.localId ? 'my' : `${this.nameOf(g.player)}'s`} ball ${g.ballNumber}` : ''}`);
   }
 
@@ -1424,6 +1432,9 @@ export class MatchController {
 
   private onLobby(participants: ParticipantInfo[]): void {
     this.lobby = participants.map((p) => ({ ...p }));
+    // A17 (2026-11-24): the voice follows the lobby's roster: a player who joins is connected at once, one who is no
+    // longer listed is let go. (Until 0.2.50 nobody was connected before MATCH_READY.)
+    if (this.phase === 'lobby') this.followLobbyVoice(participants.map((p) => p.playerId));
     this.push();
   }
 
@@ -1521,11 +1532,11 @@ export class MatchController {
     this.mediaClosed.clear();
     // Locked from the start: each player begins their own game when their first grant arrives (§1 step 4).
     this.setLocked(true);
-    const peers = p.playerOrder.filter((id) => id !== this.localId);
-    void this.ensureAttached().then(() => {
-      if (this.closed) return;
-      for (const id of peers) this.opts.media?.addPeer(id);
-    });
+    // A17 (2026-11-24): the players are connected since the lobby, so naming them here opens nothing; it only covers
+    // a player this controller did not see in a lobby roster. (A PC on 0.2.50 or older opens its side at this moment,
+    // and answers the offer it has held since the join.)
+    this.wantVoice(p.playerOrder);
+    void this.ensureAttached();
     this.showMidnightSetting();
     this.push();
   }
@@ -1589,7 +1600,8 @@ export class MatchController {
 
   private onPeerLeft(id: PlayerId): void {
     this.left.add(id);
-    if (this.phase === 'lobby') this.opts.media?.removePeer(id);
+    // A drop in the lobby is a leave (the host takes the player off the roster): the voice to them goes with it.
+    if (this.phase === 'lobby') this.dropVoice(id);
     else this.closeDeadMedia(id);
     if (isHostRole(this.role)) this.lobby = this.role.state.phase === 'lobby' ? this.role.roster() : this.lobby;
     this.push();
@@ -1609,7 +1621,58 @@ export class MatchController {
   private closeDeadMedia(id: PlayerId): void {
     if (this.phase === 'lobby' || this.mediaClosed.has(id) || this.mediaUp(id)) return;
     this.mediaClosed.add(id);
-    this.opts.media?.removePeer(id);
+    this.dropVoice(id);
+  }
+
+  // ------------------------------------------------------------------------------------------
+  // A17 (2026-11-24): the voice from the join on
+  // ------------------------------------------------------------------------------------------
+
+  /** These players should be connected (this player's own id is skipped). Nobody is taken off by it. */
+  private wantVoice(ids: Iterable<PlayerId>): void {
+    for (const id of ids) if (id !== this.localId) this.voiceWanted.add(id);
+    this.syncVoice();
+  }
+
+  /** This player's connection is closed, if there is one, and not wanted until somebody names the player again. */
+  private dropVoice(id: PlayerId): void {
+    this.voiceWanted.delete(id);
+    this.syncVoice();
+  }
+
+  /** In the lobby the roster is the whole list: a player who is no longer in it is let go. */
+  private followLobbyVoice(ids: PlayerId[]): void {
+    this.voiceWanted = new Set(ids.filter((id) => id !== this.localId));
+    this.syncVoice();
+  }
+
+  /**
+   * A18's case, said in so many words now that `addPeer` no longer rebuilds: the connection to a player who is back
+   * is not up any more, so it is closed and made again.
+   */
+  private remakeVoice(id: PlayerId): void {
+    if (this.mediaReady && !this.closed && this.voiceHeld.delete(id)) this.opts.media?.removePeer(id);
+    this.wantVoice([id]);
+  }
+
+  /**
+   * The one place that opens and closes media connections: what is wanted against what the media layer holds. Before
+   * the media layer has attached nothing is sent (it would drop the call); `ensureAttached` runs this when it has.
+   */
+  private syncVoice(): void {
+    const media = this.opts.media;
+    if (!media || this.closed || !this.mediaReady) return;
+    for (const id of [...this.voiceHeld]) {
+      if (this.voiceWanted.has(id)) continue;
+      this.voiceHeld.delete(id);
+      media.removePeer(id);
+    }
+    for (const id of this.voiceWanted) {
+      if (this.voiceHeld.has(id)) continue;
+      this.voiceHeld.add(id);
+      media.addPeer(id);
+      if (this.phase === 'lobby') this.opts.log(`match: voice with ${this.nameOf(id)} is being connected now, in the lobby; the start of a match does not make it again`);
+    }
   }
 
   /** `quiet` (A18): the link was back inside the engine's grace and nobody was told it had dropped: nothing to undo. */
@@ -1617,7 +1680,10 @@ export class MatchController {
     const was = this.left.delete(id);
     if (this.phase !== 'lobby' && (was || !quiet)) {
       // A18: a connection that is still up is left alone: making it again is what the other players heard as a glitch.
-      if (this.mediaClosed.delete(id) || !this.mediaUp(id)) this.opts.media?.addPeer(id);
+      // One that was closed while the player was away is opened; one that was kept and is not up any more is made
+      // again (A17: by closing it first, since naming a held peer no longer rebuilds it).
+      if (this.mediaClosed.delete(id)) this.wantVoice([id]);
+      else if (!this.mediaUp(id)) this.remakeVoice(id);
       else if (was) this.opts.log(`match: ${this.nameOf(id)} is back on the match's control link; the voice and video connection to them never dropped and is kept`);
     }
     this.push();
@@ -2051,9 +2117,16 @@ export class MatchController {
     if (!media) return Promise.resolve();
     if (!this.attached) {
       const signalling = this.opts.signalling ?? muteSignalling(this.localId);
-      this.attached = media.attach(signalling, []).catch((e: unknown) => {
-        this.opts.log(`match: media attach failed: ${e instanceof Error ? e.message : String(e)}`);
-      });
+      this.attached = media
+        .attach(signalling, [])
+        .catch((e: unknown) => {
+          this.opts.log(`match: media attach failed: ${e instanceof Error ? e.message : String(e)}`);
+        })
+        .then(() => {
+          // A17: whoever is wanted by now (the lobby's roster came before the panel was up) is connected.
+          this.mediaReady = true;
+          this.syncVoice();
+        });
     }
     return this.attached;
   }

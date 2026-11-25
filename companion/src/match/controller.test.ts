@@ -146,6 +146,9 @@ describe('MatchController', () => {
     expect(H.media.panel.players.map((p) => p.name)).toEqual(['Hosty', 'Krobs']);
     expect(H.locks).toEqual([]);
     expect(C.ctl.status().locked).toBe(false);
+    // A17 (2026-11-24): the voice is connected from the join on; the start below adds nobody again.
+    expect(H.media.added).toEqual(['c']);
+    expect(C.media.added).toEqual(['h']);
 
     const stateSeen: number[] = [];
     client.on('state', (m) => stateSeen.push(m.payload.score));
@@ -639,12 +642,16 @@ describe('A18 (2026-11-24): a control link that drops is not the media connectio
       // The guest joins, its link drops in the lobby (the host takes it off the roster), and it joins again: the same
       // player id, a fresh HELLO.
       const first = await join();
+      // A17: the voice follows the lobby: connected at the join, let go at the leave, connected again at the next join.
+      expect(H.media.added).toEqual(['c']);
       first.client.close();
       first.ct.close();
       await until(() => host.roster().length === 1);
+      expect(H.media.removed).toEqual(['c']);
       await join();
+      expect(H.media.added).toEqual(['c', 'c']);
       host.start();
-      await until(() => H.media.added.includes('c'));
+      await until(() => H.ctl.status().phase === 'playing');
       expect(H.ctl.panel().players.find((p) => p.id === 'c')?.flags).not.toContain('disconnected');
       // The page reports the new connection while it is still being made; every such word used to reach the players
       // the controller thought were away.
@@ -654,7 +661,8 @@ describe('A18 (2026-11-24): a control link that drops is not the media connectio
       H.media.ice.c = 'connected';
       H.ctl.refresh();
       expect(H.media.removed.length).toBe(removed);
-      expect(H.media.added.filter((p) => p === 'c')).toHaveLength(1);
+      // A17: and the start made nothing again: the connection of the second join is the match's.
+      expect(H.media.added).toEqual(['c', 'c']);
       expect(H.ctl.panel().players.find((p) => p.id === 'c')?.flags).not.toContain('disconnected');
     } finally {
       for (const x of opened.reverse()) x.close();
@@ -680,6 +688,152 @@ describe('A18 (2026-11-24): a control link that drops is not the media connectio
     expect(types.slice(-3)).toEqual(['PAUSE:h', 'RESUME:c', 'TURN_GRANT:h']);
     expect(s.C.ctl.status().phase).toBe('playing');
     expect(s.H.ctl.status()).toMatchObject({ phase: 'playing', myTurn: true, locked: false });
+  });
+});
+
+describe('A17 step 1 (2026-11-24): the voice from the join on', () => {
+  const gameStart: ControllerFeed = { kind: 'game_start', t: 0, players: 1 };
+  /** Every call a seat's media layer got that could open or close a connection. */
+  const calls = (s: Seat): string[] => [...s.media.added.map((p) => `add ${p}`), ...s.media.removed.map((p) => `remove ${p}`)];
+
+  it('the voice is up in the lobby: each PC asks for the connection to the other at the join, before any start', async () => {
+    const { host, H, C } = await rig();
+    expect(host.state.phase).toBe('lobby');
+    expect(H.ctl.status().phase).toBe('lobby');
+    expect(calls(H)).toEqual(['add c']);
+    expect(calls(C)).toEqual(['add h']);
+    expect(H.logs.filter((l) => l.includes('voice with Krobs is being connected now, in the lobby'))).toHaveLength(1);
+    expect(C.logs.filter((l) => l.includes('voice with Hosty is being connected now, in the lobby'))).toHaveLength(1);
+    // The panel is the lobby's: nobody is up, nothing is locked.
+    expect(H.media.panel.phase).toBe('idle');
+    expect(H.locks).toEqual([]);
+  });
+
+  it('MATCH_READY, NEXT_GAME and a reconnect make no addPeer / removePeer call; nor do a RESULT and the end of the match', async () => {
+    const s = await rig(1);
+    const { host, client, H, C } = s;
+    const lobby = { h: calls(H), c: calls(C) };
+    expect(lobby).toEqual({ h: ['add c'], c: ['add h'] });
+    const unchanged = (): void => expect({ h: calls(H), c: calls(C) }).toEqual(lobby);
+    const ball = async (x: Seat, score: number): Promise<void> => {
+      x.ctl.feed(scores(score));
+      x.ctl.feed(ballEnd(1));
+      x.ctl.feed(scores(score));
+      await flush();
+    };
+
+    // MATCH_READY.
+    host.start();
+    await flush();
+    expect(C.ctl.status().phase).toBe('playing');
+    unchanged();
+
+    // Game 1 to its RESULT.
+    H.ctl.feed(gameStart);
+    await ball(H, 500);
+    C.ctl.feed(gameStart);
+    await ball(C, 800);
+    expect(headerText(C.media.panel)).toBe('GAME 1 OVER');
+    unchanged();
+
+    // NEXT_GAME.
+    H.ctl.feed(gameStart);
+    await flush();
+    expect(client.state.gameNumber).toBe(2);
+    unchanged();
+
+    // A reconnect of the match's control link, on both ends of it, while the pages' connection is up (A18 keeps it).
+    H.media.ice.c = 'connected';
+    C.media.ice.h = 'connected';
+    host.events.emit('reconnected', { playerId: 'c', entries: 0, quiet: false });
+    client.events.emit('reconnected', { host: 'h', entries: 0, quiet: false });
+    await flush();
+    unchanged();
+
+    // Game 2 to its RESULT, then the host ends the match (MATCH_END).
+    await ball(H, 900);
+    C.ctl.feed(gameStart);
+    await ball(C, 300);
+    expect(headerText(C.media.panel)).toBe('GAME 2 OVER');
+    expect(H.ctl.endMatch()).toBe(true);
+    await flush();
+    expect(headerText(C.media.panel)).toBe('MATCH OVER');
+    unchanged();
+  });
+
+  it('three in the lobby: everyone is connected to everyone at the join; a player who leaves is let go by the host at once and by the other client from the roster it is sent', async () => {
+    const bus = new MemoryBus();
+    const clock = new ManualClock();
+    const hk = generateKeys();
+    const host = new HostMatch({ disconnectGraceMs: 0, transport: bus.transport('h'), keys: hk, matchId: 'M', ballsPerGame: 3, hostParticipant: participant('h', hk), hostGame: game, clock });
+    const H = seat(host, clock, 3);
+    await H.ctl.open();
+    const mk = async (id: string): Promise<Seat> => {
+      const k = generateKeys();
+      const c = new ClientMatch({ disconnectGraceMs: 0, transport: bus.transport(id), keys: k, participant: { ...participant(id, k), displayName: id }, game, throwdownCode: 'M', hostId: 'h', clock });
+      const x = seat(c, clock);
+      await x.ctl.open();
+      c.join();
+      await flush();
+      return x;
+    };
+    const A = await mk('a');
+    expect(calls(H)).toEqual(['add a']);
+    expect(calls(A)).toEqual(['add h']);
+    const B = await mk('b');
+    // `a` learns of `b` from the roster the host sends again at every join.
+    expect(calls(H)).toEqual(['add a', 'add b']);
+    expect(calls(A)).toEqual(['add h', 'add b']);
+    expect(calls(B)).toEqual(['add h', 'add a']);
+
+    bus.disconnect('b');
+    await flush();
+    expect(host.roster().map((p) => p.playerId)).toEqual(['h', 'a']);
+    expect(calls(H)).toEqual(['add a', 'add b', 'remove b']);
+    expect(calls(A)).toEqual(['add h', 'add b', 'remove b']);
+
+    // The match starts with the two who are left: nobody is added or removed by it.
+    host.start();
+    await flush();
+    expect(A.ctl.status().phase).toBe('playing');
+    expect(calls(H)).toEqual(['add a', 'add b', 'remove b']);
+    expect(calls(A)).toEqual(['add h', 'add b', 'remove b']);
+  });
+
+  it('a roster that comes before the panel is up opens nothing by itself: the players in it are connected once the media layer has attached', async () => {
+    const bus = new MemoryBus();
+    const clock = new ManualClock();
+    const hk = generateKeys();
+    const ck = generateKeys();
+    const host = new HostMatch({ disconnectGraceMs: 0, transport: bus.transport('h'), keys: hk, matchId: 'M', ballsPerGame: 3, hostParticipant: participant('h', hk), hostGame: game, clock });
+    const client = new ClientMatch({ disconnectGraceMs: 0, transport: bus.transport('c'), keys: ck, participant: participant('c', ck), game, throwdownCode: 'M', hostId: 'h', clock });
+    const H = seat(host, clock, 3);
+    const C = seat(client, clock);
+    // The shell's order at a join: the controller sees HELLO_ACK first, the panel (and the media) open after it.
+    client.join();
+    await flush();
+    expect(C.ctl.status().participants.map((p) => p.playerId)).toEqual(['h', 'c']);
+    expect(C.media.attachedWith).toBeNull();
+    expect(calls(C)).toEqual([]);
+    expect(calls(H)).toEqual([]);
+    await C.ctl.open();
+    expect(calls(C)).toEqual(['add h']);
+    await H.ctl.open();
+    expect(calls(H)).toEqual(['add c']);
+  });
+
+  it('a connection that has to be made again is closed first (A18: kept through the drop, dead at the return): naming a held peer no longer rebuilds it', async () => {
+    const s = await rig();
+    s.host.start();
+    await flush();
+    s.H.media.ice.c = 'connected';
+    s.bus.disconnect('c');
+    await flush();
+    expect(calls(s.H)).toEqual(['add c']);
+    s.H.media.ice.c = 'failed';
+    s.host.events.emit('reconnected', { playerId: 'c', entries: 0, quiet: false });
+    expect(s.H.media.added).toEqual(['c', 'c']);
+    expect(s.H.media.removed).toEqual(['c']);
   });
 });
 

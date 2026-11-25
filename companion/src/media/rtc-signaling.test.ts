@@ -695,3 +695,103 @@ describe('the native video channel (D10.3, 2026-11-07)', () => {
     expect(net.meshes.b!.early.size).toBe(0);
   });
 });
+
+/**
+ * A17 step 1 (2026-11-24): from this build on a PC adds its voice peers at the join; a PC on 0.2.46 to 0.2.50 adds
+ * them at MATCH_READY, as every build did. The two meet here: the mesh is the same class on both, and only the
+ * moment of `add` differs. `nu` is the new PC, `old` the one that waits for the match's start. Nothing in the mesh
+ * changed for this (its `add` still closes and rebuilds); these tests hold what the lobby now relies on.
+ */
+describe('A17 step 1 (2026-11-24): one PC adds its peer at the join, the other only at the start of the match (0.2.50 and older)', () => {
+  /** The new PC's page: the peer added at the join, the first offer and two candidates out, then the 5 s resend `n` times. */
+  const lobby = async (net: ReturnType<typeof network>, nu: string, old: string, resends: number): Promise<void> => {
+    net.meshes[nu]?.add(old);
+    net.pc(nu, old).onnegotiationneeded?.();
+    await settle();
+    net.pc(nu, old).gather(1);
+    net.pc(nu, old).gather(2);
+    await net.deliver();
+    for (let i = 0; i < resends; i++) {
+      // The page's timer while the connection is not up (panel-page.ts, `r.retry`).
+      expect(net.meshes[nu]?.get(old)?.resendOffer()).toBe(true);
+      await net.deliver();
+    }
+  };
+
+  for (const [nu, old, who] of [
+    ['b', 'a', 'the new PC is the impolite one'],
+    ['a', 'b', 'the new PC is the polite one'],
+  ] as const) {
+    it(`${who}: its offer and candidates wait on the old PC through a long lobby, and are answered the moment that PC adds the peer`, async () => {
+      const net = network([nu, old]);
+      // Ten minutes in the lobby: 120 resends, far more than the old PC holds.
+      await lobby(net, nu, old, 120);
+      const held = net.meshes[old]?.early.get(nu) ?? [];
+      expect(held).toHaveLength(SignalingMesh.MAX_EARLY_SIGNALS);
+      // The first offer and its candidates came first, so they are what is kept; the rest are the same offer again.
+      expect(held.slice(0, 3).map((s) => s.kind)).toEqual(['offer', 'ice', 'ice']);
+      expect(new Set(held.filter((s) => s.kind === 'offer').map((s) => s.sdp)).size).toBe(1);
+      // The new PC is still waiting, with nothing refused and nothing rebuilt.
+      expect(net.pc(nu, old).signalingState).toBe('have-local-offer');
+      expect(net.pcs).toHaveLength(1);
+
+      // MATCH_READY: the old PC adds the peer (and its browser asks for negotiation a moment later, as it does).
+      net.meshes[old]?.add(nu);
+      await tick();
+      net.pc(old, nu).onnegotiationneeded?.();
+      await net.run();
+      const pn = net.pc(nu, old);
+      const po = net.pc(old, nu);
+      expect([pn.signalingState, po.signalingState]).toEqual(['stable', 'stable']);
+      // The old PC answered the offer it held; the new PC took that answer on the connection it made at the join.
+      expect(po.remoteDescription?.sdp).toBe(pn.localDescription?.sdp);
+      expect(pn.localDescription?.type).toBe('offer');
+      expect(pn.remoteDescription?.sdp).toMatch(new RegExp(`^answer ${old}->${nu}`));
+      expect(po.added.map((c) => c.candidate)).toEqual([expect.stringContaining('candidate:1 '), expect.stringContaining('candidate:2 ')]);
+      // One connection each, never replaced: the same offer applied again is answered again, and that is all.
+      expect(net.pcs).toHaveLength(2);
+      expect(net.reopens).toEqual([]);
+      expect([...pn.errors, ...po.errors, ...net.errors]).toEqual([]);
+      // The new PC's own MATCH_READY names the peer again: its page is not told (rtc-host.ts), so nothing happens here.
+      expect(net.meshes[nu]?.get(old)?.pc).toBe(pn);
+    });
+  }
+
+  it('the old PC is the impolite one and offers first at its MATCH_READY: the new PC, still waiting with its own offer, rolls it back and answers', async () => {
+    const net = network(['a', 'b']);
+    await lobby(net, 'a', 'b', 3);
+    net.meshes['b']?.add('a');
+    // Its own offer leaves before the held one is looked at: the held offer collides with it and is ignored.
+    net.pc('b', 'a').onnegotiationneeded?.();
+    await net.run();
+    const pn = net.pc('a', 'b');
+    const po = net.pc('b', 'a');
+    expect(paired(pn, po)).toBe(true);
+    expect(po.localDescription?.type).toBe('offer');
+    expect(pn.localDescription?.type).toBe('answer');
+    expect(net.pcs).toHaveLength(2);
+    expect(net.reopens).toEqual([]);
+    expect(net.errors).toEqual([]);
+  });
+
+  it('the old PC rebuilt its panel page in the lobby (the panel moved into the headset) and lost what it held: the next resend is answered', async () => {
+    const net = network(['b', 'a']);
+    await lobby(net, 'b', 'a', 2);
+    expect(net.meshes['a']?.early.get('b')?.length).toBeGreaterThan(0);
+    // 0.2.50's page holds no peers in the lobby, so its new page sends no `reset`: the new PC keeps its connection.
+    const rebuilt = net.rebuild('a');
+    expect(rebuilt.early.size).toBe(0);
+    rebuilt.add('b');
+    await tick();
+    net.pc('a', 'b').onnegotiationneeded?.();
+    await net.run();
+    expect(net.pc('b', 'a').signalingState).toBe('have-local-offer');
+    // Within 5 s the new PC's page sends its offer again (in Chromium the local description carries the candidates
+    // gathered since, so nothing is lost with the candidates that were trickled to the old page).
+    expect(net.meshes['b']?.get('a')?.resendOffer()).toBe(true);
+    await net.run();
+    expect(paired(net.pc('b', 'a'), net.pc('a', 'b'))).toBe(true);
+    expect(net.reopens).toEqual([]);
+    expect(net.errors).toEqual([]);
+  });
+});

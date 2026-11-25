@@ -261,10 +261,15 @@ export interface PanelMenu {
 
 /** What the match controller drives (implemented by `media/rtc-host.ts`, D2). */
 export interface MatchMedia {
-  /** Called at MATCH_READY with every other participant; opens the mesh. */
+  /** Called at host / join time with no peers (the panel goes up before the match); opens the mesh. */
   attach(signalling: MediaSignalling, peers: MatchPlayerId[]): Promise<void>;
-  /** A peer joined late or reconnected (A3): open or re-open its connection. */
+  /**
+   * Open the connection to a peer: at the join, for everyone in the lobby (A17, 2026-11-24). A peer that is already
+   * held is left alone: no new connection. To make a connection again (A18: one that died while its player was
+   * away), `removePeer` first.
+   */
   addPeer(peer: MatchPlayerId): void;
+  /** Close the connection to a peer (it left the lobby, or its connection is dead and its player away). */
   removePeer(peer: MatchPlayerId): void;
   /** Video flows from this rig only while true (the player up); audio is unaffected. */
   setSending(on: boolean): void;

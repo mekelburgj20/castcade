@@ -9,10 +9,10 @@
 import { createServer } from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';
 import { io as ioClient, type Socket as ClientSocket } from 'socket.io-client';
-import { buildMessage, PROTOCOL_VERSION, type AnyMessage } from '@castcade/protocol';
+import { buildMessage, decodeFrame, PROTOCOL_VERSION, type AnyMessage } from '@castcade/protocol';
 import { startFakeRelay, type FakeRelay } from './relay-fake.test-support.js';
 import { CompositeTransport, dropWords, RelayClientTransport, RelayError, RelayHostTransport, RelayPacer, relayEndpoint, RELINK, type RelayOptions } from './transport-relay.js';
-import { WsPeerTransport } from './transport-ws.js';
+import { ForeignVersionError, foreignVersionOf, foreignVersionRefusal, PROTOCOL_SINCE_RELEASE, WsPeerTransport } from './transport-ws.js';
 
 const ZERO = '0'.repeat(64);
 const KEY = Buffer.alloc(32, 7).toString('base64');
@@ -347,27 +347,97 @@ describe('relay transports (D10.8)', () => {
     expect(errors).toEqual([]);
   });
 
-  it('a frame over 256 KB is not sent and is reported; a HELLO of another protocol version is refused by name', async () => {
+  it('a frame over 256 KB is not sent and is reported', async () => {
     const r = (relay = await startFakeRelay({ devices: DEVICES }));
     const h = hostOn(r);
     await h.host('RELAYA');
     const a = clientOn(r, 'a');
     const errors: string[] = [];
     a.onError((e) => errors.push(e.message));
-    const aSeen = watch(a);
     await a.connect('RELAYA');
     const big = buildMessage('RECONNECT_ACK', { accept: false, code: 'unknown_log_hash', entries: [], logHash: ZERO, logLength: 0 }, { matchId: 'M', seq: 9, from: 'a' });
     (big.payload as { pad?: string }).pad = 'x'.repeat(300 * 1024);
     a.send('all', big);
     expect(errors.join()).toMatch(/RECONNECT_ACK is \d+ bytes, over the relay's 262144: not sent/);
     expect(r.dropped.size).toBe(0);
+  });
 
-    // A foreign-version HELLO never decodes; the host answers REFUSE(protocol_version) as the WebSocket host does.
-    const foreign = JSON.parse(JSON.stringify(hello('a'))) as { v: number };
-    foreign.v = PROTOCOL_VERSION + 1;
-    const raw = a as unknown as { socket: { emit(ev: string, p: unknown): void } };
-    raw.socket.emit('match:relay', { data: JSON.stringify(foreign) });
-    await until(() => aSeen.some((s) => s.includes(':REFUSE:')));
+  it('A17 step 1 (2026-11-24): a HELLO, and a RECONNECT, of another version are answered in that version; the PC that asked is told in a sentence, not left to time out', async () => {
+    // The sentence names the first release of the protocol: the two change together.
+    expect([PROTOCOL_VERSION, PROTOCOL_SINCE_RELEASE]).toEqual([6, '0.2.46']);
+    const r = (relay = await startFakeRelay({ devices: DEVICES }));
+    const h = hostOn(r);
+    const hErrors: string[] = [];
+    h.onError((e) => hErrors.push(e.message));
+    await h.host('RELAYA');
+    const a = clientOn(r, 'a');
+    const errors: Error[] = [];
+    a.onError((e) => errors.push(e));
+    const aSeen = watch(a);
+    await a.connect('RELAYA');
+    // What reaches the asking PC, as text: a frame of another version never decodes here, as it never decoded there.
+    const raw = a as unknown as { socket: { emit(ev: string, p: unknown): void; on(ev: string, cb: (p: { data?: unknown }) => void): void } };
+    const frames: Array<{ v: number; type: string; matchId: string | null; seq: number; from: string; payload: Record<string, unknown> }> = [];
+    raw.socket.on('match:relay', (p) => {
+      if (typeof p.data === 'string' && p.data.startsWith('{')) frames.push(JSON.parse(p.data) as (typeof frames)[number]);
+    });
+    const ofType = (type: string) => frames.filter((f) => f.type === type);
+
+    // A PC on an older version (what a 0.2.45 client sends: the envelope and the HELLO both say 5).
+    const older = PROTOCOL_VERSION - 1;
+    raw.socket.emit('match:relay', { data: JSON.stringify({ ...JSON.parse(JSON.stringify(hello('a'))), v: older }) });
+    await until(() => ofType('REFUSE').length === 1);
+    const refuse = ofType('REFUSE')[0]!;
+    expect(refuse).toMatchObject({ v: older, type: 'REFUSE', matchId: null, from: 'h', payload: { code: 'protocol_version', mismatches: [] } });
+    expect(refuse.payload.message).toBe(`This match needs Castcade 0.2.46 or newer (protocol 6; this PC sent ${older}). Update Castcade on this PC (Settings, Check for updates) and join again.`);
+    // Apart from its `v` it is a REFUSE as this version writes one: the asker's own decoder takes it.
+    expect(decodeFrame(JSON.stringify({ ...refuse, v: PROTOCOL_VERSION })).type).toBe('REFUSE');
+
+    // A PC on a newer version is told that the host is the one to update.
+    const newer = PROTOCOL_VERSION + 1;
+    raw.socket.emit('match:relay', { data: JSON.stringify({ ...JSON.parse(JSON.stringify(hello('a'))), v: newer }) });
+    await until(() => ofType('REFUSE').length === 2);
+    expect(ofType('REFUSE')[1]).toMatchObject({ v: newer, payload: { code: 'protocol_version', message: `The host's Castcade is older than this PC's (it speaks protocol 6, this PC ${newer}). The host updates Castcade (Settings, Check for updates); then join again.` } });
+
+    // A RECONNECT of another version got no answer at all until 0.2.50: now a RECONNECT_ACK that does not accept, in
+    // the asker's version, with a `seq` above anything this host can have sent that PC before (it drops a lower one).
+    const before = Date.now();
+    const reconnect = { v: older, type: 'RECONNECT', matchId: 'RELAYA', seq: 77, ts: 1, from: 'a', payload: { player: 'a', logHash: ZERO, logLength: 12, signature: 'c2ln' } };
+    raw.socket.emit('match:relay', { data: JSON.stringify(reconnect) });
+    await until(() => ofType('RECONNECT_ACK').length === 1);
+    const ack = ofType('RECONNECT_ACK')[0]!;
+    expect(ack).toMatchObject({ v: older, type: 'RECONNECT_ACK', matchId: 'RELAYA', from: 'h', payload: { accept: false, code: 'unknown_player', entries: [], logHash: ZERO, logLength: 0 } });
+    expect(ack.seq).toBeGreaterThanOrEqual(before);
+    expect(decodeFrame(JSON.stringify({ ...ack, v: PROTOCOL_VERSION })).type).toBe('RECONNECT_ACK');
+
+    // Nothing of it reached an engine on either side, and the host said what it could not decode.
+    expect(aSeen).toEqual([]);
+    expect(hErrors).toHaveLength(3);
+    // The asking side of the same thing, with a host that answers in ITS OWN version (every host up to 0.2.50): this
+    // PC cannot decode the answer, and says which versions the two PCs have in place of "The host did not answer".
+    const foreign = errors.filter((e): e is ForeignVersionError => e instanceof ForeignVersionError);
+    expect(foreign.map((e) => e.theirs)).toEqual([older, newer, older]);
+    expect(foreign[0]?.message).toBe(`The host's PC runs another version of Castcade (protocol ${older}; this PC has 6). Both need the same: the host updates Castcade (Settings, Check for updates), then join again.`);
+    expect(foreign[1]?.message).toBe(`The host's PC runs another version of Castcade (protocol ${newer}; this PC has 6). Both need the same: update Castcade on this PC (Settings, Check for updates), then join again.`);
+  });
+
+  it('A17 step 1: foreignVersionRefusal answers only a HELLO or a RECONNECT of another version', () => {
+    const frame = (o: Record<string, unknown>): string => JSON.stringify({ v: 5, type: 'HELLO', matchId: null, seq: 1, ts: 1, from: 'a', payload: {}, ...o });
+    expect(foreignVersionRefusal('not json', 'h', 1)).toBeNull();
+    expect(foreignVersionRefusal('[]', 'h', 1)).toBeNull();
+    // Our own version that does not decode for another reason is not a version refusal.
+    expect(foreignVersionRefusal(frame({ v: PROTOCOL_VERSION }), 'h', 1)).toBeNull();
+    expect(foreignVersionRefusal(frame({ type: 'STATE' }), 'h', 1)).toBeNull();
+    // A HELLO opens a new connection: its REFUSE keeps the caller's counter.
+    expect(JSON.parse(foreignVersionRefusal(frame({}), 'h', 3) ?? '{}')).toMatchObject({ v: 5, type: 'REFUSE', seq: 3, from: 'h' });
+    // A version that is not a whole number is nobody's: answered in ours, as before.
+    expect(JSON.parse(foreignVersionRefusal(frame({ v: 'six' }), 'h', 1) ?? '{}')).toMatchObject({ v: PROTOCOL_VERSION, type: 'REFUSE' });
+    expect(JSON.parse(foreignVersionRefusal(frame({ v: undefined }), 'h', 1) ?? '{}')).toMatchObject({ v: PROTOCOL_VERSION, type: 'REFUSE' });
+    // A RECONNECT with no usable match id is answered with none.
+    expect(JSON.parse(foreignVersionRefusal(frame({ type: 'RECONNECT', matchId: 7 }), 'h', 1) ?? '{}')).toMatchObject({ v: 5, type: 'RECONNECT_ACK', matchId: null });
+    expect(foreignVersionOf(frame({}))).toBe(5);
+    expect(foreignVersionOf(frame({ v: PROTOCOL_VERSION }))).toBeNull();
+    expect(foreignVersionOf('nope')).toBeNull();
   });
 
   it('relayEndpoint: the origin, and a path in the base URL as the socket.io path prefix', () => {

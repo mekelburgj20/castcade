@@ -464,6 +464,55 @@ describe('createRtcHost (D2)', () => {
     await host2.detach();
     expect(logs.some((l) => l.includes('v=0'))).toBe(false); // SDP never logged
   });
+  it('A17 step 1 (2026-11-24): addPeer for a peer already held is not passed to the page; after a removePeer it is, and the page that replaces this one gets each peer once', async () => {
+    const host = createRtcHost({ userData: dir, log, probe: async () => ({ outputs: [], windows: [PLAYER] }), settings: store() });
+    // The join: the panel goes up with no peers, as the match host attaches it.
+    await host.attach(signalling('owner').sig, []);
+    const w = fake.FakeWindow.all[0]!;
+    fromPage(w, PANEL_CHANNELS.ready);
+    const toPage = (): unknown[][] => w.webContents.sent.filter(([c]) => c === PANEL_CHANNELS.addPeer || c === PANEL_CHANNELS.removePeer).map(([c, p]) => [c, p]);
+
+    // The lobby's roster names Krobs; the match's start, the next game and a reconnect name him again.
+    host.addPeer('krobs');
+    expect(toPage()).toEqual([[PANEL_CHANNELS.addPeer, 'krobs']]);
+    host.addPeer('krobs');
+    host.addPeer('krobs');
+    expect(toPage()).toEqual([[PANEL_CHANNELS.addPeer, 'krobs']]);
+
+    // A peer given at the attach is held the same way (a re-attach's list).
+    host.addPeer('third');
+    host.addPeer('third');
+    expect(toPage()).toEqual([
+      [PANEL_CHANNELS.addPeer, 'krobs'],
+      [PANEL_CHANNELS.addPeer, 'third'],
+    ]);
+
+    // Made again on purpose (a connection that died while its player was away): closed, then opened.
+    host.removePeer('krobs');
+    host.addPeer('krobs');
+    expect(toPage()).toEqual([
+      [PANEL_CHANNELS.addPeer, 'krobs'],
+      [PANEL_CHANNELS.addPeer, 'third'],
+      [PANEL_CHANNELS.removePeer, 'krobs'],
+      [PANEL_CHANNELS.addPeer, 'krobs'],
+    ]);
+
+    // The panel moves into the headset: the new page is given the peers in its attach, each once.
+    await host.setVr(VR_STEAM);
+    const vrWin = fake.FakeWindow.all[1]!;
+    fromPage(vrWin, PANEL_CHANNELS.ready);
+    expect(vrWin.webContents.sent[0]).toEqual([PANEL_CHANNELS.attach, expect.objectContaining({ peers: ['third', 'krobs'], reset: true })]);
+    host.addPeer('krobs');
+    expect(vrWin.webContents.sent.filter(([c]) => c === PANEL_CHANNELS.addPeer)).toEqual([]);
+    await host.detach();
+    // A new match: nothing is held from the last one.
+    await host.attach(signalling('owner').sig, []);
+    const again = fake.FakeWindow.all.at(-1)!;
+    fromPage(again, PANEL_CHANNELS.ready);
+    host.addPeer('krobs');
+    expect(again.webContents.sent.filter(([c]) => c === PANEL_CHANNELS.addPeer).map(([c, p]) => [c, p])).toEqual([[PANEL_CHANNELS.addPeer, 'krobs']]);
+    await host.detach();
+  });
   it('A6 (2026-10-31): a late VR decision moves the desktop panel offscreen with the peers, panel state, sending, mic and mute; frames() then has a source', async () => {
     const host = createRtcHost({ userData: dir, log, probe: async () => ({ outputs: [], windows: [PLAYER] }), settings: store({ micDeviceId: 'headset', muted: true }) });
     const net = signalling('owner');

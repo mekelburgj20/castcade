@@ -94,6 +94,21 @@ describe('panel text (D2)', () => {
     expect(stageText(null, false)).toBe('');
   });
 
+  it('A17 step 1 (2026-11-24): the lobby panel says in words that the microphone is heard, once a connection to another player is up; never while muted, and never outside the lobby', () => {
+    const lobby = state({ phase: 'idle', playerUp: null, ball: null });
+    // No connection yet (alone in the lobby, or the other PC is on 0.2.50 and connects at the match's start): nothing.
+    expect(stageText(lobby, false)).toBe('');
+    expect(stageText(lobby, false, false)).toBe('');
+    expect(stageText(lobby, false, true)).toBe('YOUR MICROPHONE IS ON · THE OTHERS HEAR YOU');
+    expect(stageText({ ...lobby, mic: 'muted' }, false, true)).toBe('');
+    expect(stageText({ ...lobby, mic: 'unavailable' }, false, true)).toBe('');
+    // During a game and after it the stage is the picture's, as before.
+    expect(stageText(state(), false, true)).toBe("WAITING FOR KROBS'S TABLE");
+    expect(stageText(state({ phase: 'over' }), false, true)).toBe('');
+    // The page embeds the function and tells it whether a connection is up.
+    expect(panelPageHtml({ vr: true })).toContain('stageText(panel, hasVideo, voiceUp())');
+  });
+
   it('mic and score formatting', () => {
     expect([micText('open'), micText('muted'), micText('unavailable')]).toEqual(['MIC ON', 'MIC MUTED', 'NO MIC']);
     expect(scoreText(0)).toBe('0');

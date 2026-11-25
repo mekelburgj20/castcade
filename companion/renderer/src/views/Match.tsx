@@ -225,6 +225,8 @@ export function Match({ state }: { state: CastcadeState }) {
                 Start the table as soon as I host
               </label>
               <p className="muted">Off: Host shows the invite first, so you can send it before VPX starts. Then press Start the table.</p>
+              {/* A17 (2026-11-24): the voice is connected at the join, not at the match's start: said before the press. */}
+              <p className="muted">Your microphone is on for the other players from the moment you host: everyone who joins can talk with you before the match starts.</p>
               <button
                 type="button"
                 className="primary"
@@ -244,6 +246,8 @@ export function Match({ state }: { state: CastcadeState }) {
                 <span>Link or invite from the host</span>
                 <input type="text" value={invite} placeholder="The join link, or the code JHDFEF" onChange={(e) => setInvite(e.target.value)} />
               </label>
+              {/* A17 (2026-11-24): as on the Host card. */}
+              <p className="muted">Your microphone is on for the players in the match from the moment you join.</p>
               <button
                 type="button"
                 onClick={() =>

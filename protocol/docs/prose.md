@@ -15,7 +15,16 @@ participants are **clients**; the turn token is a **grant**.
   drops silently (`REJECT` is host -> client only). Frames the host relays keep the original sender's
   `seq`, so receivers track one counter per `from`.
 - `v` must equal the receiver's protocol version or the receiver answers `REFUSE` (`protocol_version`)
-  and closes.
+  and closes. A frame of another version does not decode at all, so a host answers from the frame's JSON,
+  and (A17, the build after 0.2.50) writes its answer **with the asker's `v`** on the envelope, so that the
+  asker can decode it: a `HELLO` gets `REFUSE` (`protocol_version`) whose `message` is a sentence for the
+  player, naming which PC has to update; a `RECONNECT` gets a `RECONNECT_ACK` that does not accept, with
+  the code `unknown_player` (the nearest every version knows) and a `seq` above anything the host can
+  have sent that participant before (the wall clock, as a restarted sender uses). `REFUSE` and
+  `RECONNECT_ACK` have had the same shape since protocol 2. A host up to 0.2.50 answered a `HELLO` in its
+  own version, which the asker could not decode, and a `RECONNECT` not at all; a client that is sent a
+  frame of another version while it joins or rejoins reports both versions instead of waiting for an
+  answer.
 - `matchId` is `null` only on `HELLO`, `HELLO_ACK` and `REFUSE`.
 
 ## Canonical JSON
@@ -262,6 +271,13 @@ the three fields is logged.
   the player up: each rig keeps one video sender per connection and enables it only while it holds the
   grant, so a new grant or a host transfer needs no renegotiation. Who is up comes from `TURN_GRANT`,
   never from the media.
+- The `rtc` connection of a pair exists from the moment both are in the lobby (A17, the build after 0.2.50): a
+  participant opens its side to everyone in the roster as it learns of them (`HELLO_ACK`, sent again on every
+  change) and closes it for one who is no longer listed. `MATCH_READY`, `NEXT_GAME`, `RESULT`, `MATCH_END` and an
+  accepted `RECONNECT` open and close nothing: the voice of the lobby is the voice of the match. A participant on
+  0.2.46 to 0.2.50 opens its side at `MATCH_READY`, as every build did. It holds the offer and the candidates it was
+  sent before that (64 signals per peer) and answers them then, and an offer without an answer is sent again every
+  few seconds, so the voice with such a participant starts with the match, as it did.
 - A dropped match link is not a dropped media connection (A18): the two are different paths, and a participant
   keeps every media connection that is itself still connected through a drop and a reconnect of the match link.
   Only a connection that is not connected any more is closed, and made again when its peer is back (the peer
