@@ -2,8 +2,10 @@
  * The Arcaid look (2026-11-25): what the app's other tabs are drawn from in the story pages (app.html, app-story.tsx):
  * Pairing, Status, Stream, Settings (with Import tables), the update banner, the 3D watch card on the Match tab, and
  * the Witness edition. Every name, path, id and address here is invented (Owner, Krobs, Chuck, Dana; C:\Games\...;
- * a loopback port), and the sentences are the ones the main process makes (witness.ts, exit-rung.ts), so a picture
- * shows what a player would read. Nothing here talks to anything.
+ * a loopback port), and the sentences are the ones the main process makes (witness.ts, exit-rung.ts, watch-host.ts,
+ * updater.ts, stream-host.ts), so a picture shows what a player would read: main/story-app-fixtures.test.ts holds every
+ * one a function makes to that function. What ArcAid itself answers (a refusal, a tournament's reason) is ArcAid's.
+ * Nothing here talks to anything.
  */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -202,7 +204,7 @@ export const STATUS_BASIC: any = {
       vpsTable: { id: 'Wd6nP3cHx9', label: '2.1 (Chuck)' },
     }),
   }),
-  lastError: 'heartbeat: ArcAid error: 503 Service Unavailable',
+  lastError: 'ArcAid error: 503 Service Unavailable',
 };
 
 /** Not paired and paused; the last table closed with only its score at close read, and Patch now offered for it. */
@@ -217,9 +219,9 @@ export const STATUS_UNPAIRED: any = {
   lastClose: {
     table: 'Attack from Mars (Bally 1995)',
     at: at(-12),
-    rung: 'C',
-    kind: 'unpatched',
-    text: 'Attack from Mars (Bally 1995): only the score at close was read, not every game, because the table has no Castcade patch beside it.',
+    rung: 'a',
+    kind: 'not_patched',
+    text: 'Attack from Mars (Bally 1995): only the score at close was read, not every game, because it is not patched. Press Patch now, then reopen the table so every game posts live.',
     vpxPath: `${TABLES_DIR}\\Attack from Mars (Bally 1995).vpx`,
   },
 };
@@ -242,7 +244,7 @@ export const STATUS_AMBIGUOUS: any = {
     ],
     tableInfo: { tableName: 'Theatre of Magic', authorName: null, tableVersion: null, releaseDate: null, saveDate: null, saveRev: 37, manufacturer: null, year: null, raw: {} },
     sha256: null,
-    notes: ['three VPS tables share this ROM; the file name names none of them'],
+    notes: ['table info read from the file', 'several VPS tables fit; please confirm which one in Status'],
   }),
   attempt: null,
 };
@@ -282,7 +284,7 @@ export const STREAM_SETTINGS: any = {
   defaultRecordingsDir: String.raw`C:\Users\Owner\Videos\Castcade`,
 };
 export const PREVIEW_OFF: any = { previewing: false, picture: null, warning: null, error: null };
-export const PREVIEW_ON: any = { previewing: true, picture: { width: 1080, height: 1920 }, warning: 'The preview window sits inside the captured area: move it to another screen, or viewers see it too.', error: null };
+export const PREVIEW_ON: any = { previewing: true, picture: { width: 1080, height: 1920 }, warning: 'The preview window sits inside the captured area; close it before going live or viewers will see it.', error: null };
 export const OVERLAY_URL = 'http://127.0.0.1:27460/overlay';
 
 /** Import tables: what Castcade sees in the folder, what Patch my tables did, what Remove did. */
@@ -334,7 +336,7 @@ export const WATCH: Record<string, any> = {
   idle: watchOff,
   'ended-fork': { ...watchOff, ended: 'the host ended the session', fork: { present: false, path: null, line: FORK_LINE } },
   hosting: on({ role: 'host', members: [{ id: 'owner', name: 'Owner', me: true, host: true, path: 'self', line: 'this PC' }] }),
-  'no-path': on({ members: [owner('no_path', 'no direct path between your routers'), krobs], relayLine: 'Signalling goes through ArcAid; the table stream needs a direct path.' }),
+  'no-path': on({ members: [owner('no_path', 'no direct path between your routers'), krobs] }),
   'other-plays': on({ members: [owner('direct', 'connected directly'), krobs], player: ownerPlays, watchTable: { path: `${TABLES_DIR}\\${TABLE}`, line: `Your copy of ${TABLE} matches the player's in size.`, warn: false } }),
   'size-differs': on({
     members: [owner('direct', 'connected directly'), krobs],

@@ -83,7 +83,7 @@ if (fixture) {
       plan: answer('plan', PLAN),
       apply: answer('apply', APPLIED),
       removeAll: answer('removeAll', REMOVED),
-      patchNow: ok({ ok: true, text: 'Patched: close the table and open it again.' }),
+      patchNow: ok({ ok: true, text: 'patched; reopen the table so every game posts live' }),
     }),
     match: api({ status: ok(MATCH), benchClips: ok([]) }, MATCH),
     launch: api({ status: ok(ONE_STEP), tables: ok(TABLES), browse: ok([]), pick: ok(null) }),
