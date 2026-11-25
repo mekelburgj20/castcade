@@ -132,6 +132,11 @@ export interface MatchSettings {
    * the 2D video, and a match table Castcade starts runs in the player's own VPX).
    */
   watch3d: 'auto' | 'off';
+  /**
+   * A17 step 7 (2026-11-25, alpha-match.md section 11.3): this person's own choice for the next start in a lobby: Play
+   * or Watch. Kept per PC, said at the join, changed at any time; it counts from the next start.
+   */
+  stance: 'play' | 'watch';
 }
 
 export const DEFAULT_MATCH_SETTINGS: MatchSettings = {
@@ -172,6 +177,8 @@ export const DEFAULT_MATCH_SETTINGS: MatchSettings = {
   scoreboardAnchor: 'room',
   // I11.4.2 (2026-11-19)
   watch3d: 'auto',
+  // A17 step 7 (2026-11-25)
+  stance: 'play',
 };
 
 /** D8.1: the current `settingsVersion`; a saved file below it is migrated once at load (`loadMatchSettings`). */
@@ -288,6 +295,8 @@ export function patchMatchSettings(current: MatchSettings, patch: unknown): Matc
   if (p.scoreboardAnchor === 'room' || p.scoreboardAnchor === 'head') next.scoreboardAnchor = p.scoreboardAnchor;
   // I11.4.2: two words; anything else keeps the current one.
   if (p.watch3d === 'auto' || p.watch3d === 'off') next.watch3d = p.watch3d;
+  // A17 step 7: two words; anything else keeps the current one.
+  if (p.stance === 'play' || p.stance === 'watch') next.stance = p.stance;
   return next;
 }
 

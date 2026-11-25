@@ -110,6 +110,8 @@ function make(name: string, w: WitnessHost): { mh: MatchHost; lock: string; logs
     // hands the port on): a port picked here (47000 to 48999, at random) can sit in a range Windows has reserved
     // since its last boot (EACCES), or be in use.
     ephemeralPort: true,
+    // A17 step 7: every match is in a lobby, and every start of a lobby counts down (5 s in the app); here it is short.
+    lobby: { countdownMs: 20 },
     // And no search of the network the tests run on (D10.8): left at its default, every hosted match here asked the
     // router of whoever runs the tests to open a port.
     openPort: null,
@@ -148,7 +150,8 @@ describe('any order works (A14 step 3)', () => {
     hr.open();
     await until(() => C.mh.hostGame()?.tableHash === SHA);
     await until(() => row(C.mh, 'Krobs')?.tableMatch === true && row(H.mh, 'Krobs')?.tableMatch === true);
-    await until(() => message(H.mh) === 'Everyone in? Start a game on your table (or press Start match)');
+    // A17 step 7: the lobby's words (design 11.9); the opener is the starter, so its Start on the table asks.
+    await until(() => message(H.mh) === 'Everyone in? Start a game on your table (or Start match in the menu)');
 
     hr.gameStart();
     await until(() => H.mh.status().phase === 'playing' && C.mh.status().phase === 'playing', 9000);
@@ -157,7 +160,7 @@ describe('any order works (A14 step 3)', () => {
     expect(existsSync(H.lock)).toBe(false);
   }, 20_000);
 
-  it("the host's Start pressed while the other table is still loading: the start is armed and fires when that table opens", async () => {
+  it("the host's Start pressed while the other table is still loading: the start waits, says so on every panel, and begins when that table opens", async () => {
     const hr = rig({ table: true });
     const cr = rig();
     const H = make('armed-host', hr.w);
@@ -166,7 +169,11 @@ describe('any order works (A14 step 3)', () => {
     await C.mh.join(hs.invite!, 'Krobs');
     await until(() => H.mh.status().participants.length === 2);
     hr.gameStart();
-    await until(() => H.logs.some((l) => l.includes("the match starts once Krobs's table is open")));
+    // A17 step 7: a start that waits is announced to everyone, with who asked and what it waits for (it was an
+    // armed start that only the host's own log knew of).
+    await until(() => H.mh.status().lobby?.start?.waitsFor === 'tables' && C.mh.status().lobby?.start?.waitsFor === 'tables');
+    expect(message(H.mh)).toBe("You start the match once Krobs' table is open");
+    expect(message(C.mh)).toBe('Owner starts the match once your table is open');
     expect(H.mh.status().phase).toBe('lobby');
     cr.open();
     await until(() => H.mh.status().phase === 'playing' && C.mh.status().phase === 'playing', 9000);
@@ -179,15 +186,17 @@ describe('any order works (A14 step 3)', () => {
     const C = make('ingame-client', cr.w);
     const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
     await C.mh.join(hs.invite!, 'Krobs');
-    await until(() => message(H.mh) === 'Everyone is in: finish the game on your table, then press Start on it to start the match');
+    // A17 step 7: that game is the opener's own, which every roster says (OWN GAME); the lobby's line is A12's.
+    await until(() => message(H.mh) === 'Everyone in? Finish the game on your table, then start a game on it (or Start match in the menu)');
+    await until(() => C.mh.status().lobby?.members.find((m) => m.name === 'Owner')?.flags.includes('own_game') === true);
     expect(existsSync(H.lock)).toBe(false);
     hr.gameEnd(1200);
-    await until(() => message(H.mh) === 'Everyone in? Start a game on your table (or press Start match)');
+    await until(() => message(H.mh) === 'Everyone in? Start a game on your table (or Start match in the menu)');
     hr.gameStart();
     await until(() => H.mh.status().phase === 'playing' && C.mh.status().phase === 'playing', 9000);
   }, 20_000);
 
-  it('Host while a game is running, with "Table locked until someone joins": the running game keeps its flippers; the lock goes on when it ends and off when the lobby is complete', async () => {
+  it('A17 step 7: "Table locked until someone joins" is retired in a lobby (the key stays in match.json and is not read): outside a match every table is its owner\'s, whatever is running on it', async () => {
     const hr = rig({ table: true, inGame: true });
     const cr = rig({ table: true });
     const H = make('locked-host', hr.w);
@@ -197,11 +206,15 @@ describe('any order works (A14 step 3)', () => {
     // Before A14 the lock went on here, in the middle of the ball.
     expect(H.mh.status().locked).toBe(false);
     expect(existsSync(H.lock)).toBe(false);
+    // Until the lobby (A12, A14) the lock went on when that game ended, and off when somebody had joined. In a lobby
+    // the table of a person who waits for others is theirs: free play, and only a start that counts down locks it.
     hr.gameEnd(900);
-    expect(H.mh.status().locked).toBe(true);
-    expect(existsSync(H.lock)).toBe(true);
+    expect(H.mh.status().locked).toBe(false);
+    expect(existsSync(H.lock)).toBe(false);
+    expect(H.mh.status().settings.preMatchPlay).toBe('locked');
     await C.mh.join(hs.invite!, 'Krobs');
-    await until(() => H.mh.status().participants.length === 2 && !H.mh.status().locked);
+    await until(() => H.mh.status().participants.length === 2);
+    expect(H.mh.status().locked).toBe(false);
     expect(existsSync(H.lock)).toBe(false);
   }, 15_000);
 
@@ -254,10 +267,14 @@ describe('any order works (A14 step 3)', () => {
     expect(C.mh.status()).toMatchObject({ role: 'client', phase: 'over', locked: true });
     hr.open();
     cr.open();
-    // A client's Start starts nothing (its table is locked anyway); the host's starts game 2 for everyone.
+    // A client's Start starts nothing (its table is locked anyway); the host's starts game 2 for everyone. A17
+    // step 7: the host is the starter here because it went first in game 1; and were a game to run on the other
+    // player's table, it would be that player's own and the start would wait for it, so it ends here first.
     cr.gameStart();
     await new Promise((r) => setTimeout(r, 50));
     expect(H.mh.status().series?.game).toBe(1);
+    cr.gameEnd(0);
+    await until(() => H.mh.status().lobby?.members.every((m) => !m.flags.includes('own_game')) === true);
     hr.gameStart();
     await until(() => H.mh.status().series?.game === 2 && C.mh.status().series?.game === 2 && C.mh.status().phase === 'playing');
     expect(H.mh.status().panel).toMatchObject({ myTurn: true, ball: 1 });

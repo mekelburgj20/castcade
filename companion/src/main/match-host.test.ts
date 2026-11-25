@@ -2,6 +2,11 @@
  * A6 (2026-10-30): two match hosts on localhost over real WebSockets, Electron stubbed (the cue window only): host,
  * join with a different table file (accepted by the host's `advise` policy and flagged on both sides: the client from
  * HELLO_ACK's hostGame), start, the turn lock file on each rig, leave.
+ *
+ * A17 step 7 (2026-11-25): every match the shell hosts or joins is a match in a lobby (protocol 7), so these tests
+ * run in one. Where a test described the old Host / Join match it says what the lobby does instead, with the reason
+ * beside it: a start counts down and is asked for, by anyone; a match's end closes nothing; a link that drops is
+ * "away", not gone; Leave lobby takes the row out at once; the room is never locked.
  */
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createConnection, createServer } from 'node:net';
@@ -75,6 +80,8 @@ function make(name: string, sha: string, extra: Partial<Parameters<typeof create
     // has reserved since its last boot (EACCES) or be drawn twice by two test files running at once (EADDRINUSE).
     // The two tests that need a port number of their own get it from `free-port.test-support.ts`, or from a blocker.
     ephemeralPort: true,
+    // A17 step 7: every match is in a lobby, and every start of a lobby counts down (5 s in the app); here it is short.
+    lobby: { countdownMs: 20 },
     ...extra,
   });
   hosts.push(mh);
@@ -156,7 +163,9 @@ describe('match host (A6)', () => {
     expect(port).toBeGreaterThanOrEqual(1024);
     expect(hs).toMatchObject({ role: 'host', phase: 'lobby', ipSource: 'public', port });
     expect(hs.invite).toMatch(new RegExp(`^castcade:ws://127\\.0\\.0\\.1:${port}#[A-Z]{6}$`));
-    expect(hs.panel).toMatchObject({ phase: 'idle', message: 'Waiting for players' });
+    // A17 step 7: the lobby's line says who is set to Play (a match needs two).
+    expect(hs.panel).toMatchObject({ phase: 'idle', message: 'Waiting for a second player: only you are set to Play' });
+    expect(hs.lobby).toMatchObject({ stance: 'play', starter: hs.localId, match: null, start: null, startButton: { label: 'Start match', off: 'Two people have to be set to Play.' } });
 
     await expect(C.mh.join('castcade:nope', 'Krobs')).rejects.toThrow(/not a Castcade invite/);
     const cs = await C.mh.join(hs.invite!, 'Krobs');
@@ -167,9 +176,10 @@ describe('match host (A6)', () => {
     ]);
     await until(() => H.mh.status().participants.length === 2);
     expect(H.mh.status().participants.find((p) => p.name === 'Krobs')?.tableMatch).toBe(false);
-    // Same table name, another hash (D2.5, 2026-10-31): the same table in another file.
-    expect(H.mh.status().panel?.message).toBe('same table, different file (a re-save or another download): Krobs');
-    expect(C.mh.status().panel?.message).toBe('same table, different file (a re-save or another download): you');
+    // Same table name, another hash (D2.5, 2026-10-31): the same table in another file. A17 step 7: said after the
+    // lobby's own line (who starts, and how), which is the line a lobby always has.
+    expect(H.mh.status().panel?.message).toBe('Everyone in? Start a game on your table (or Start match in the menu) · same table, different file (a re-save or another download): Krobs');
+    expect(C.mh.status().panel?.message).toBe('Hosty starts the match from their table. To start it yourself: Start match in the menu · same table, different file (a re-save or another download): you');
     expect(H.mh.status().participants.find((p) => p.name === 'Krobs')).toMatchObject({ tableNote: 'same table, different file (a re-save or another download)', buildMatch: true });
     expect(C.mh.status().panel?.players.find((p) => p.name === 'Krobs')?.flags).toEqual(['table_mismatch']);
 
@@ -185,7 +195,10 @@ describe('match host (A6)', () => {
     const left = await C.mh.leave();
     expect(left).toMatchObject({ role: 'none', phase: 'none', locked: false });
     expect(existsSync(C.lock)).toBe(false);
-    await until(() => H.mh.status().panel?.players.find((p) => p.name === 'Krobs')?.flags.includes('disconnected') === true);
+    // A17 step 7: Leave lobby is said to the lobby's PC before the link closes: the row is gone at once (it was a
+    // drop, shown as "disconnected"), and the game this player was in is given up in their name.
+    await until(() => H.mh.status().lobby?.members.map((m) => m.name).join() === 'Hosty');
+    expect(H.mh.status().role).toBe('host');
   }, 15_000);
 
   it('D2.8 (2026-11-01): table sound follows the turn: the player up taps, the other is muted; leaving unmutes', async () => {
@@ -1042,21 +1055,22 @@ describe('match host: the lobby refresh (A6, 2026-10-31)', () => {
     await until(() => row(H.mh, 'Krobs')?.rig === 'vr_headset' && row(H.mh, 'Krobs')?.tableMatch === true);
     await until(() => row(C.mh, 'Krobs')?.rig === 'vr_headset' && row(C.mh, 'Krobs')?.tableMatch === true);
     expect(C.mh.status().rig).toBe('vr_headset');
-    expect(H.mh.status().panel?.message).toBe('Everyone in? Start a game on your table (or press Start match)');
-    expect(C.mh.status().panel?.message).toBe('Waiting for Owner to start a game on the table');
+    // A17 step 7: the lobby's words (design 11.9): the starter is named, and everybody else is told how to start.
+    expect(H.mh.status().panel?.message).toBe('Everyone in? Start a game on your table (or Start match in the menu)');
+    expect(C.mh.status().panel?.message).toBe('Owner starts the match from their table. To start it yourself: Start match in the menu');
 
     // A different table file is still a difference.
     krobs.load('cd'.repeat(32), VR_VD);
     await until(() => row(H.mh, 'Krobs')?.tableMatch === false && row(C.mh, 'Krobs')?.tableMatch === false);
-    expect(H.mh.status().panel?.message).toBe('same table, different file (a re-save or another download): Krobs');
+    expect(H.mh.status().panel?.message).toBe('Everyone in? Start a game on your table (or Start match in the menu) · same table, different file (a re-save or another download): Krobs');
 
-    // After MATCH_READY the roster is final: a table load changes nothing.
+    // A17 step 7: in a lobby a member's row follows their table in every phase (it was final after MATCH_READY): a
+    // table that changes while a match is played is said, and the match's own logged fingerprint stays what it was.
     await H.mh.start();
     await until(() => C.mh.status().phase === 'playing');
     krobs.load('ab'.repeat(32), VR_VD);
-    await new Promise((r) => setTimeout(r, 100));
-    expect(row(H.mh, 'Krobs')).toMatchObject({ rig: 'vr_headset', tableMatch: false });
-    expect(row(C.mh, 'Krobs')).toMatchObject({ rig: 'vr_headset', tableMatch: false });
+    await until(() => row(H.mh, 'Krobs')?.tableMatch === true && row(C.mh, 'Krobs')?.tableMatch === true);
+    expect(row(H.mh, 'Krobs')).toMatchObject({ rig: 'vr_headset', tableMatch: true });
   }, 15_000);
 
   it("the host's own table loads after hosting: its row and the client's flag follow", async () => {
@@ -1075,7 +1089,7 @@ describe('match host: the lobby refresh (A6, 2026-10-31)', () => {
     expect(row(H.mh, 'Owner')?.rig).toBe('vr_headset');
   }, 15_000);
 
-  it('A6.1 (2026-11-01): a rig that reads VR only after Start is told to the others (the host\'s own and a client\'s); the table is not', async () => {
+  it('A6.1 (2026-11-01): a rig that reads VR only after Start is told to the others (the host\'s own and a client\'s); A17 step 7: in a lobby the table is too', async () => {
     const owner = loadingWitness();
     const krobs = loadingWitness();
     const H = make('late-host', 'ab'.repeat(32), { witness: owner.w });
@@ -1083,6 +1097,11 @@ describe('match host: the lobby refresh (A6, 2026-10-31)', () => {
     const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
     await C.mh.join(hs.invite!, 'Krobs');
     await until(() => H.mh.status().participants.length === 2);
+    // A17 step 7: a start waits for its players' tables to be open (the Start match button used to start over a
+    // table that was still loading), so both tables are open here, on the monitor: the VR reading comes after Start.
+    owner.load('ab'.repeat(32), VR_OFF);
+    krobs.load('ab'.repeat(32), VR_OFF);
+    await until(() => H.mh.status().lobby?.members.every((m) => !m.flags.includes('loading')) === true);
     await H.mh.start();
     await until(() => C.mh.status().phase === 'playing');
     expect(row(C.mh, 'Owner')?.rig).toBe('pc');
@@ -1094,12 +1113,12 @@ describe('match host: the lobby refresh (A6, 2026-10-31)', () => {
     expect(H.mh.status().panel?.players.find((p) => p.name === 'Owner')?.rig).toBe('vr_headset');
     expect(C.mh.status().panel?.players.find((p) => p.name === 'Owner')?.rig).toBe('vr_headset');
 
-    // And a client's, on another table file: the rig goes, the fingerprint in the log stays.
-    const flag = row(H.mh, 'Krobs')?.tableMatch;
+    // And a client's, on another table file: the rig goes. A17 step 7: so does the table, in the lobby's row (the
+    // match's own fingerprint, in its log, stays what MATCH_READY said).
     krobs.load('cd'.repeat(32), VR_VD);
     await until(() => row(H.mh, 'Krobs')?.rig === 'vr_headset');
     await until(() => row(C.mh, 'Krobs')?.rig === 'vr_headset');
-    expect(row(H.mh, 'Krobs')?.tableMatch).toBe(flag); // as MATCH_READY said
+    await until(() => row(H.mh, 'Krobs')?.tableMatch === false);
   }, 15_000);
 });
 
@@ -1186,7 +1205,7 @@ describe('match host: A8 (2026-10-31)', () => {
     expect(row(H.mh, 'Krobs')?.tableMatch).toBe(false);
     expect(H.mh.status().transfer).toBeNull();
     // Resume is the host's, and only for a pause.
-    await expect(B.mh.resume()).rejects.toThrow(/Only the host/);
+    await expect(B.mh.resume()).rejects.toThrow(/Only the lobby's PC/);
     await expect(H.mh.resume()).rejects.toThrow(/not paused/);
   }, 15_000);
 });
@@ -1202,7 +1221,7 @@ describe('match host: a series (A10, 2026-11-02)', () => {
   const scores = (s: number): Feed => ({ kind: 'current_scores', t: 0, scores: [s], player: 1, ball: 1 }) as Feed;
   const ballEnd = (ball: number): Feed => ({ kind: 'ball_end', t: 0, player: 1, ball, extraBalls: 0 }) as Feed;
 
-  it('Start match, then Next game (the same call) between games; the host leaving between games is End match for everyone', async () => {
+  it('Start match, then Next game (the same call) between games, by either player; End match leaves both in the lobby, and the lobby PC\'s Leave closes it for everyone', async () => {
     const hw = feeding('ab'.repeat(32));
     const cw = feeding('ab'.repeat(32));
     const H = make('series-host', 'ab'.repeat(32), { witness: hw.w });
@@ -1211,12 +1230,14 @@ describe('match host: a series (A10, 2026-11-02)', () => {
     await C.mh.join(hs.invite!, 'Krobs');
     await until(() => H.mh.status().participants.length === 2);
     await H.mh.start();
-    const playGame = async (base: number): Promise<void> => {
+    // A17 step 7: whoever asks for a start goes first: `first` is the player who asked for this game.
+    const playGame = async (base: number, first: 'Hosty' | 'Krobs' = 'Hosty'): Promise<void> => {
       for (let ball = 1; ball <= 3; ball++) {
-        for (const [who, seat] of [
+        const order = [
           ['Hosty', hw],
           ['Krobs', cw],
-        ] as const) {
+        ] as const;
+        for (const [who, seat] of first === 'Hosty' ? order : [order[1], order[0]]) {
           const mh = who === 'Hosty' ? H.mh : C.mh;
           await until(() => mh.status().panel?.myTurn === true && mh.status().panel?.ball === ball);
           const s = base * ball + (who === 'Hosty' ? 10 : 20);
@@ -1229,23 +1250,29 @@ describe('match host: a series (A10, 2026-11-02)', () => {
       await until(() => H.mh.status().phase === 'over' && C.mh.status().phase === 'over');
     };
     await playGame(1000);
+    // Between games the starter (who went first) has their table; the other player's is locked, as a client's was.
     expect(H.mh.status()).toMatchObject({ phase: 'over', locked: false, series: { game: 1, over: false, nextGameBlocker: null } });
     expect(C.mh.status()).toMatchObject({ phase: 'over', locked: true, series: { game: 1, over: false } });
     expect(existsSync(C.lock)).toBe(true);
-    // A client cannot start the next game.
-    await expect(C.mh.start()).rejects.toThrow(/Only the host/);
-    const next = await H.mh.start();
-    expect(next.series).toMatchObject({ game: 2, over: false });
-    await until(() => C.mh.status().series?.game === 2 && C.mh.status().phase === 'playing');
-    await playGame(2000);
+    // A17 step 7: anybody starts the next game (it was "Only the host"); whoever asks goes first in it.
+    await C.mh.start();
+    await until(() => C.mh.status().series?.game === 2 && C.mh.status().phase === 'playing' && H.mh.status().phase === 'playing');
+    expect(C.mh.status().panel).toMatchObject({ myTurn: true, ball: 1 });
+    await playGame(2000, 'Krobs');
     expect(C.mh.status().panel?.series?.map((x) => x.games)).toEqual([2, 2]);
-    // End match: the host tears down at once; the client's series is over and its table free.
+    // A17 step 7: End match, by either player between games: the tally is closed and both are back in the lobby, on
+    // the same link, with both tables free. Nothing tears down (a client used to close 20 s after MATCH_END).
+    await C.mh.endMatch();
+    await until(() => C.mh.status().phase === 'lobby' && H.mh.status().phase === 'lobby');
+    expect([H.mh.status().role, C.mh.status().role]).toEqual(['host', 'client']);
+    expect(C.mh.status()).toMatchObject({ locked: false, series: { over: false }, lobby: { match: null } });
+    expect(existsSync(C.lock)).toBe(false);
+    expect(C.mh.status().panel?.message).toMatch(/^Match over after 2 games · /);
+    // The lobby's PC leaves: that closes the lobby for everyone, which the client says and then closes by itself.
     const left = await H.mh.leave();
     expect(left).toMatchObject({ role: 'none' });
     await until(() => C.mh.status().series?.over === true);
-    expect(C.mh.status()).toMatchObject({ phase: 'over', locked: false });
-    expect(existsSync(C.lock)).toBe(false);
-    expect(C.mh.status().panel?.message).toBe('The host ended the match after 2 games');
+    expect(C.mh.status().panel?.message).toBe('The lobby is closed: Hosty closed the lobby');
   }, 20_000);
 });
 
@@ -1347,7 +1374,7 @@ describe('match host: tables that cannot report ball ends (A13, 2026-11-12)', ()
     const C = make('a13-client', sha, { witness: cw.w });
     const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
     // Alone in the lobby the host already reads why its own table will not do.
-    expect(hs.panel?.message).toBe(`Waiting for players · Your table cannot report ball ends: ${DARK}`);
+    expect(hs.panel?.message).toBe(`Waiting for a second player: only you are set to Play · Your table cannot report ball ends: ${DARK}`);
     await C.mh.join(hs.invite!, 'Krobs');
     await until(() => H.mh.status().participants.length === 2);
     await until(() => row(C.mh, 'Owner')?.ballEnds === false);
@@ -1369,10 +1396,12 @@ describe('match host: tables that cannot report ball ends (A13, 2026-11-12)', ()
     await expect(H.mh.start()).rejects.toThrow(/Your table cannot report ball ends.*Start anyway/);
     expect(H.mh.status()).toMatchObject({ phase: 'lobby' });
     expect(H.mh.status().lastError).toMatch(/Start anyway/);
-    await expect(C.mh.passTurn()).rejects.toThrow(/Only the host/);
+    await expect(C.mh.passTurn()).rejects.toThrow(/Only the lobby's PC/);
+    // A17 step 7: the confirmed start is announced and counts down for both (it used to start at once).
     const started = await H.mh.start({ anyway: true });
-    expect(started).toMatchObject({ phase: 'playing', lastError: null, startWarnings: [] });
-    await until(() => C.mh.status().phase === 'playing');
+    expect(started).toMatchObject({ phase: 'lobby', lastError: null, lobby: { start: { waitsFor: null } } });
+    await until(() => C.mh.status().phase === 'playing' && H.mh.status().phase === 'playing');
+    expect(H.mh.status().startWarnings).toEqual([]);
 
     // The host's ball never ends by itself: Pass the turn, for its own ball and then for the client's.
     expect(H.mh.status().pass).toEqual({ name: 'Owner', ball: 1, score: 0 });
@@ -1397,6 +1426,8 @@ describe('match host: tables that cannot report ball ends (A13, 2026-11-12)', ()
     expect(H.mh.status().startWarnings).toEqual([]);
     expect(H.mh.status().participants.map((p) => p.ballEnds)).toEqual([null, null]);
     await H.mh.start();
+    // A17 step 7: after the countdown.
+    await until(() => H.mh.status().phase === 'playing');
     await expect(H.mh.passTurn()).resolves.toMatchObject({ phase: 'playing' });
   }, 15_000);
 
@@ -1411,7 +1442,7 @@ describe('match host: tables that cannot report ball ends (A13, 2026-11-12)', ()
     expect(H.mh.status().endBall).toBeNull();
     await expect(H.mh.endMyBall(1)).rejects.toThrow('Your ball cannot be ended now: it is not your ball');
     // The start still asks, and now says who ends such a ball: the player, or the host.
-    await expect(H.mh.start()).rejects.toThrow(/cannot report ball ends.*Start anyway to play it by hand: that player ends each ball with End my ball \(the in-game menu or the Match tab\), or you end it with Pass the turn\.$/);
+    await expect(H.mh.start()).rejects.toThrow(/cannot report ball ends.*Start anyway to play it by hand: that player ends each ball with End my ball \(the in-game menu or the Match tab\), or the lobby's PC ends it with Pass the turn\.$/);
     await H.mh.start({ anyway: true });
     await until(() => C.mh.status().phase === 'playing' && H.mh.status().panel?.myTurn === true);
 
@@ -1501,7 +1532,7 @@ describe('D10.8 (2026-11-12): match control through ArcAid, and the router port 
     const phases: string[] = [];
     const off = H.mh.onStatus((s) => phases.push(s.phase));
     r.dropDevice('dev-h');
-    await until(() => hl.lines.some((l) => l.includes('ArcAid is not carrying this match for the moment')));
+    await until(() => hl.lines.some((l) => l.includes('ArcAid is not carrying this lobby for the moment')));
     await until(() => krobsAway());
     await until(() => hl.lines.some((l) => l.includes(`ArcAid carries ${hs.invite} again`)), 6000);
     await until(() => !krobsAway() && C.mh.status().phase === 'playing' && H.mh.status().path === 'Through ArcAid', 8000);
@@ -1605,7 +1636,7 @@ describe('D10.8 (2026-11-12): match control through ArcAid, and the router port 
     // ArcAid loses the host; the client does not know yet. Its ball drains: the BALL_END goes to a relay that has
     // nobody to hand it to.
     r.dropDevice('dev-h');
-    await until(() => H.lines.some((l) => l.includes('ArcAid is not carrying this match for the moment')));
+    await until(() => H.lines.some((l) => l.includes('ArcAid is not carrying this lobby for the moment')));
     C.feed({ kind: 'current_scores', scores: [4200], ball: 1 });
     C.feed({ kind: 'ball_end', ball: 1, extraBalls: 0 });
     C.feed({ kind: 'current_scores', scores: [4250], ball: 1 });
@@ -1636,7 +1667,7 @@ describe('D10.8 (2026-11-12): match control through ArcAid, and the router port 
     const before = { hAudio: H.audio.wants.length, cAudio: C.audio.wants.length, hSend: H.video.of('send').length, cSend: C.video.of('send').length, hSeen: H.seen.length, cSeen: C.seen.length };
 
     r.dropDevice('dev-h');
-    await until(() => H.lines.some((l) => l.includes('ArcAid is not carrying this match for the moment')));
+    await until(() => H.lines.some((l) => l.includes('ArcAid is not carrying this lobby for the moment')));
     await until(() => H.lines.some((l) => l.includes(`ArcAid carries ${hs.invite} again`)), 6000);
     // The client is back on the link by itself: the host can pass its turn and the client's grant arrives. (A grant
     // that came due before the client was back would have waited for it: `match/host.ts`.)
@@ -1800,7 +1831,8 @@ describe('D10.8 (2026-11-12): match control through ArcAid, and the router port 
     expect(C.keys.size).toBe(0);
     expect(existsSync(C.lock)).toBe(false);
     expect(C.mh.status()).toMatchObject({ role: 'none' });
-    await until(() => H.mh.status().panel?.players.find((p) => p.name === 'Krobs')?.flags.includes('disconnected') === true || H.mh.status().phase === 'over', 8000);
+    // A17 step 7: Leave lobby is said before the link closes: the row goes at once (it was a drop: "disconnected").
+    await until(() => H.mh.status().lobby?.members.length === 1, 8000);
     // A match host this module did not make has no halves.
     expect(matchHalfOf({} as MatchHost)).toBeNull();
   }, 30_000);
@@ -1842,7 +1874,8 @@ describe('D10.8 (2026-11-12): match control through ArcAid, and the router port 
     r.revoke('dev-c');
     r.dropDevice('dev-c');
     await until(() => H.mh.status().phase === 'paused', 8000);
-    expect(H.mh.status().panel).toMatchObject({ phase: 'paused', playerUp: clientId, pausedFor: clientId, myTurn: false, message: 'Paused: waiting for Krobs to reconnect' });
+    // A17 step 7: the lobby's words for it (design 11.8): the place is kept, and the game waits at their own turn.
+    expect(H.mh.status().panel).toMatchObject({ phase: 'paused', playerUp: clientId, pausedFor: clientId, myTurn: false, message: 'Waiting for Krobs to come back' });
     await new Promise((res) => setTimeout(res, 700)); // more than twice the time a missing picture is given
     pageSays(true);
     // The headset was never taken to the panel. Until 0.2.50 every pause put the panel over the picture.
@@ -1938,7 +1971,7 @@ describe('D10.8 (2026-11-12): match control through ArcAid, and the router port 
 
     // ArcAid loses the host for a moment, inside the grace: everybody is back by themselves.
     r.dropDevice('dev-h');
-    await until(() => H.lines.some((l) => l.includes('ArcAid is not carrying this match for the moment')));
+    await until(() => H.lines.some((l) => l.includes('ArcAid is not carrying this lobby for the moment')));
     await until(() => C.lines.some((l) => l.startsWith('match: the link to the host was away for a moment and is back (')), 10_000);
     await new Promise((res) => setTimeout(res, 300));
     // Until this fix the client said here: "2 table event(s) since the log last grew go to the match now (1 ball
@@ -1978,7 +2011,7 @@ describe('D10.8 (2026-11-12): match control through ArcAid, and the router port 
     await until(() => C.mh.status().panel?.myTurn === true && C.mh.status().panel?.ball === 2 && C.mh.status().locked === false, 8000);
     C.feed({ kind: 'current_scores', scores: [900], ball: 2 });
     r.dropDevice('dev-h');
-    await until(() => H.lines.some((l) => l.includes('ArcAid is not carrying this match for the moment')));
+    await until(() => H.lines.some((l) => l.includes('ArcAid is not carrying this lobby for the moment')));
     await until(() => C.lines.some((l) => l.startsWith('match: the link to the host was away for a moment and is back (')), 10_000);
     await new Promise((res) => setTimeout(res, 300));
     expect(C.lines.filter((l) => l.includes('ball 2 ended on the table') || l.includes('BALL_END ball 2') || / \([1-9]\d* ball end\(s\)\)/.test(l))).toEqual([]);
@@ -1999,8 +2032,10 @@ describe('D10.8 (2026-11-12): match control through ArcAid, and the router port 
     const held = (): string[] => [...new Set(page.added)].filter((p) => page.added.filter((x) => x === p).length > page.removed.filter((x) => x === p).length);
     return { ...s, page, held, calls: m.calls, lines: log.lines };
   };
-  const OVER = /^The lobby is over: the link to Owner's Castcade is gone \(they left or closed Castcade, or the connection dropped\)\. Nobody hears your microphone any more\. Join again to play\.$/;
-  /** What a client shows and holds once its lobby is lost, and that the match is closed by itself after the linger. */
+  // A17 step 7: a lobby ends for a member when its PC closes it (LOBBY_CLOSED, with who closed it), and no longer
+  // when a link drops (that is "away", and comes back by itself: the second test below).
+  const OVER = /^The lobby is closed: Owner closed the lobby$/;
+  /** What a client shows and holds once its lobby is closed, and that it closes by itself after the linger. */
   const lobbyLostOn = async (C: ReturnType<typeof lobbySeat>): Promise<void> => {
     // At once: nobody is held any more, and the Match tab and the panel say why.
     await until(() => C.held().length === 0, 8000);
@@ -2013,11 +2048,11 @@ describe('D10.8 (2026-11-12): match control through ArcAid, and the router port 
     await until(() => C.mh.status().role === 'none', 4000);
     expect(C.calls.filter((c) => c === 'detach')).toHaveLength(1);
     expect(C.mh.status().lastError).toMatch(OVER);
-    expect(C.lines.some((l) => l.startsWith('match: the lobby is over on this PC (the host is gone); closing it in'))).toBe(true);
-    expect(C.lines.some((l) => /^match: closed the lobby [A-Z]{6}: its host is gone$/.test(l))).toBe(true);
+    expect(C.lines.some((l) => /^match: the lobby [A-Z]{6} is over on this PC \(The lobby is closed: Owner closed the lobby\); closing it in/.test(l))).toBe(true);
+    expect(C.lines.some((l) => /^match: closed the lobby [A-Z]{6} on this PC$/.test(l))).toBe(true);
   };
 
-  it('the review of PR 127: the host leaves a lobby of three (over its own listener): each client lets go of the host and of the other client at once, says the lobby is over, and closes it by itself', async () => {
+  it('the review of PR 127: the host leaves a lobby of three (over its own listener), which closes the lobby: each client lets go of the host and of the other client at once, says the lobby is closed, and closes it by itself', async () => {
     const H = lobbySeat('lobby-end-host', { relay: () => null });
     const A = lobbySeat('lobby-end-a', { relay: () => null });
     const B = lobbySeat('lobby-end-b', { relay: () => null });
@@ -2037,7 +2072,7 @@ describe('D10.8 (2026-11-12): match control through ArcAid, and the router port 
     expect(B.page.removed.sort()).toEqual([ids.h, ids.a].sort());
   }, 30_000);
 
-  it("the review of PR 127: the host's Castcade quits, ArcAid closes the room, and this PC's own link drops: each ends the lobby for the client the same way", async () => {
+  it("the review of PR 127, as a lobby has it (A17 step 7): the host's Castcade quits: the lobby is closed for the client; ArcAid closes the room, or this PC's own link drops: nobody is let go, and the client is back by itself", async () => {
     // (1) The host quits Castcade (the tray's Quit: a leave; a crash is the same to a client: the link is gone).
     {
       const r = await fakeRelay();
@@ -2049,8 +2084,10 @@ describe('D10.8 (2026-11-12): match control through ArcAid, and the router port 
       await H.mh.stop();
       await lobbyLostOn(C);
     }
-    // (2) ArcAid closes the room under both (`expired`; a deploy loses it the same way). The host opens the code
-    // again by itself, with nobody in it: it has let the client go, and the client has let it go.
+    // (2) ArcAid closes the room under both (`expired`; a deploy loses it the same way). A17 step 7: in a lobby
+    // that is nobody's leave. The host opens the code again by itself, the client asks for the room again and comes
+    // back with RECONNECT; the place was kept, and neither page let the other go. (Before the lobby a drop before the
+    // first game was a leave: the host took the client off its roster and the client's lobby was over.)
     {
       const r = await fakeRelay();
       const H = lobbySeat('lobby-room-host', paired(r, 'h'));
@@ -2059,12 +2096,19 @@ describe('D10.8 (2026-11-12): match control through ArcAid, and the router port 
       await C.mh.join(hs.invite!, 'Krobs');
       await until(() => C.held().length === 1 && H.held().length === 1);
       r.closeRooms('expired');
-      await lobbyLostOn(C);
-      await until(() => H.held().length === 0 && H.mh.status().participants.length === 1, 8000);
-      expect(H.mh.status()).toMatchObject({ role: 'host', phase: 'lobby' });
+      await until(() => H.lines.some((l) => l.includes(`ArcAid carries ${hs.code} again`)), 10_000);
+      await until(() => C.lines.some((l) => l.startsWith('match: the link to the host')), 15_000);
+      expect([H.mh.status(), C.mh.status()].map((s) => [s.role, s.phase, s.participants.length, s.series?.over])).toEqual([
+        ['host', 'lobby', 2, false],
+        ['client', 'lobby', 2, false],
+      ]);
+      // Each holds the other again. (These pages say nothing of their connections' state, so A18's rule closed a
+      // connection it could not see to be up while the other was away, and made it again at the return; the seats
+      // of the A18 tests, whose pages report a connection that is up, show it kept.)
+      await until(() => C.held().length === 1 && H.held().length === 1, 8000);
+      expect(C.calls).not.toContain('detach');
     }
-    // (3) Only the client's own connection to ArcAid drops. It is back in a second, but a drop in the lobby is a
-    // leave: the host has taken it off the roster, so its lobby is over, and nobody hears it meanwhile.
+    // (3) Only the client's own connection to ArcAid drops. It is back in a second: the same.
     {
       const r = await fakeRelay();
       const H = lobbySeat('lobby-drop-host', paired(r, 'h'));
@@ -2073,17 +2117,19 @@ describe('D10.8 (2026-11-12): match control through ArcAid, and the router port 
       await C.mh.join(hs.invite!, 'Krobs');
       await until(() => C.held().length === 1 && H.held().length === 1);
       r.dropDevice('dev-c');
-      await lobbyLostOn(C);
-      await until(() => H.held().length === 0 && H.mh.status().participants.length === 1, 8000);
-      // The code is still good: the player joins again and both hold each other anew.
-      await C.mh.join(hs.invite!, 'Krobs');
+      await until(() => C.lines.some((l) => l.startsWith('match: the link to the host')), 15_000);
+      await until(() => H.mh.status().lobby?.members.every((m) => !m.flags.includes('away')) === true, 8000);
+      expect([H.mh.status(), C.mh.status()].map((s) => [s.role, s.phase, s.participants.length, s.series?.over])).toEqual([
+        ['host', 'lobby', 2, false],
+        ['client', 'lobby', 2, false],
+      ]);
       await until(() => C.held().length === 1 && H.held().length === 1, 8000);
-      expect(C.mh.status()).toMatchObject({ role: 'client', phase: 'lobby', lastError: null });
-      expect(C.mh.status().series?.over).toBe(false);
+      expect(C.calls).not.toContain('detach');
+      expect(C.mh.status().lastError).toBeNull();
     }
-  }, 60_000);
+  }, 90_000);
 
-  it('the review of PR 127: a client that leaves the lobby, and one whose join is refused: the first is let go by everyone at once and its page is gone; the second never had a page', async () => {
+  it('the review of PR 127: a client that leaves the lobby, and one whose join is refused: the first is let go by everyone at once and its page is gone; the second never had a page (A17 step 7: a join during a match is taken, and watches; the refusal is a full lobby)', async () => {
     const H = lobbySeat('lobby-leave-host', { relay: () => null });
     const A = lobbySeat('lobby-leave-a', { relay: () => null });
     const B = lobbySeat('lobby-leave-b', { relay: () => null });
@@ -2100,14 +2146,23 @@ describe('D10.8 (2026-11-12): match control through ArcAid, and the router port 
     expect(H.held()).toEqual([B.mh.status().localId]);
     expect(B.held()).toEqual([H.mh.status().localId]);
     expect(B.mh.status().series?.over).toBe(false);
-    // The match starts: a player who would join now is refused, and a refused join never opens the page at all.
+    // A17 step 7: the match starts, and a lobby still takes people (it was "the roster is final"): the newcomer is
+    // in the lobby, hears everyone, and watches the match. The place the leaver freed is free: four are in.
     await H.mh.start();
     await until(() => B.mh.status().phase === 'playing');
     const D = lobbySeat('lobby-leave-d', { relay: () => null });
-    await expect(D.mh.join(hs.invite!, 'Dana')).rejects.toThrow(/The host refused/);
-    expect(D.calls.filter((c) => c.startsWith('attach'))).toEqual([]);
-    expect(D.page.added).toEqual([]);
-    expect(H.held()).toEqual([B.mh.status().localId]);
+    const ds = await D.mh.join(hs.invite!, 'Dana');
+    expect(ds).toMatchObject({ role: 'client' });
+    const E = lobbySeat('lobby-leave-e', { relay: () => null });
+    await E.mh.join(hs.invite!, 'Eve');
+    await until(() => H.held().length === 3 && D.held().length === 3 && D.mh.status().phase === 'playing');
+    expect(D.mh.status().lobby?.match?.players).toEqual([H.mh.status().localId, B.mh.status().localId]);
+    // A fifth is refused with the lobby's sentence, and a refused join never opens the page at all.
+    const F = lobbySeat('lobby-leave-f', { relay: () => null });
+    await expect(F.mh.join(hs.invite!, 'Fay')).rejects.toThrow('The lobby did not take this PC in: This lobby is full (four people).');
+    expect(F.calls.filter((c) => c.startsWith('attach'))).toEqual([]);
+    expect(F.page.added).toEqual([]);
+    expect(H.held().length).toBe(3);
   }, 30_000);
 
   it("A18: the player who is up loses the host for longer than the grace: the others wait, and on that player's own PC the table is never locked, its sound and its picture are never cut, through the pause it finds at its return", async () => {
@@ -2127,7 +2182,7 @@ describe('D10.8 (2026-11-12): match control through ArcAid, and the router port 
     r.dropDevice('dev-h');
     // The host cannot reach the player who holds the grant: the others (here the host itself) wait for it.
     await until(() => H.mh.status().phase === 'paused', 8000);
-    expect(H.mh.status().panel?.message).toBe('Paused: waiting for Krobs to reconnect');
+    expect(H.mh.status().panel?.message).toBe('Waiting for Krobs to come back');
     // The client finds that pause in what it missed, resumes it itself, and the match plays on.
     await until(() => C.seen.slice(before.cSeen).some((x) => x.phase === 'paused'), 8000);
     await until(() => H.mh.status().phase === 'playing' && C.mh.status().phase === 'playing' && C.mh.status().panel?.myTurn === true, 8000);
@@ -2157,7 +2212,7 @@ describe('D10.8 (2026-11-12): match control through ArcAid, and the router port 
     expect(gone.mh.status().lastError).not.toContain('tok-c');
   }, 20_000);
 
-  it('ArcAid restarts mid-match (a deploy loses the room): the host opens the same code again, the relay player resumes by itself, and the room is locked again; leaving closes it at once', async () => {
+  it('ArcAid restarts mid-match (a deploy loses the room): the host opens the same code again and the relay player resumes by itself; A17 step 7: the room of a lobby is never locked, before or after; leaving closes it at once', async () => {
     const r = await startFakeRelay({ devices: { 'dev-h': 'tok-h', 'dev-c': 'tok-c', 'dev-d': 'tok-d' } });
     relays.push(r);
     const hl = collect();
@@ -2169,21 +2224,26 @@ describe('D10.8 (2026-11-12): match control through ArcAid, and the router port 
     await until(() => H.mh.status().participants.length === 2);
     expect(r.locked(code)).toBe(false);
     await H.mh.start();
-    await until(() => C.mh.status().phase === 'playing' && r.locked(code));
+    await until(() => C.mh.status().phase === 'playing');
 
-    // The match started: a device that was never in it is refused by ArcAid, by name.
+    // A17 step 7: the match started, and the room stays open (it was locked at the start, and a device that was
+    // never in it was refused by ArcAid): a lobby takes people in every phase, and the newcomer watches.
+    expect(r.locked(code)).toBe(false);
     const late = mk('restart-late', { relay: () => ({ baseUrl: r.url, deviceId: 'dev-d', deviceToken: 'tok-d' }), relayTimeouts: { connectMs: 1500, ackMs: 1500 } });
-    await expect(late.mh.join(code, 'Late')).rejects.toThrow(/^That match has already started/);
+    await expect(late.mh.join(code, 'Late')).resolves.toMatchObject({ role: 'client' });
+    await until(() => H.mh.status().participants.length === 3);
+    await late.mh.leave();
+    await until(() => H.mh.status().participants.length === 2);
 
     await r.restart(400);
-    await until(() => hl.lines.some((l) => l.includes('ArcAid is not carrying this match for the moment')));
+    await until(() => hl.lines.some((l) => l.includes('ArcAid is not carrying this lobby for the moment')));
     await until(() => hl.lines.some((l) => l.includes(`ArcAid carries ${code} again`)), 10_000);
     // A18: the host's ball was never paused for the player a deploy took away; that player is back by itself.
     await until(() => H.mh.status().panel?.players.some((p) => p.flags.includes('disconnected')) === false && C.mh.status().phase === 'playing' && H.mh.status().path === 'Through ArcAid', 20_000);
     expect(H.mh.status().phase).toBe('playing');
     expect(r.rooms()).toEqual([code]);
-    // Locked again once its player was back, and never while the player was still on the way.
-    await until(() => r.locked(code), 5000);
+    // Not locked after the room was opened again either (it was, a minute later).
+    expect(r.locked(code)).toBe(false);
     expect(r.misses.get('dev-c') ?? 0).toBeLessThanOrEqual(5);
     await H.mh.passTurn();
     await until(() => C.mh.status().panel?.myTurn === true, 6000);
@@ -2304,7 +2364,8 @@ describe('match host: the in-game menu and the quiet lobby (D8.9 / D8.10, 2026-1
     expect(menus.at(-1)!.hint).toBe('Ctrl+Alt+M: next line · Ctrl+Alt+K, or Ctrl+Alt+M twice quickly: choose · the arrow keys work too');
     expect([...held.keys()]).toEqual(expect.arrayContaining(['Up', 'Down', 'Left', 'Right']));
     press('Control+Alt+K');
-    expect(menus.at(-1)!.note).toBe('Nobody has joined yet');
+    // A17 step 7: the sentence of the check that fails (it was "Nobody has joined yet").
+    expect(menus.at(-1)!.note).toBe('Two people have to be set to Play.');
     await C.mh.join(hs.invite!, 'Krobs');
     await until(() => H.mh.status().participants.length === 2 && menus.at(-1)?.items[0]?.off === false);
     // One spare button: the menu key moves down a line; pressed again within a moment it chooses the line it left.
@@ -2321,14 +2382,17 @@ describe('match host: the in-game menu and the quiet lobby (D8.9 / D8.10, 2026-1
     press('Control+Alt+M', 33);
     expect(o.modes.at(-1)).toBe('panel');
     expect(menus.at(-1)).toMatchObject({ index: 0 });
-    // A17 step 4: it is this player's ball, so End my ball is on the menu, before Leave match.
-    expect(menus.at(-1)!.items.map((i) => i.label)).toEqual(['Voice volume', 'Their table sound', 'My table while I play', 'Microphone', 'End my ball', 'Leave match', 'Close menu']);
+    // A17 step 4: it is this player's ball, so End my ball is on the menu. A17 step 7: with the lobby's lines around
+    // it (design 11.9): Play or watch first, then what a match's menu had; this PC opened the lobby and plays.
+    expect(menus.at(-1)!.items.map((i) => i.label)).toEqual(['Play or watch', 'Voice volume', 'Their table sound', 'My table while I play', 'Microphone', 'End my ball', 'Give up this game', 'End match for everyone', 'Close lobby', 'Close menu']);
+    expect(menus.at(-1)!.items[0]).toEqual({ label: 'Play or watch', value: 'PLAY', off: false });
     // The volumes: the arrow raises, the choose key raises too; saved and pushed live.
+    press('Down');
     press('Right');
     expect(H.mh.status().settings.voiceVolume).toBe(175);
     expect(volumes.at(-1)).toEqual({ voice: 175, table: 100 });
     press('Control+Alt+K');
-    expect(menus.at(-1)!.items[0]!.value).toBe('200 %');
+    expect(menus.at(-1)!.items[1]!.value).toBe('200 %');
     press('Down');
     press('Left');
     expect(H.mh.status().settings.othersTableVolume).toBe(90);
@@ -2339,9 +2403,10 @@ describe('match host: the in-game menu and the quiet lobby (D8.9 / D8.10, 2026-1
     press('Down');
     press('Control+Alt+K');
     expect(muted).toEqual([true]);
-    press('Down');
-    press('Down');
-    press('Down');
+    // Up from the first line is the last one, Close menu.
+    while (menus.at(-1)!.index !== 0) press('Up');
+    press('Up');
+    expect(menus.at(-1)!.items[menus.at(-1)!.index]!.label).toBe('Close menu');
     press('Control+Alt+K');
     expect(menus.at(-1)).toBeNull();
     expect(o.modes.at(-1)).toBe('hidden');
@@ -2386,9 +2451,10 @@ describe('match host: the in-game menu and the quiet lobby (D8.9 / D8.10, 2026-1
     await until(() => H.mh.status().endBall?.score === 12_345_670);
 
     press('Control+Alt+M');
-    expect(labels()).toEqual(['Voice volume', 'Their table sound', 'My table while I play', 'Microphone', 'End my ball', 'Leave match', 'Close menu']);
-    for (let i = 0; i < 4; i++) press('Down');
-    expect(menus.at(-1)!.index).toBe(4);
+    // A17 step 7: the lobby's lines around the ones a match had (design 11.9). This PC opened the lobby and plays.
+    expect(labels()).toEqual(['Play or watch', 'Voice volume', 'Their table sound', 'My table while I play', 'Microphone', 'End my ball', 'Give up this game', 'End match for everyone', 'Close lobby', 'Close menu']);
+    for (let i = 0; i < 5; i++) press('Down');
+    expect(menus.at(-1)!.index).toBe(5);
     // The first choose asks, with the score as it stands; the ball is still this player's.
     press('Control+Alt+K');
     // A game runs on this table and its ball is in play: the question says the ball is not lost.
@@ -2425,7 +2491,7 @@ describe('match host: the in-game menu and the quiet lobby (D8.9 / D8.10, 2026-1
     for (const cb of heard) cb({ kind: 'current_scores', t: 0, scores: [12_400_000], player: 1, ball: 1 } as Feed);
     await until(() => H.mh.status().endBall?.score === 12_400_000 && H.mh.status().endBall?.grantSeq !== asked, 8000);
     expect(H.mh.status().panel).toMatchObject({ myTurn: true, ball: 1 });
-    expect(menus.at(-1)).toMatchObject({ index: 4, note: null });
+    expect(menus.at(-1)).toMatchObject({ index: 5, note: null });
     // One choose now only asks again, for this grant and at this score.
     press('Control+Alt+K');
     const AGAIN = 'Choose again to end your ball at 12,400,000. The ball on your table is played out first at your next turn';
@@ -2444,14 +2510,15 @@ describe('match host: the in-game menu and the quiet lobby (D8.9 / D8.10, 2026-1
     expect(C.mh.status().panel?.players.find((p) => p.name === 'Owner')).toMatchObject({ score: 12_400_000, ballsDone: 1 });
     // It is the client's ball now: the host's menu has no such line any more.
     press('Control+Alt+M');
-    expect(labels()).toEqual(['Voice volume', 'Their table sound', 'My table while I play', 'Microphone', 'Leave match', 'Close menu']);
-    // Finding 4 for Leave match: a held choose key asks and does not answer; a press of its own does.
-    for (let i = 0; i < 4; i++) press('Down');
-    expect(menus.at(-1)!.index).toBe(4);
+    expect(labels()).toEqual(['Play or watch', 'Voice volume', 'Their table sound', 'My table while I play', 'Microphone', 'Give up this game', 'End match for everyone', 'Close lobby', 'Close menu']);
+    // Finding 4 for the line that ends things (A17 step 7: on the lobby's PC it is Close lobby): a held choose key
+    // asks and does not answer; a press of its own does.
+    for (let i = 0; i < 7; i++) press('Down');
+    expect(menus.at(-1)!.index).toBe(7);
     press('Control+Alt+K');
     press('Control+Alt+K', 30);
     press('Right', 30);
-    expect(menus.at(-1)!.note).toBe('Choose again to leave the match');
+    expect(menus.at(-1)!.note).toBe('Choose again to close the lobby for everyone');
     expect(H.mh.status().role).toBe('host');
     press('Control+Alt+K', 400);
     await until(() => H.mh.status().role === 'none', 8000);
@@ -2495,9 +2562,10 @@ describe('match host: the in-game menu and the quiet lobby (D8.9 / D8.10, 2026-1
     expect(anchors.at(-1)).toBe('room');
     // In the match: the line is there, between the microphone and Leave match; choosing it asks the layer once and closes the menu.
     press('Control+Alt+M');
-    expect(labels()).toEqual(['Voice volume', 'Their table sound', 'My table while I play', 'Microphone', LINE, 'End my ball', 'Leave match', 'Close menu']);
-    expect(menus.at(-1)!.items[4]!.off).toBe(false);
-    for (let i = 0; i < 4; i++) press('Down');
+    // A17 step 7: one line of the lobby's stands above the volumes (Play or watch), and its others follow End my ball.
+    expect(labels()).toEqual(['Play or watch', 'Voice volume', 'Their table sound', 'My table while I play', 'Microphone', LINE, 'End my ball', 'Give up this game', 'End match for everyone', 'Close lobby', 'Close menu']);
+    expect(menus.at(-1)!.items[5]!.off).toBe(false);
+    for (let i = 0; i < 5; i++) press('Down');
     expect(placed).toBe(0);
     press('Control+Alt+K');
     expect(placed).toBe(1);
@@ -2506,8 +2574,8 @@ describe('match host: the in-game menu and the quiet lobby (D8.9 / D8.10, 2026-1
     // The layer in VPX is 0.7.0 (protocol 4): the line is greyed, says why, and nothing is asked.
     protocol = 4;
     press('Control+Alt+M');
-    expect(menus.at(-1)!.items[4]).toEqual({ label: LINE, value: null, off: true });
-    for (let i = 0; i < 4; i++) press('Down');
+    expect(menus.at(-1)!.items[5]).toEqual({ label: LINE, value: null, off: true });
+    for (let i = 0; i < 5; i++) press('Down');
     press('Control+Alt+K');
     expect(placed).toBe(1);
     expect(menus.at(-1)!.note).toBe('Restart VPX first: until then the scoreboard follows your head');
@@ -2697,7 +2765,7 @@ describe('match host: VPX gets the foreground back from Castcade (I11.4.18, 2026
 });
 
 describe('match host: a next game asked for while a player is inside the grace (A18; review 2 of PR 126, D)', () => {
-  it('Next game on the Match tab is held, and says so, not "started"; when the player turns out to be away and nobody is left, the tab says why at once', async () => {
+  it('A17 step 7: Next game asked for while a player\'s link dropped a moment ago: that player is still counted, the start is held when its countdown runs out, and when they turn out to be away the tab says the start is off, without another press', async () => {
     const lines: string[] = [];
     const log = { info: (l: string) => void lines.push(l), warn: (l: string) => void lines.push(l), error: (l: string) => void lines.push(l), file: '' } as unknown as Logger;
     const H = make('held-host', 'ab'.repeat(32), { ephemeralPort: true, disconnectGraceMs: 900, log });
@@ -2714,20 +2782,25 @@ describe('match host: a next game asked for while a player is inside the grace (
       await until(() => H.mh.status().phase === 'over' || JSON.stringify(H.mh.status().pass) !== JSON.stringify(before));
     }
     await until(() => H.mh.status().phase === 'over' && H.mh.status().series?.nextGameBlocker === null);
-    // The guest goes (the host sees only a link that dropped); the host presses Next game a moment later.
-    await C.mh.leave();
+    // The guest's Castcade is gone without a word (the host sees only a link that dropped; a Leave lobby would have
+    // taken the row out at once, and the press would have been refused with "a game needs two"). The host presses
+    // Next game a moment later, inside the grace.
+    const guest = C.mh.status().localId as string;
+    await C.mh.stop({ keepForRestart: true });
     await new Promise((r) => setTimeout(r, 150));
     const st = await H.mh.start();
     expect(st.lastError).toBeNull();
-    expect(lines.filter((l) => l.includes('started from the Match tab'))).toEqual([]);
-    expect(lines.some((l) => l.includes('the next game was asked for from the Match tab and is held for a few seconds'))).toBe(true);
-    expect(H.mh.status().panel?.message).toBe("Next game: starting in a few seconds (a player's link dropped a moment ago: waiting to see whether they are back)");
-    expect(H.mh.status().series?.game).toBe(1);
-    // The grace is over: the guest is away, nobody is left to play, and the tab says so without another press.
+    // Inside the grace a player is not away: they are in the start (it was the engine's own held next game, with its
+    // own line on the panel; in a lobby it is the announced start, which every panel shows).
+    expect(st.lobby?.start).toMatchObject({ newMatch: false, players: [st.localId, guest] });
+    // The countdown runs out inside the grace: nothing starts without that player, and nothing is called off yet.
+    await new Promise((r) => setTimeout(r, 250));
+    expect(H.mh.status()).toMatchObject({ phase: 'over', series: { game: 1 } });
+    expect(H.mh.status().lobby?.start).not.toBeNull();
+    // The grace is over: the guest is away, and the tab says the start is off without another press.
     await until(() => H.mh.status().lastError !== null, 5000);
-    expect(H.mh.status().lastError).toBe('The next game did not start: fewer than two players are still connected.');
-    expect(lines.some((l) => l === 'match: the next game does not start: fewer than two players are still connected')).toBe(true);
-    expect(H.mh.status().series?.game).toBe(1);
-    expect(H.mh.status().panel?.message ?? '').not.toContain('starting in a few seconds');
+    expect(H.mh.status().lastError).toBe('Krobs is away: the start is off.');
+    expect(lines.some((l) => l === 'match: the announced start is off: Krobs is away: the start is off.')).toBe(true);
+    expect(H.mh.status()).toMatchObject({ phase: 'over', series: { game: 1 }, lobby: { start: null } });
   }, 30_000);
 });

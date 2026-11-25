@@ -713,7 +713,17 @@ function registerIpc(
   ipcMain.handle(IPC.launchViewing, (e, on: unknown) => {
     if (win && !win.isDestroyed() && e.sender === win.webContents) matchTabShowing = on === true;
   });
-  ipcMain.handle(IPC.matchStart, (_e, o: unknown) => mh().start({ anyway: (o as { anyway?: unknown } | null | undefined)?.anyway === true }));
+  // A17 step 7: every member may ask for a start; what comes from the renderer is read flag by flag.
+  ipcMain.handle(IPC.matchStart, (_e, o: unknown) => {
+    const x = (o ?? {}) as { anyway?: unknown; newMatch?: unknown; now?: unknown };
+    return mh().start({ anyway: x.anyway === true, newMatch: x.newMatch === true, now: x.now === true });
+  });
+  ipcMain.handle(IPC.matchCancelStart, () => mh().cancelStart());
+  ipcMain.handle(IPC.matchEnd, () => mh().endMatch());
+  ipcMain.handle(IPC.matchStance, (_e, stance: unknown) => mh().setStance(stance === 'watch' ? 'watch' : 'play'));
+  ipcMain.handle(IPC.matchGiveUp, () => mh().giveUp());
+  ipcMain.handle(IPC.matchAnswerAway, (_e, answer: unknown) => mh().answerAway(answer === 'end_ball' ? 'end_ball' : answer === 'play_on' ? 'play_on' : 'wait'));
+  ipcMain.handle(IPC.matchPlayOnWithout, () => mh().playOnWithout());
   ipcMain.handle(IPC.matchPassTurn, () => mh().passTurn());
   // The review of PR 131: the grant the Match tab's question was about; anything else names no grant and ends nothing.
   ipcMain.handle(IPC.matchEndMyBall, (_e, grantSeq: unknown) => mh().endMyBall(typeof grantSeq === 'number' && Number.isSafeInteger(grantSeq) ? grantSeq : -1));

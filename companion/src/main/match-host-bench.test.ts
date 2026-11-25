@@ -122,6 +122,8 @@ function make(extra: Partial<Opts>): { mh: MatchHost; dir: string } {
     // 2026-11-24: the host listens on a port the system picks (`host({ port: 0 })`): a port picked here (45000 to
     // 46999, at random) can sit in a range Windows has reserved since its last boot (EACCES), or be in use.
     ephemeralPort: true,
+    // A17 step 7: every match is in a lobby, and every start of a lobby counts down (5 s in the app); here it is short.
+    lobby: { countdownMs: 20 },
     // And no search of the network the tests run on (D10.8): left at its default, every hosted match here asked the
     // router of whoever runs the tests to open a port.
     openPort: null,

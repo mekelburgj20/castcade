@@ -83,7 +83,8 @@ describe('the saved match record (A15)', () => {
     expect(resumeFreshness(c, at + CLIENT_RESUME_MAX_MS + 1)).toBe('stale');
     expect(resumeFreshness({ ...c, restart: 'update' }, at + 10 * 60_000)).toBe('auto');
     expect(resumeFreshness({ ...c, restart: 'update' }, at + CLIENT_RESUME_MAX_MS + 1)).toBe('stale');
-    // A host's players wait three minutes; after that there is nobody to host for.
+    // A17 step 7: the members of a lobby wait twenty minutes for its PC (it was three); after that there is nobody to open it for.
+    expect(HOST_WAIT_MS).toBe(20 * 60_000);
     const h = record({ role: 'host', aliveAt: at });
     expect(resumeFreshness(h, at + HOST_WAIT_MS)).toBe('offer');
     expect(resumeFreshness(h, at + HOST_WAIT_MS + 1)).toBe('stale');

@@ -87,6 +87,13 @@ export const IPC = {
   matchBenchView: 'match:bench:view',
   matchBenchClips: 'match:bench:clips',
   matchLeave: 'match:leave',
+  /** A17 step 7: the lobby: take back a start, end the match, Play or Watch, give up a game, the answers about a player who is away. */
+  matchCancelStart: 'match:cancelStart',
+  matchEnd: 'match:end',
+  matchStance: 'match:stance',
+  matchGiveUp: 'match:giveUp',
+  matchAnswerAway: 'match:answerAway',
+  matchPlayOnWithout: 'match:playOnWithout',
   matchRejoin: 'match:rejoin',
   matchForgetResume: 'match:forgetResume',
   matchSettingsSet: 'match:settings:set',
@@ -280,8 +287,23 @@ export interface CastcadeApi {
      * I11.4.9 (2026-11-20): in the lobby, while a PC's 3D connection is still being made, the first call holds the
      * start until it is settled (the status comes back still in the lobby, `wait3d.armed: 'tab'`); a second call
      * starts now.
+     * A17 step 7 (2026-11-25): every member asks (the start counts down for everyone, or waits: `lobby.start`);
+     * `newMatch`: end the open match and start one with everyone set to Play; `now`: start without what the
+     * announced start waits for.
      */
-    start(opts?: { anyway?: boolean }): Promise<MatchStatus>;
+    start(opts?: { anyway?: boolean; newMatch?: boolean; now?: boolean }): Promise<MatchStatus>;
+    /** A17 step 7: take back the start that counts down or waits (anybody in the lobby). */
+    cancelStart(): Promise<MatchStatus>;
+    /** A17 step 7: End match (between games: anyone, everyone stays in the lobby; during a game: the lobby's PC, for everyone, no result). */
+    endMatch(): Promise<MatchStatus>;
+    /** A17 step 7: this person's choice for the next start, Play or Watch. */
+    setStance(stance: 'play' | 'watch'): Promise<MatchStatus>;
+    /** A17 step 7: Give up this game: this player's own game ends; they stay in the lobby and watch. */
+    giveUp(): Promise<MatchStatus>;
+    /** A17 step 7: the lobby's PC, about the player who is up and out of reach (`lobby.awayQuestion`). */
+    answerAway(answer: 'wait' | 'end_ball' | 'play_on'): Promise<MatchStatus>;
+    /** A17 step 7: the lobby's PC: Play on without the player the game waits for (`lobby.waitedFor`). */
+    playOnWithout(): Promise<MatchStatus>;
     /** A13: host only, during a game: end the turn holder's ball at its last known score and grant the next turn (TURN_PASS). */
     passTurn(): Promise<MatchStatus>;
     /** A17 step 4 (2026-11-24): the player who is up ends their own ball at the score as it stands; the turn passes (BALL_END, `manual`). */

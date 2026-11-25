@@ -570,6 +570,8 @@ interface MatchSettings {
   scoreboardAnchor: 'room' | 'head';
   /** I11.4.2: the player up on this PC's own table in 3D while this player waits: whenever both PCs can, or never. */
   watch3d: 'auto' | 'off';
+  /** A17 step 7: this person's choice for the next start in a lobby. */
+  stance: 'play' | 'watch';
 }
 
 /** I11.4.2 (mirrors main/stream3d-host.ts Stream3dView): the state stream of a match on this PC. */
@@ -582,6 +584,34 @@ interface Stream3dView {
   watching: string | null;
   /** One line per other player: what this PC shows of them while they are up, and why when it is the 2D video. */
   players: Array<{ id: string; name: string; mode: '3d' | '2d'; line: string }>;
+}
+
+/** A17 step 7 (mirrors match/controller.ts LobbyStatus, with the two keys main/match-host.ts adds for the lobby's PC). */
+interface LobbyView {
+  stance: 'play' | 'watch';
+  starter: string | null;
+  members: Array<{
+    id: string;
+    name: string;
+    rig: 'pc' | 'vr_headset' | 'real_cabinet';
+    stance: 'play' | 'watch';
+    opener: boolean;
+    me: boolean;
+    starter: boolean;
+    inMatch: boolean;
+    flags: Array<'away' | 'loading' | 'no_table' | 'other_table' | 'own_game'>;
+  }>;
+  match: { id: string; game: number; state: 'game' | 'between'; players: string[] } | null;
+  start: { by: string; players: string[]; newMatch: boolean; waitsFor: 'result' | 'tables' | 'other_tables' | 'own_games' | '3d' | null; waitsOn: string[]; seconds: number | null; line: string } | null;
+  startButton: { label: 'Start match' | 'Next game'; line: string; off: string | null };
+  newMatch: { line: string } | null;
+  startWithout: string | null;
+  end: 'match' | 'everyone' | null;
+  giveUp: boolean;
+  hostAway: { since: number; until: number | null } | null;
+  over: boolean;
+  waitedFor: { player: string; name: string; minutes: number } | null;
+  awayQuestion: { player: string; name: string; minutes: number; score: number } | null;
 }
 
 /** A6 (mirrors main/match-host.ts MatchStatus). */
@@ -612,6 +642,8 @@ interface MatchStatus {
     /** A13: whether this player's table can report ball ends; null = unknown. */
     ballEnds: boolean | null;
   }>;
+  /** A17 step 7 (mirrors main/match-host.ts): the lobby; null with none. */
+  lobby: LobbyView | null;
   /** A13: in the lobby, one line per player whose table cannot report ball ends; not empty = Start match asks to confirm. */
   startWarnings: string[];
   /** I11.4.9: in the lobby, who is still making a 3D connection, for how many seconds at most, and whether this host's start is held for it (`tab`: Start match again starts now). */
@@ -741,8 +773,15 @@ interface CastcadeBridge {
     status(): Promise<MatchStatus>;
     host(opts: { port?: number; ballsPerGame: 3 | 5; displayName: string }): Promise<MatchStatus>;
     join(invite: string, displayName: string): Promise<MatchStatus>;
-    /** Host only: Start match in the lobby; A10: Next game between games. A13: `anyway` confirms a start with `startWarnings`. I11.4.9: while a 3D connection is being made the first call holds the start (`wait3d.armed: 'tab'`), a second starts now. */
-    start(opts?: { anyway?: boolean }): Promise<MatchStatus>;
+    /** A17 step 7: any member asks for a start (the match, or the open match's next game). A13: `anyway` confirms a start with `startWarnings`. `newMatch`: a new match with everyone set to Play; `now`: without what the announced start waits for. */
+    start(opts?: { anyway?: boolean; newMatch?: boolean; now?: boolean }): Promise<MatchStatus>;
+    /** A17 step 7: the lobby's other calls (see main/ipc-types.ts). */
+    cancelStart(): Promise<MatchStatus>;
+    endMatch(): Promise<MatchStatus>;
+    setStance(stance: 'play' | 'watch'): Promise<MatchStatus>;
+    giveUp(): Promise<MatchStatus>;
+    answerAway(answer: 'wait' | 'end_ball' | 'play_on'): Promise<MatchStatus>;
+    playOnWithout(): Promise<MatchStatus>;
     /** A13: host only: end the turn holder's ball at its last known score and grant the next turn. */
     passTurn(): Promise<MatchStatus>;
     /** A17 step 4: the player who is up ends their own ball at the score as it stands; the turn passes. */

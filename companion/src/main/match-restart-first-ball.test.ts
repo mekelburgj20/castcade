@@ -139,6 +139,8 @@ function castcade(name: string, w: WitnessHost, dir?: string): Seat {
     openPort: null,
     // A port the system picks (`host({ port: 0 })`), never a number picked here: `free-port.test-support.ts`.
     ephemeralPort: true,
+    // A17 step 7: every match is in a lobby, and every start of a lobby counts down (5 s in the app); here it is short.
+    lobby: { countdownMs: 20 },
   });
   hosts.push(mh);
   return { mh, dir: d, lock, record: join(d, RESUME_FILE), logs };

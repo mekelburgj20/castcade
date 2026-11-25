@@ -123,6 +123,8 @@ export interface OneStepOptions {
      * I11.4.15: `not3d`: the copy that was started is known not to hold the host's table objects.
      */
     setLaunchNote?(note: string | null, not3d?: boolean): void;
+    /** A17 step 7: this PC has no copy of the lobby's table (true), or has one after all (false): said to the lobby. Absent: never said. */
+    setNoCopy?(noCopy: boolean): void;
     /** I11.4.15: the host's table objects as HELLO_ACK said them (`launch/fork-identity.ts`); null: not said. Absent: never known. */
     hostTableObjects?(): ForkIdentity | null;
     /**
@@ -294,6 +296,10 @@ export function createOneStep(o: OneStepOptions): OneStep {
   const setLaunch = (next: OneStepStatus['launch']): void => {
     if (next.state !== 'starting') clearLaunchTimer();
     launch = next;
+    // A17 step 7 (alpha-match.md section 11.3): the lobby is told when this PC has no copy of its table (the person
+    // is then not counted for a start, and watches), and when it has one after all (a table is open or starting).
+    if (next.state === 'needed') match.setNoCopy?.(true);
+    else if (next.state === 'starting' || next.state === 'running') match.setNoCopy?.(false);
   };
 
   /**
