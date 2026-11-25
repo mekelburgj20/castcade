@@ -140,6 +140,7 @@ $started = $false
 $filterText = 'UDP to and from the router'
 $start = Get-Date
 $stoppedBy = 'the time limit'
+$failed = $null
 try {
     [void](Invoke-Pktmon filter remove)
     $macs = Get-GatewayMacs
@@ -153,10 +154,12 @@ try {
         $filterText = 'all UDP (no router filter could be set): the file grows fast, stop within a few minutes'
     }
 
+    # Set before the change: a profile that fails halfway is still put back (putting back one that was
+    # not changed sets the value it already has).
+    $fwOn = $true
     foreach ($p in $fwBefore) {
         if ([string]$p.LogBlocked -ne 'True') { Set-NetFirewallProfile -Name $p.Name -LogBlocked True }
     }
-    $fwOn = $true
 
     $r = Invoke-Pktmon start --capture --comp nics --pkt-size 256 --file-name $etl --file-size 1024
     if ($r.code -ne 0) { throw ('pktmon did not start: ' + $r.text) }
@@ -189,6 +192,9 @@ try {
     }
     Say ''
 }
+catch {
+    $failed = $_.Exception.Message
+}
 finally {
     $end = Get-Date
     if ($started) { [void](Invoke-Pktmon stop) }
@@ -198,6 +204,13 @@ finally {
             try { Set-NetFirewallProfile -Name $p.Name -LogBlocked $p.LogBlocked } catch { Say ('Could not put back the firewall log setting of profile ' + $p.Name + ': ' + $_.Exception.Message) }
         }
     }
+}
+
+if ($failed) {
+    Say ('The capture stopped on an error: ' + $failed)
+    Say 'pktmon filters and the firewall log setting are back as they were.'
+    if ($Elevated) { [void](Read-Host 'Press Enter to close this window') }
+    exit 1
 }
 
 Say ('Stopped by ' + $stoppedBy + ' after ' + [int]($end - $start).TotalSeconds + ' s. Converting ...')
