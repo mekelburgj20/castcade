@@ -397,8 +397,11 @@ As shipped by companion 0.2.5–0.2.8 (JSON strings, URL-encoded as query params
   fairness design). **Expect `known: null` often:** VR players run community builds (the owner's rig does) and
   many run VPinMAME nightlies. `require_known_build` therefore means: `official` and `panasony` pass by default
   (**owner ruling 2026-10-19: the Panasony VR mod of VPX is allowed even in Sanctioned play**), `nightly` passes
-  by default behind a runner toggle, and `unknown` passes only when the runner has blessed that hash for the
-  tournament (their own, or one several devices report). Never "official only". `cheat` is VPinMAME's per-ROM
+  by default behind a runner toggle, and (widened 2026-11-24 by the owner; ArcAid 2.267.0, W125) any other VPX
+  from 10.8.0 and VPinMAME from 3.6.0 passes by its `version` text whatever the family (the Castcade fork,
+  self-compiled), so Castcade needs no family of its own (F36 dropped; B30 is the companion's wording). An older
+  build, or one with no version, passes only when the runner has blessed that hash for the tournament (their own,
+  or one several devices report). Never "official only". `cheat` is VPinMAME's per-ROM
   cheat option. **Owner ruling 2026-11-24 (Castcade B27.1): it matters in no kind of tournament.** It is the
   checkbox VPinMAME calls "Skip Pinball Startup Test" (a boot shortcut; fairness §5), so it is evidence a reviewer
   may read and never a reason to refuse. As built, ArcAid still refuses `true` in every Sanctioned tournament and flags it in Open play, with
