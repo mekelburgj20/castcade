@@ -957,6 +957,9 @@ export class MatchController {
     // A18: the table's game is running and the match's next game, which it will be, is held for a moment: what it
     // says meanwhile is kept for that game's first grant. If it ends first, it was no game of the match.
     if (this.heldTableStart) {
+      // A second start with no end between (the host started the table's game again): what was kept is the first
+      // game's, and would count as ball 1 of this one.
+      if (ev.kind === 'game_start') this.heldFeed = [];
       if (ev.kind === 'current_scores' || ev.kind === 'ball_end') {
         this.heldFeed.push(ev);
         if (this.heldFeed.length > 200) this.heldFeed.splice(0, this.heldFeed.length - 200);

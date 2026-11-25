@@ -1187,12 +1187,20 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       return false;
     }
   };
-  /** VPX did not get the foreground and it is this PC's turn: the Match tab and the panel say what to do. */
+  /**
+   * VPX did not get the foreground and it is this PC's turn: the Match tab and the panel say what to do. It is the
+   * player's only word of it, so a line that is already up (ball 1's "Press Start on the table", a table-file note)
+   * keeps its place and the hint follows it.
+   */
+  let hintText: string | null = null;
   const showClickHint = (): void => {
     const a = active;
-    if (!a || !a.controller.status().myTurn || a.controller.status().panel.message !== null) return;
+    if (!a || !a.controller.status().myTurn) return;
+    const line = a.controller.status().panel.message;
+    if (line !== null && line.includes(CLICK_TABLE_HINT)) return;
     hintOn = a;
-    a.controller.setMessage(CLICK_TABLE_HINT);
+    hintText = line === null ? CLICK_TABLE_HINT : `${line} · ${CLICK_TABLE_HINT}`;
+    a.controller.setMessage(hintText);
   };
   /**
    * `atGrant` (review 2 of PR 126, A): nobody clicked for this one, so it must not take the keyboard from a player who
@@ -1250,7 +1258,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       if (hintOn === active && (!mine || !castcadeInFront())) {
         const a = hintOn;
         hintOn = null;
-        if (a.controller.status().panel.message === CLICK_TABLE_HINT) queueMicrotask(() => a.controller.setMessage(null));
+        if (a.controller.status().panel.message === hintText) queueMicrotask(() => a.controller.setMessage(null));
+        hintText = null;
       }
     }
     if (active) {
@@ -2813,6 +2822,11 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         emit();
         return status();
       }
+      // I11.4.18: a press on the Match tab left Castcade's window the active one, and the host's first ball is on its
+      // table. Asked for BEFORE the start: the start issues this host's grant inside it, and the request a grant makes
+      // (which is not handed on while the player types) would take the one flight; a Start match pressed with Enter or
+      // Space, or just after typing, would then hand nothing on. The press is the player's own: never asked.
+      if (r.roster().length >= 2) giveVpxFocus('Start match was pressed');
       try {
         r.start();
       } catch (e) {
@@ -2823,8 +2837,6 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       a.relay?.lock().catch((e: unknown) => log.warn(`match: ArcAid did not lock ${a.code} against new joins: ${describeError(e)}`));
       log.info(`match: ${a.code} started with ${r.state.participants.map((p) => p.displayName).join(', ')}`);
       if (warnings.length > 0) log.warn(`match: started anyway (the host confirmed): ${warnings.join(' · ')}`);
-      // I11.4.18: a press on the Match tab left Castcade's window the active one; the host's first ball is on its table.
-      giveVpxFocus('Start match was pressed');
       emit();
       return status();
     },

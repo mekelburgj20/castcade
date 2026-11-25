@@ -1972,12 +1972,19 @@ describe('match host: VPX gets the foreground back from Castcade (I11.4.18, 2026
     const hl = logLines();
     const { H, C } = await pair({ foreground: hw.foreground, log: hl.log });
     expect(hw.w.gives).toBe(0); // hosting and a lobby give nothing: the table is not this match's to play yet
+    // The press itself was a key (Enter or Space on the button), or came half a second after typing: it is still the
+    // player's own press, and it is not asked what they are typing (review 3 of PR 126: the grant the start issues
+    // used to take the one handover, and that one is asked).
+    hw.w.typing = { inField: false, lastKeyAgoMs: 500 };
     await H.mh.start();
     await until(() => H.mh.status().panel?.myTurn === true && C.mh.status().phase === 'playing');
     await until(() => hl.lines.some((l) => l.startsWith('match: gave VPX the foreground (')));
-    // The press and the grant it brings are one moment: one handover.
+    // The press and the grant it brings are one moment: one handover, and it is the press's.
     expect(hw.w.gives).toBe(1);
-    expect(hl.lines.filter((l) => l.includes('VPX the foreground'))).toHaveLength(1);
+    expect(hw.w.asked).toBe(0);
+    expect(hl.lines.filter((l) => l.includes('VPX') && l.includes('foreground'))).toEqual([
+      'match: gave VPX the foreground (Start match was pressed; a Castcade window was the active one, and VPX holds the table still while its own window is not)',
+    ]);
   }, 20_000);
 
   it('a grant that reaches this PC while a Castcade window is the active one gives VPX the foreground; while VPX or a third program is in front nothing is touched', async () => {
@@ -2008,7 +2015,7 @@ describe('match host: VPX gets the foreground back from Castcade (I11.4.18, 2026
     const { H } = await pair({ foreground: hw.foreground, log: hl.log });
     await H.mh.start();
     await until(() => hl.lines.some((l) => l.includes('could not give VPX the foreground')));
-    expect(hl.lines.filter((l) => l.includes('VPX the foreground'))).toEqual(['match: could not give VPX the foreground (the turn came to this PC): no "Visual Pinball Player" window was found. Click the table to play']);
+    expect(hl.lines.filter((l) => l.includes('VPX the foreground'))).toEqual(['match: could not give VPX the foreground (Start match was pressed): no "Visual Pinball Player" window was found. Click the table to play']);
     expect(hw.w.gives).toBe(1);
   }, 20_000);
 
@@ -2059,8 +2066,8 @@ describe('match host: VPX gets the foreground back from Castcade (I11.4.18, 2026
     expect(cl.lines.filter((l) => l.includes('VPX') && l.includes('foreground'))).toEqual([
       'match: VPX was not given the foreground (the turn came to this PC): a field in the Castcade window has the keyboard, and what the player types must not go to the table. Click the table to play',
     ]);
-    // The first ball's own prompt stands; the hint is for a turn that has none.
-    expect(C.mh.status().panel?.message).toBe('Press Start on the table to begin your game');
+    // The first ball's own prompt keeps its place and the hint follows it: it is the player's only word of this.
+    await until(() => C.mh.status().panel?.message === `Press Start on the table to begin your game · ${CLICK_TABLE_HINT}`);
     // The next turn: no field now, but a key 1.2 s ago: the same. This time the panel's line is free and carries the hint.
     await H.mh.passTurn();
     await until(() => H.mh.status().panel?.myTurn === true);
