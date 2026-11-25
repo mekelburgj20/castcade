@@ -612,6 +612,8 @@ interface LobbyView {
   table: { name: string | null; pickedBy: string | null; pickedByName: string | null; off: string | null; endsMatch: boolean; changing: boolean };
   start: { by: string; players: string[]; newMatch: boolean; waitsFor: 'result' | 'tables' | 'other_tables' | 'own_games' | '3d' | null; waitsOn: string[]; seconds: number | null; line: string } | null;
   startButton: { label: 'Start match' | 'Next game'; line: string; off: string | null };
+  /** The Arcaid-look pass: the panel's line as the Match tab says it (without the in-game menu's way to its Start); null: none (controller.ts `LobbyStatus.tabLine`). */
+  tabLine: string | null;
   newMatch: { line: string; warnings: string[] } | null;
   /** What a press about the match is made against: the open match, its game, and whether it is being played ('' : no match). */
   gameKey: string;

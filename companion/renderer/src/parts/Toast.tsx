@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useMemo, useRef, useState, type AnimationEvent, type CSSProperties, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type AnimationEvent, type CSSProperties, type ReactNode } from 'react';
 
 /**
  * The Arcaid look (2026-11-25): Castcade's toast, on the model of Arcaid's toast (G23, ADR 0042: Arcaid's own look,
@@ -7,8 +7,9 @@ import { createContext, useCallback, useContext, useMemo, useRef, useState, type
  * as the status mark and a chrome pinball on a lit rail as the clock.
  *
  * The rules are Arcaid's: an ERROR stays until Dismiss (a long refusal must not vanish before it is read); success and
- * info clear after 4 s, when the rail's animation ends, so the clock stops while the pointer is over the toasts or the
- * focus is in them; at most three are on screen (the newest). Errors are `role="alert"`; the others are read from the
+ * info clear after 4 s, when the rail's animation ends, so the clock stops while the pointer is over the toasts, the
+ * focus is in them or the window is hidden (in the tray, minimised: `visibilitychange`); at most three are on screen
+ * (the newest). Errors are `role="alert"`; the others are read from the
  * polite live region they appear in.
  *
  * For a message that reports the result of a press made somewhere the result line would not be seen (Settings: a
@@ -101,6 +102,13 @@ function Toast({ item, onDismiss }: { item: ToastItem; onDismiss: (id: number) =
 export function useToaster(): { api: ToastApi; overlay: ReactNode } {
   const [items, setItems] = useState<ToastItem[]>([]);
   const next = useRef(1);
+  // The clock stops while the window is hidden: a toast raised as Castcade goes to the tray is still there when it comes back.
+  const [hidden, setHidden] = useState(() => typeof document !== 'undefined' && document.hidden);
+  useEffect(() => {
+    const seen = () => setHidden(document.hidden);
+    document.addEventListener('visibilitychange', seen);
+    return () => document.removeEventListener('visibilitychange', seen);
+  }, []);
   const dismiss = useCallback((id: number) => setItems((all) => all.filter((t) => t.id !== id)), []);
   const api = useMemo<ToastApi>(
     () => ({
@@ -112,7 +120,7 @@ export function useToaster(): { api: ToastApi; overlay: ReactNode } {
     [],
   );
   const overlay = (
-    <section className="cc-toasts" aria-label="Notifications" aria-live="polite">
+    <section className={hidden ? 'cc-toasts cc-toasts--paused' : 'cc-toasts'} aria-label="Notifications" aria-live="polite">
       {items.map((t) => (
         <Toast key={t.id} item={t} onDismiss={dismiss} />
       ))}

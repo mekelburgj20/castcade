@@ -197,6 +197,13 @@ export interface LobbyStatus {
   start: { by: PlayerId; players: PlayerId[]; newMatch: boolean; waitsFor: 'result' | 'tables' | 'other_tables' | 'own_games' | '3d' | null; waitsOn: PlayerId[]; seconds: number | null; line: string } | null;
   /** The start button: its words, the line that says what a press does, and why it cannot be pressed now (null: it can). */
   startButton: { label: 'Start match' | 'Next game'; line: string; off: string | null };
+  /**
+   * The Arcaid-look pass (2026-11-25): the panel's line (`PanelState.message`) as the Match tab says it, beside the
+   * tab's own Start button: without the way to the same press in the in-game menu ("To start it yourself: Start match
+   * in the menu", "(or Start match in the menu)", "Start match in the menu starts it", "… starts it once they are
+   * there"). The menu and the headset keep their line. Null: the tab says no line.
+   */
+  tabLine: string | null;
   /** "Start a new match": there while a match is open between games and somebody outside it is set to Play. */
   newMatch: { line: string; warnings: string[] } | null;
   /** While a start waits for people or for 3D: the words of the second press ("Start without Dana"). Null: none. */
@@ -3539,7 +3546,7 @@ export class MatchController {
   }
 
   /** The lobby's line while no game is played and no start counts down (design 11.9): who starts, and how. */
-  private lobbyLine(): string {
+  private lobbyLine(forTab = false): string {
     const a = this.ack;
     const me = this.localId;
     const over = this.matchOver !== null && this.opts.now() < this.matchOver.until ? `${this.matchOver.line} · ` : '';
@@ -3578,18 +3585,23 @@ export class MatchController {
       // asked (the lobby's table is offered to it: another table is open there, or none) is waited for in those words.
       const moving = (a.tableChange ?? []).some((x) => x.state === 'closing' || x.state === 'opening');
       const way = moving ? `The table is being changed: waiting for ${this.namesOf(onWay)}` : `Waiting for ${this.namesOf(onWay)} to open the lobby's table`;
-      if (starter === me) return `${over}${way}. A start waits for them (start a game on your table, or ${word} in the menu)${warned}`;
-      if (starter !== null) return `${over}${way}. ${this.nameOf(starter)} starts ${between ? 'the next game' : 'the match'} from their table. To start it yourself: ${word} in the menu${warned}`;
-      return `${over}${way}. ${word} in the menu starts it once they are there${warned}`;
+      // The Arcaid-look pass: on the Match tab (`forTab`), beside its own Start button, the way to it in the menu is not said.
+      if (starter === me) return `${over}${way}. A start waits for them (start a game on your table${forTab ? '' : `, or ${word} in the menu`})${warned}`;
+      if (starter !== null) return `${over}${way}. ${this.nameOf(starter)} starts ${between ? 'the next game' : 'the match'} from their table${forTab ? '' : `. To start it yourself: ${word} in the menu`}${warned}`;
+      return `${over}${way}${forTab ? '' : `. ${word} in the menu starts it once they are there`}${warned}`;
     }
     // A12's rule, for the starter: a game that is running on their table is their own; the next Start on it asks.
-    if (starter === me && this.ownGameSaid) return `${over}${between ? 'Next game' : 'Everyone in?'}${between ? ':' : ''} Finish the game on your table, then start a game on it (or ${word} in the menu)${loads}${warned}`;
-    if (starter === me) return `${over}${between ? 'Next game: start a game on your table' : 'Everyone in? Start a game on your table'} (or ${word} in the menu)${loads}${warned}`;
+    const orMenu = forTab ? '' : ` (or ${word} in the menu)`;
+    if (starter === me && this.ownGameSaid) return `${over}${between ? 'Next game' : 'Everyone in?'}${between ? ':' : ''} Finish the game on your table, then start a game on it${orMenu}${loads}${warned}`;
+    if (starter === me) return `${over}${between ? 'Next game: start a game on your table' : 'Everyone in? Start a game on your table'}${orMenu}${loads}${warned}`;
     if (starter !== null) {
       const who = this.nameOf(starter);
-      return `${over}${between ? `Next game: ${who} starts a game on their table` : `${who} starts the match from their table`}. To start it yourself: ${word} in the menu${loads}${warned}`;
+      return `${over}${between ? `Next game: ${who} starts a game on their table` : `${who} starts the match from their table`}${forTab ? '' : `. To start it yourself: ${word} in the menu`}${loads}${warned}`;
     }
-    return `${over}${word} in the menu starts it${loads}${warned}`;
+    // Nobody starts from a table: the panel says the menu's way; the tab has the button itself, and says only what is left.
+    if (!forTab) return `${over}${word} in the menu starts it${loads}${warned}`;
+    const rest = `${loads}${warned}`.replace(/^ · /, '');
+    return over && rest ? `${over}${rest}` : over ? over.replace(/ · $/, '') : rest;
   }
 
   /** The lobby for the Match tab and the menu (`ControllerStatus.lobby`); null when the role is no lobby's. */
@@ -3671,6 +3683,7 @@ export class MatchController {
       gameKey: match ? `${match.matchId}/${match.game}/${match.state}` : '',
       start: s ? { by: s.by, players: [...s.players], newMatch: s.newMatch, waitsFor: s.waitsFor, waitsOn: [...s.waitsOn], seconds: s.waitsFor === null ? this.countdownSeconds() : null, line: this.startLine() ?? '' } : null,
       startButton: { label: between ? 'Next game' : 'Start match', line: line === '' ? '' : `${line}${waits}`, off },
+      tabLine: this.panelMessage(true),
       newMatch:
         outside.length > 0 && everyone.length >= 2 && s === null && !this.seriesOver && !this.hostIsAway
           ? { line: `${this.namesOf(outside, own)} ${outside.length === 1 ? 'plays' : 'play'} too. The match that is open ends${endsAt ? ` at ${endsAt}` : ''}.`, warnings: this.unreadableLines(this.unreadableAmong(everyone)) }
@@ -4021,7 +4034,8 @@ export class MatchController {
     };
   }
 
-  private panelMessage(): string | null {
+  /** `forTab`: the Match tab's version of the lobby's line (`LobbyStatus.tabLine`); everything else is the same line. */
+  private panelMessage(forTab = false): string | null {
     // A17 step 1: a lobby this PC has lost says so, over anything else (`onLobbyLost`).
     if (this.phase === 'lobby' && this.seriesOver) return this.seriesOverLine;
     // A17 step 7: a lobby that is over says so in every phase; and the lobby's PC away is the line that matters.
@@ -4068,7 +4082,9 @@ export class MatchController {
     // A17 step 7: outside a game a lobby's line says who starts and how; a table that differs is said after it.
     if (this.lobbyOn && (this.phase === 'lobby' || this.phase === 'over')) {
       const tables = [...byWhat].map(([what, who]) => `${what}: ${who.join(', ')}`).join(' · ');
-      return `${this.lobbyLine()}${tables ? ` · ${tables}${this.phase === 'lobby' && this.files3d ? ` · ${FILES_GIVE_3D}` : ''}` : ''}${this.lobbyNote ? ` · ${this.lobbyNote}` : ''}`;
+      const said = `${this.lobbyLine(forTab)}${tables ? ` · ${tables}${this.phase === 'lobby' && this.files3d ? ` · ${FILES_GIVE_3D}` : ''}` : ''}${this.lobbyNote ? ` · ${this.lobbyNote}` : ''}`;
+      // (The tab's line can be empty where the panel's was only the menu's way: then it says nothing.)
+      return forTab ? said.replace(/^ · /, '') || null : said;
     }
     // A13: in the lobby a table that cannot report ball ends is the line that matters (the lobby line names it).
     if (byWhat.size > 0 && this.phase !== 'over' && !(this.phase === 'lobby' && (this.loadingIds.length > 0 || this.unreadableIds().length > 0 || (this.wait3dStatus().armed !== null && this.wait3dNow().ids.length > 0)))) {

@@ -161,6 +161,8 @@ function real(c: MatchController): unknown {
     phase: st.phase,
     header: still(headerText(p)),
     message: still(p.message),
+    // The Arcaid-look pass: the line the Match tab says (beside its own Start, without the menu's way to it).
+    tabLine: still(l.tabLine),
     stance: l.stance,
     starter: l.starter,
     members: l.members.map((m) => `${m.id} ${m.stance}${m.inMatch ? ' in' : ''}${m.flags.length > 0 ? ` [${m.flags.join(' ')}]` : ''}`),
@@ -199,6 +201,8 @@ function told(st: any): unknown {
     phase: st.phase,
     header: still(headerText(p)),
     message: still(p.message),
+    // The Arcaid-look pass: the line the Match tab says (beside its own Start, without the menu's way to it).
+    tabLine: still(l.tabLine),
     stance: l.stance,
     starter: l.starter,
     members: l.members.map((m: any) => `${m.id} ${m.stance}${m.inMatch ? ' in' : ''}${m.flags.length > 0 ? ` [${m.flags.join(' ')}]` : ''}`),
@@ -552,7 +556,7 @@ describe('the story fixtures say what the controller says (A17 step 9)', () => {
     // ---- states that are a lobby as above, with a sentence of the shell's over it (held in main/story-fixtures-shell.test.ts)
     {
       const r = await lobby(['krobs'], TABLE);
-      check('cannot-save', r.seats['owner'], ['message']);
+      check('cannot-save', r.seats['owner'], ['message', 'tabLine']);
       const q = await lobby(['krobs', 'chuck', 'dana'], TABLE);
       check('relay-waiting', q.seats['owner']);
     }

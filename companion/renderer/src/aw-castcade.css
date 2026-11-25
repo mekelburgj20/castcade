@@ -1139,7 +1139,8 @@ input[type="range"].cc-range {
   }
 }
 .cc-toasts:hover .cc-toast__run,
-.cc-toasts:focus-within .cc-toast__run {
+.cc-toasts:focus-within .cc-toast__run,
+.cc-toasts--paused .cc-toast__run {
   animation-play-state: paused;
 }
 /* A neon tube striking: two flickers, then steady. Only for those who have not asked for less. */
@@ -1311,6 +1312,13 @@ input[type="range"].cc-range {
   font-weight: 700;
   letter-spacing: 0.02em;
 }
+/* A name in a standing (Game N, Series, Final standing): whole, wrapping as it needs (the review of PR 144, finding 5). */
+.cc-name {
+  font-family: var(--aw-font-display);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  overflow-wrap: anywhere;
+}
 .cc-flag {
   color: var(--cc-lead-ink);
   font-weight: 600;
@@ -1410,11 +1418,53 @@ select.cc-listbox:focus-visible {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
-/* A choice of two that holds (Play / Watch): the one that holds is lit. */
-.cc-btn[aria-pressed="true"] {
-  border-color: color-mix(in srgb, var(--cc-lead) 55%, transparent);
-  background: color-mix(in srgb, var(--cc-lead) 14%, transparent);
-  color: var(--cc-lead-ink);
+/* A choice of two that holds (Play / Watch): one segmented control. The one that holds carries a check and is lit
+   in the fine colour (cyan), never the lead's: it is a state, not a second primary button (the review of PR 144). */
+.cc-seg {
+  display: inline-flex;
+  border: 1px solid var(--cc-line-strong);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.cc-seg__opt {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  margin: 0;
+  padding: 5px 12px;
+  border: 0;
+  background: transparent;
+  font-family: var(--aw-font-ui);
+  font-weight: 600;
+  font-size: var(--cc-fs-small);
+  letter-spacing: 0.02em;
+  color: var(--aw-chrome);
+  cursor: pointer;
+  transition: background-color 0.15s, color 0.15s;
+}
+.cc-seg__opt + .cc-seg__opt {
+  border-left: 1px solid var(--cc-line-strong);
+}
+.cc-seg__opt:hover:not(:disabled) {
+  color: var(--aw-ice);
+}
+.cc-seg__opt[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--aw-cyan) 16%, transparent);
+  color: var(--aw-ice);
+}
+.cc-seg__opt[aria-pressed="true"]::before {
+  content: "\2713";
+  color: var(--aw-cyan);
+  font-weight: 700;
+}
+.cc-seg__opt:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.cc-seg__opt:focus-visible {
+  outline: 2px solid var(--aw-cyan);
+  outline-offset: -2px;
 }
 
 /* ---------- The space between a panel's blocks ----------

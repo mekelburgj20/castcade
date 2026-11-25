@@ -136,7 +136,9 @@ export function Match({ state }: { state: CastcadeState }) {
    * "Castcade found no copy of the lobby's table" under the card at the top that says it, with what to do. (Under the
    * headline WAITING FOR CHUCK the line is where the game waits and the way on: controller.ts, not the same words.)
    */
-  const message = panel?.message ?? null;
+  // The Arcaid-look pass: in a lobby the controller gives this tab its own line (`tabLine`: beside the tab's Start button,
+  // without the in-game menu's way to it); the menu and the headset keep theirs.
+  const message = (st.lobby ? st.lobby.tabLine : (panel?.message ?? null)) || null;
   const shownMessage =
     message !== null &&
     !st.advisories.some((line) => message.includes(line)) &&
@@ -149,21 +151,7 @@ export function Match({ state }: { state: CastcadeState }) {
   // The step 9 last pass: the line beside Start match says the start waits for tables that are not open yet; where the
   // line above it says so already (with whose), it is not said twice.
   const startLine = st.lobby ? (shownMessage?.includes('A start waits for') ? st.lobby.startButton.line.replace(/ A start waits for the tables? that (is|are) not open yet\.$/, '') : st.lobby.startButton.line) : '';
-  // The Arcaid-look pass (2026-11-25): beside this tab's own Start match (or Next game) button, the panel's way to the
-  // same press in the menu ("To start it yourself: Start match in the menu", the starter's "(or Start match in the
-  // menu)") is not said: the menu and the headset keep it.
-  const tabMessage =
-    shownMessage !== null && st.lobby && !st.lobby.start
-      ? shownMessage.replace(/\. To start it yourself: (?:Start match|Next game) in the menu/, '').replace(/ \(or (?:Start match|Next game) in the menu\)/, '')
-      : shownMessage;
-  // The row of the game's own presses, drawn only when it holds one (it stood empty, a band of space, in a lobby).
-  const hasControls =
-    (st.role === 'host' && st.phase === 'paused' && !st.transfer && st.canResume) ||
-    (st.role === 'host' && (st.phase === 'playing' || st.phase === 'paused') && !!st.pass) ||
-    (st.phase === 'playing' && !!st.endBall) ||
-    !!st.lobby?.giveUp ||
-    st.lobby?.end === 'match' ||
-    st.lobby?.end === 'everyone';
+  const controls = hasControls(st);
 
   const copyInvite = () => {
     if (!st.invite) return;
@@ -249,7 +237,9 @@ export function Match({ state }: { state: CastcadeState }) {
           return (
             <tr key={p.id} className={row?.isUp ? 'up' : ''}>
               <td>
-                <span className="cc-who">{p.name}</span>
+                <span className="cc-who" title={p.name}>
+                  {p.name}
+                </span>
                 {p.id === st.localId ? ' (you)' : ''}
                 {/* A17 step 9: in a lobby, who opened it is said in the lobby's first line: the row keeps to one line. */}
                 {!st.lobby && p.id === st.hostId ? ' · host' : ''}
@@ -281,7 +271,9 @@ export function Match({ state }: { state: CastcadeState }) {
             .map((x) => (
               <tr key={x.id} className={x.isUp ? 'up' : ''}>
                 <td>
-                  <span className="cc-who">{x.name}</span>
+                  <span className="cc-who" title={x.name}>
+                    {x.name}
+                  </span>
                   <span className="cc-quiet"> · left the lobby</span>
                 </td>
                 <td>
@@ -522,11 +514,11 @@ export function Match({ state }: { state: CastcadeState }) {
               {/* D10.8: which path the match control takes (a lobby says it in its own line). */}
               {!st.lobby && st.path && <p className="cc-help">{st.path}</p>}
               {/* The panel's line, where this tab shows it (`shownMessage`; beside the tab's Start, without the menu's way to it). */}
-              {tabMessage !== null &&
-                (tabMessage.startsWith('different') || tabMessage.includes('cannot report ball ends') || tabMessage.startsWith('The lobby is closed') || tabMessage.startsWith('The lobby is over') || st.lobby?.hostAway ? (
-                  <Note state="attention">{awayClock(st, tabMessage, now)}</Note>
+              {shownMessage !== null &&
+                (shownMessage.startsWith('different') || shownMessage.includes('cannot report ball ends') || shownMessage.startsWith('The lobby is closed') || shownMessage.startsWith('The lobby is over') || st.lobby?.hostAway ? (
+                  <Note state="attention">{awayClock(st, shownMessage, now)}</Note>
                 ) : (
-                  <p className="cc-text cc-quiet">{awayClock(st, tabMessage, now)}</p>
+                  <p className="cc-text cc-quiet">{awayClock(st, shownMessage, now)}</p>
                 ))}
               {/* B26: the Midnight Madness setting when it is ON on a table, and the balls of this game it ran on (a flag only). */}
               {st.advisories.map((line) => (
@@ -678,7 +670,7 @@ export function Match({ state }: { state: CastcadeState }) {
                   })}
                 </div>
               )}
-              {hasControls && (
+              {controls && (
                 <div className="cc-row">
                   {/* The final review (finding 3): only a pause that a press ends. While the game waits for a member who is away,
                       Resume did nothing, or took the turn of the player who is up: what helps then is on the row above. */}
@@ -803,16 +795,22 @@ export function Match({ state }: { state: CastcadeState }) {
               {/* The final review (finding 9): what End match does, in sight (it was a tooltip; the one press of that row with no question). */}
               {st.lobby?.end === 'match' && <small className="cc-help">End match closes the tally. Everyone stays in the lobby.</small>}
               {/* A17 step 7: this person's own choice for the next start. Step 9: the two stand side by side and do not move; the one that holds is the lit one. */}
+              {/* The review of PR 144 (finding 7): a segmented choice, not two buttons: the one that holds is marked (a check
+                  and `aria-pressed`) in the fine colour, never the lead's, so it is not a second primary beside Start match. */}
               {st.lobby && !st.lobby.over && (
                 <div className="cc-line">
-                  <span className="cc-text">In the next match I</span>
+                  <span className="cc-text" id="match-stance-label">
+                    In the next match I
+                  </span>
                   <span className="cc-row">
-                    <Button size="sm" variant="secondary" aria-pressed={st.lobby.stance === 'play'} disabled={busy} onClick={() => void run(() => bridge.match.setStance('play'))}>
-                      Play
-                    </Button>
-                    <Button size="sm" variant="secondary" aria-pressed={st.lobby.stance === 'watch'} disabled={busy} onClick={() => void run(() => bridge.match.setStance('watch'))}>
-                      Watch
-                    </Button>
+                    <span className="cc-seg" role="group" aria-labelledby="match-stance-label">
+                      <button type="button" className="cc-seg__opt" aria-pressed={st.lobby.stance === 'play'} disabled={busy} onClick={() => void run(() => bridge.match.setStance('play'))}>
+                        Play
+                      </button>
+                      <button type="button" className="cc-seg__opt" aria-pressed={st.lobby.stance === 'watch'} disabled={busy} onClick={() => void run(() => bridge.match.setStance('watch'))}>
+                        Watch
+                      </button>
+                    </span>
                   </span>
                 </div>
               )}
@@ -896,7 +894,7 @@ export function Match({ state }: { state: CastcadeState }) {
                       {st.lobby.lastMatch.standing.map((x, i) => (
                         <tr key={x.id}>
                           <td className={placeClass(i + 1)}>
-                            {i + 1}. <span className="cc-who">{x.name}</span>
+                            {i + 1}. <span className="cc-name">{x.name}</span>
                           </td>
                           <td className="num">{x.wins}</td>
                           <td className={`num ${placeClass(i + 1)}`}>{x.total.toLocaleString()}</td>
@@ -917,7 +915,7 @@ export function Match({ state }: { state: CastcadeState }) {
                     {panel.result.map((r) => (
                       <tr key={r.id}>
                         <td className={placeClass(r.place)}>
-                          {r.place}. <span className="cc-who">{r.name}</span>
+                          {r.place}. <span className="cc-name">{r.name}</span>
                           {r.flags?.includes('midnight') && <span className="cc-flag"> · Midnight Madness ran</span>}
                         </td>
                         <td className={`num ${placeClass(r.place)}`}>{r.score.toLocaleString()}</td>
@@ -944,7 +942,7 @@ export function Match({ state }: { state: CastcadeState }) {
                     {panel.series.map((s) => (
                       <tr key={s.id}>
                         <td className={placeClass(s.place)}>
-                          {s.place}. <span className="cc-who">{s.name}</span>
+                          {s.place}. <span className="cc-name">{s.name}</span>
                         </td>
                         <td className="num">{s.wins}</td>
                         <td className="num">{s.games}</td>
@@ -1301,6 +1299,22 @@ export function Match({ state }: { state: CastcadeState }) {
   );
 }
 
+/**
+ * The row of the game's own presses (Resume, Pass the turn, End my ball, Give up this game, End match, End match for
+ * everyone) is drawn only when it holds one of them: it stood empty, a band of space, in a lobby. Each term is one
+ * button's own condition.
+ */
+export function hasControls(st: MatchStatus): boolean {
+  return (
+    (st.role === 'host' && st.phase === 'paused' && !st.transfer && st.canResume) ||
+    (st.role === 'host' && (st.phase === 'playing' || st.phase === 'paused') && !!st.pass) ||
+    (st.phase === 'playing' && !!st.endBall) ||
+    !!st.lobby?.giveUp ||
+    st.lobby?.end === 'match' ||
+    st.lobby?.end === 'everyone'
+  );
+}
+
 /** The kit's board: first place pink, second cyan. */
 function placeClass(place: number): string {
   return place === 1 ? 'cc-place-1' : place === 2 ? 'cc-place-2' : '';
@@ -1493,11 +1507,12 @@ function endBallKey(st: MatchStatus): string {
  * the opener's: the code, the link, and the line for a chat. A member of a lobby reached by address has none of
  * them (that invite is the address of the opener's PC, and stays the opener's to give), and is told so.
  */
-function LobbyInvite({ bridge, st, one }: { bridge: CastcadeBridge; st: MatchStatus; one: OneStepStatus | null }) {
+export function LobbyInvite({ bridge, st, one }: { bridge: CastcadeBridge; st: MatchStatus; one: OneStepStatus | null }) {
   const [copied, setCopied] = useState<'code' | 'link' | 'message' | null>(null);
   const [error, setError] = useState<string | null>(null);
   // The Arcaid-look pass (2026-11-25): once somebody has joined, the invite is its Copy buttons (the link and how to
-  // send it open under Invite); alone, it is open. What went wrong with it is said either way.
+  // send it open under Invite); alone, it is open. What went wrong with it is said either way. The part that opens is
+  // always there, hidden while closed, so the toggle's `aria-controls` names an element (the review of PR 144, finding 2).
   const [open, setOpen] = useState<boolean | null>(null);
   if (!st.lobby || st.lobby.over) return null;
   const done = (what: 'code' | 'link' | 'message') => {
@@ -1540,8 +1555,7 @@ function LobbyInvite({ bridge, st, one }: { bridge: CastcadeBridge; st: MatchSta
       </div>
       {st.via === 'relay' ? (
         <>
-          {shown && (
-            <div id="lobby-invite-more" className="cc-stack">
+          <div id="lobby-invite-more" className="cc-stack" hidden={!shown}>
               {link && <code className="cc-mono">{link}</code>}
               <p className="cc-help">
                 {/* The step 9 last pass: "with the table started" only while the lobby has a table to start. */}
@@ -1552,21 +1566,18 @@ function LobbyInvite({ bridge, st, one }: { bridge: CastcadeBridge; st: MatchSta
                   For a player on your home network or one who is not paired (needs TCP {st.port} forwarded for players outside): <code className="cc-mono">{st.directInvite}</code>
                 </p>
               )}
-            </div>
-          )}
+          </div>
           {/* The review of PR 136: this PC's own connection to ArcAid is away: said here, on the tab of the PC it is about. */}
           {/* Step 9: not when the sentence at the top of the tab already says it (Castcade started again and waits for ArcAid). */}
           {st.relayNote && !(st.lastError ?? '').includes('waiting for ArcAid') && <Note state="attention">{st.relayNote}.</Note>}
         </>
       ) : (
         <>
-          {shown && (
-            <div id="lobby-invite-more" className="cc-stack">
+          <div id="lobby-invite-more" className="cc-stack" hidden={!shown}>
               <code className="cc-mono">{invite}</code>
               {st.portMapping ? st.portMapping.state !== 'failed' && <p className="cc-help">{st.portMapping.line}</p> : <p className="cc-help">Forward TCP {st.port} to this PC on your router, then send the invite to the others.</p>}
               {st.relayNote && <p className="cc-help">{st.relayNote}: a PC paired with ArcAid needs no port forward.</p>}
-            </div>
-          )}
+          </div>
           {st.portMapping?.state === 'failed' && <Note state="attention">{st.portMapping.line}</Note>}
           {st.ipSource === 'lan' && <Note state="attention">Castcade could not look up your public address, so this is your home-network address. For a player outside your network, replace it with your public address.</Note>}
         </>
@@ -1580,7 +1591,7 @@ function LobbyInvite({ bridge, st, one }: { bridge: CastcadeBridge; st: MatchSta
  * A member's row after the name (design 11.9: "Krobs · VR · PLAY · LOADING"): the words, and apart from them what is
  * wrong or special about the row (drawn in the warning colour, so an AWAY or a NO TABLE is seen at a glance).
  */
-function memberWords(st: MatchStatus, id: string, now: number): { text: string; flags: string[] } {
+export function memberWords(st: MatchStatus, id: string, now: number): { text: string; flags: string[] } {
   const m = st.lobby?.members.find((x) => x.id === id);
   if (!m) return { text: '', flags: [] };
   // Design 11.9: "Dana · PC · PLAY · AWAY 0:42": for how long, as this PC has known it.
