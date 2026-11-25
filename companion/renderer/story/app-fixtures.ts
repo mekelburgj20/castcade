@@ -187,6 +187,8 @@ export const STATUS_BASIC: any = {
   captureMode: 'basic',
   note: 'Congo (Williams 1995) is not patched: only the last game of this session will post. Press Patch now (or Settings → Import tables → Patch my tables), then relaunch the table.',
   patchNow: { table: 'Congo (Williams 1995)', vpxPath: `${TABLES_DIR}\\Congo (Williams 1995) 1.1.vpx` },
+  // A6.3: AskToTurnOn = 1 beside the exe, with OpenComposite's openvr_api dll (held by story-app-fixtures.test.ts).
+  vrSetupWarning: 'VPX will show an OpenComposite error and start on the desktop: set AskToTurnOn = 0 under [PlayerVR] in VPinballX.ini (the file beside VPinballX64.exe), with VPX closed.',
   attempt: { key: 'congo', state: 'no_match', n: null, of: null, remaining: null, late: false, game: 'Congo', text: 'This table needs Start attempts: press the button on Status, then start a new game.', needsStart: true },
   attemptStart: { at: at(-3), status: 'not_open', text: 'No tournament of yours limits attempts on this table right now' },
   queued: 2,
@@ -376,7 +378,7 @@ export const FIXTURES: Record<string, AppFixture> = {
   'status-loading': { says: 'Status before the witness module has answered (the loading state)', tab: 'Status', status: null },
   'status-live': { says: 'Status, paired and watching, Monster Bash open in live mode, a score posted earlier', tab: 'Status', status: STATUS_LIVE },
   'status-empty': { says: 'Status, paired and watching, VPX not open and nothing captured yet (the empty state)', tab: 'Status', status: STATUS_EMPTY },
-  'status-basic': { says: 'Status, Congo open in basic mode (Patch now offered), Start attempts needed, a refused post, a heartbeat error', tab: 'Status', status: STATUS_BASIC },
+  'status-basic': { says: 'Status, Congo open in basic mode (Patch now offered), the AskToTurnOn warning, Start attempts needed, a refused post, a heartbeat error', tab: 'Status', status: STATUS_BASIC },
   'status-unpaired': { says: 'Status, not paired and paused, the last table read only at close (Patch now offered)', tab: 'Status', status: STATUS_UNPAIRED },
   'status-ambiguous': { says: 'Status, a table Castcade is not sure of: the picker asks which one it is', tab: 'Status', status: STATUS_AMBIGUOUS },
   'stream-idle': { says: 'Stream, nothing running, a key saved, the OBS overlay running', tab: 'Stream', status: STATUS_LIVE, stream: STREAM_IDLE, streamSettings: STREAM_SETTINGS, preview: PREVIEW_OFF, overlay: OVERLAY_URL },

@@ -6,6 +6,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { ArcaidError } from '../witness/arcaid-client.js';
+import { askToTurnOnWarning } from '../witness/ask-to-turn-on.js';
 import { EXIT_RUNG_LETTER, exitRungFor } from '../witness/exit-rung.js';
 import { attemptStartText, attemptStatusFor, logsNotSentText, NEEDS_START_TEXT } from '../witness/witness.js';
 import { PREVIEW_OVERLAPS } from './stream-host.js';
@@ -23,6 +24,12 @@ describe('the app tabs` story fixtures say what the app says (the review of PR 1
     expect(live.attempt.text).toBe(attemptStatusFor('mb', { state: 'done', wire: null, attempt: { status: 'counted', attempt: 3, of: 5, remaining: 2, late: false, game: live.attempt.game } } as never).text);
     expect(live.attemptStart.text).toBe(attemptStartText({ status: 'started', started: [{ game: 'Monster Bash', alreadyStarted: false }] } as never));
     expect(fx.STATUS_BASIC.attempt.text).toBe(NEEDS_START_TEXT);
+    // A6.3: the warning as the witness words it for a 1 beside the exe and OpenComposite's dll there.
+    const exe: string = fx.STATUS_BASIC.vpxExe;
+    const dir = exe.slice(0, exe.lastIndexOf('\\'));
+    expect(fx.STATUS_BASIC.vrSetupWarning).toBe(
+      askToTurnOnWarning({ value: 1, ini: { kind: 'beside-exe', path: `${dir}\\VPinballX.ini` }, openvr: { kind: 'opencomposite', path: `${dir}\\openvr_api.dll` }, seenRuntime: null }, exe),
+    );
     const close = fx.STATUS_UNPAIRED.lastClose;
     const rung = exitRungFor({ table: close.table, live: null, unpatched: { cls: 'A', clsReason: null, rom: 'afm_113b', patchable: true, support: { readable: true, reason: '' }, noMap: false, hadManifest: false, patchRemoved: false } as never });
     expect(close.text).toBe(rung.note);
