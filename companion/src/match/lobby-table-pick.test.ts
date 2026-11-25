@@ -193,7 +193,7 @@ describe('A17 step 10: a row is compared with the pick on what both sides know',
 });
 
 describe('A17 step 10: where each PC stands on its way to the new table', () => {
-  it('a member says it, every member hears it; null takes it back; a new pick and a member who leaves clear it', async () => {
+  it('a member says it, every member hears it; null takes it back; it stands across a new pick, and goes with a member who leaves', async () => {
     const r = await starLobby(['a', 'b'], { lobby: { pickGapMs: 0, pickMemberGapMs: 0 } });
     expect(r.lobby('a').tableChange).toEqual([]);
     client(r, 'a').pickTable(AFM);
@@ -226,11 +226,16 @@ describe('A17 step 10: where each PC stands on its way to the new table', () => 
     expect(r.lobby('a').start).toMatchObject({ waitsFor: 'other_tables', waitsOn: ['h', 'b'] });
     client(r, 'a').cancelStart();
     await flush();
-    // Another pick: what was said of the table before is over.
+    // Another pick: where a PC stands is its own word until it says otherwise (one that was waiting for its person
+    // still is); a member who leaves takes theirs along.
     expect(r.host.pickTable(MM, 'b')).toBeNull();
     await flush();
-    expect(r.lobby('a').tableChange).toEqual([]);
+    expect(r.lobby('a').tableChange).toEqual([
+      { playerId: 'h', state: 'waits_game' },
+      { playerId: 'b', state: 'waits_person' },
+    ]);
     client(r, 'b').updateParticipant({ tableChange: 'offered' });
+    r.host.updateLocal({ tableChange: null });
     await flush();
     expect(r.host.tableChanges()).toEqual([{ playerId: 'b', state: 'offered' }]);
     client(r, 'b').leave();

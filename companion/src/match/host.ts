@@ -2641,8 +2641,8 @@ export class HostMatch {
     this.pickDefault = false;
     this.pickObjects = objects ? { editables: objects.editables, hash: objects.hash } : null;
     this.pickedBy = by;
-    // What each PC said of the table before is over: each says where it stands with the new one.
-    this.changing.clear();
+    // (Where each PC stands is each PC's own word, and stays until that PC says otherwise: a PC that was closing
+    // its table for the pick before is still closing it, and says nothing new.)
     this.recompareAll();
     this.events.emit('tablePicked', { by, game: { ...next } });
     if (this.s.state.phase === 'ended') this.closeMatch('the table changed');
