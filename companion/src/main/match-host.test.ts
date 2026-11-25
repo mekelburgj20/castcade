@@ -27,6 +27,7 @@ const { ballEndsFrom, CLICK_TABLE_HINT, createMatchHost, matchHalfOf } = await i
 const { createMediaSettingsStore } = await import('../media/media-settings.js');
 const { matchSignalling } = await import('./match-setup.js');
 const { startFakeRelay } = await import('../match/relay-fake.test-support.js');
+const { withFreePort } = await import('./free-port.test-support.js');
 type FakeRelay = Awaited<ReturnType<typeof startFakeRelay>>;
 type PortMapResult = Awaited<ReturnType<NonNullable<Parameters<typeof createMatchHost>[0]['openPort']>>>;
 type MatchHost = ReturnType<typeof createMatchHost>;
@@ -69,6 +70,11 @@ function make(name: string, sha: string, extra: Partial<Parameters<typeof create
     listenAddress: '127.0.0.1',
     // D10.8: no search of the network the tests run on.
     openPort: null,
+    // 2026-11-24: every host of this file listens on a port the system picks (`host({ port: 0 })`, read back from the
+    // status and the invite). The ports the tests used to pick (41000 to 48999, at random) can sit in a range Windows
+    // has reserved since its last boot (EACCES) or be drawn twice by two test files running at once (EADDRINUSE).
+    // The two tests that need a port number of their own get it from `free-port.test-support.ts`, or from a blocker.
+    ephemeralPort: true,
     ...extra,
   });
   hosts.push(mh);
@@ -144,8 +150,10 @@ describe('match host (A6)', () => {
   it('host, join with a different table file (advisory), start: the lock follows the grant; leave unlocks', async () => {
     const H = make('host', 'ab'.repeat(32));
     const C = make('client', 'cd'.repeat(32));
-    const port = 41000 + Math.floor(Math.random() * 2000);
-    const hs = await H.mh.host({ port, ballsPerGame: 3, displayName: 'Hosty' });
+    const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Hosty' });
+    // The port the system gave: in the status, and the one the invite names.
+    const port = hs.port!;
+    expect(port).toBeGreaterThanOrEqual(1024);
     expect(hs).toMatchObject({ role: 'host', phase: 'lobby', ipSource: 'public', port });
     expect(hs.invite).toMatch(new RegExp(`^castcade:ws://127\\.0\\.0\\.1:${port}#[A-Z]{6}$`));
     expect(hs.panel).toMatchObject({ phase: 'idle', message: 'Waiting for players' });
@@ -186,8 +194,7 @@ describe('match host (A6)', () => {
     const ca = fakeAudio();
     const H = make('ta-host', 'ab'.repeat(32), { witness: withPid('ab'.repeat(32), 111), tableAudio: ha.ta });
     const C = make('ta-client', 'ab'.repeat(32), { witness: withPid('ab'.repeat(32), 222), tableAudio: ca.ta });
-    const port = 41000 + Math.floor(Math.random() * 2000);
-    const hs = await H.mh.host({ port, ballsPerGame: 3, displayName: 'Hosty' });
+    const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Hosty' });
     expect(ha.started()).toBe(1); // the helper comes up with the match, before any ball
     expect(ha.last()).toEqual({ mutePid: null, tapPid: null }); // the lobby touches nothing
     await C.mh.join(hs.invite!, 'Krobs');
@@ -221,8 +228,7 @@ describe('match host (A6)', () => {
     const ca = fakeAudio();
     const H = make('hold-host', 'ab'.repeat(32), { witness: hw.w, tableAudio: ha.ta, log: hostLog });
     const C = make('hold-client', 'ab'.repeat(32), { witness: cw.w, tableAudio: ca.ta });
-    const port = 41000 + Math.floor(Math.random() * 2000);
-    const hs = await H.mh.host({ port, ballsPerGame: 3, displayName: 'Hosty' });
+    const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Hosty' });
     await C.mh.join(hs.invite!, 'Krobs');
     await H.mh.start();
     const play =async (mh: MatchHost, seat: { feed: (ev: Feed) => void }, ball: number, score: number): Promise<void> => {
@@ -267,8 +273,7 @@ describe('match host (A6)', () => {
     const cw = playing({ enabled: true, adjustment: 'A.2 14 Special Mode' });
     const H = make('mid-host', 'ab'.repeat(32), { witness: hw.w });
     const C = make('mid-client', 'ab'.repeat(32), { witness: cw.w });
-    const port = 41000 + Math.floor(Math.random() * 2000);
-    const hs = await H.mh.host({ port, ballsPerGame: 3, displayName: 'Hosty' });
+    const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Hosty' });
     await C.mh.join(hs.invite!, 'Krobs');
     // The lobby: the client read its table; the host could not read its own and is left out, not guessed.
     const ON_KROBS = "Midnight Madness is ON on Krobs' table (adjustment A.2 14 Special Mode)";
@@ -330,8 +335,7 @@ describe('match host (A6)', () => {
     const signalling = (role: Parameters<typeof matchSignalling>[0], id: string) => matchSignalling(role, id);
     const H = make('vid-host', 'ab'.repeat(32), { media: media as never, mediaSettings: hostSettings, signalling, log: hostLog, nativeVideo: { helper: hv.helper as never, sendRing: 'HOSTsend_ABCDEFG', recvRing: 'HOSTrecv_ABCDEFG' } });
     const C = make('vid-client', 'ab'.repeat(32), { signalling, nativeVideo: { helper: cv.helper as never, sendRing: 'CLNTsend_ABCDEFG', recvRing: 'CLNTrecv_ABCDEFG' } });
-    const port = 41000 + Math.floor(Math.random() * 2000);
-    const hs = await H.mh.host({ port, ballsPerGame: 3, displayName: 'Hosty' });
+    const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Hosty' });
     expect(hs.videoPath).toBe('native');
     // The helper comes up with the match; the media layer is told the send ring; no sink ring without the OpenXR layer.
     expect(hv.started()).toBe(1);
@@ -438,8 +442,7 @@ describe('match host (A6)', () => {
       const H = make('tp-host', 'ab'.repeat(32), { signalling, nativeVideo: { helper: hv.helper as never, sendRing: 'HOSTsend_ABCDEFG', recvRing: 'HOSTrecv_ABCDEFG' } });
       // The client is a VR rig on Virtual Desktop's OpenXR runtime: its sink is the layer's ring.
       const C = make('tp-client', 'ab'.repeat(32), { witness: liveWitness(VR_VD, VR_OFF).w, media: m.media, vrLayer: layer.overlay, signalling, log: clientLog, nativeVideo: { helper: cv.helper as never, sendRing: 'CLNTsend_ABCDEFG', recvRing: 'CLNTrecv_ABCDEFG' } });
-      const port = 45000 + Math.floor(Math.random() * 2000);
-      const hs = await H.mh.host({ port, ballsPerGame: 3, displayName: 'Hosty' });
+      const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Hosty' });
       await C.mh.join(hs.invite!, 'Krobs');
       const hid = H.mh.status().localId!;
       await until(() => C.mh.status().media?.nativeVideo?.peers[hid]?.ice === 'connected');
@@ -518,8 +521,7 @@ describe('match host (A6)', () => {
     H.mh.setSettings({ voiceVolume: 120, othersTableVolume: 60, myTableWhileUp: 40 });
     expect(volumes.at(-1)).toEqual({ voice: 120, table: 60, note: null });
     expect(ha.levels()).toEqual([]); // no match: nothing levelled
-    const port = 43000 + Math.floor(Math.random() * 2000);
-    const hs = await H.mh.host({ port, ballsPerGame: 3, displayName: 'Hosty' });
+    const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Hosty' });
     // D8.10: the menu's two keys are held with them.
     expect([...held.keys()].sort()).toEqual(['Control+Alt+K', 'Control+Alt+Left', 'Control+Alt+M', 'Control+Alt+Right', 'Control+Alt+Up']);
     await C.mh.join(hs.invite!, 'Krobs');
@@ -747,7 +749,6 @@ function fakeOverlay() {
 }
 
 describe('match host: the rig (A6, 2026-10-31)', () => {
-  const port = (): number => 43000 + Math.floor(Math.random() * 2000);
   const logLines = (): { log: Logger; lines: string[] } => {
     const lines: string[] = [];
     const push = (l: string): number => lines.push(l);
@@ -760,7 +761,7 @@ describe('match host: the rig (A6, 2026-10-31)', () => {
     const o = fakeOverlay();
     const { log, lines } = logLines();
     const H = make('vr', 'ab'.repeat(32), { witness: wit.w, media: m.media, vrOverlay: o.overlay, log });
-    const st = await H.mh.host({ port: port(), ballsPerGame: 3, displayName: 'Owner' });
+    const st = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
     expect(m.calls).toEqual(['setVr true', 'attach vr 0']);
     expect(o.started).toEqual([m.source]);
     expect(st).toMatchObject({ rig: 'vr_headset', rigReason: 'VPX probed now: vrclient loaded, compositor running', vrOverlay: { state: 'showing' } });
@@ -774,7 +775,7 @@ describe('match host: the rig (A6, 2026-10-31)', () => {
     const o = fakeOverlay();
     const { log, lines } = logLines();
     const H = make('late', 'ab'.repeat(32), { witness: wit.w, media: m.media, vrOverlay: o.overlay, log });
-    const st = await H.mh.host({ port: port(), ballsPerGame: 3, displayName: 'Owner' });
+    const st = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
     expect(st).toMatchObject({ rig: 'pc', rigReason: "the witness's sample at 2026-10-31T06:07:40.000Z: vrclient not loaded, compositor running" });
     expect(m.calls).toEqual(['setVr false', 'attach desktop 0', 'showPanel']);
     expect(o.started).toEqual([]);
@@ -815,7 +816,7 @@ describe('match host: the rig (A6, 2026-10-31)', () => {
     const H = make('stereo', 'ab'.repeat(32), { witness: wit.w, media: withStereo });
     expect(told).toEqual(['auto']);
     expect(H.mh.status().previewAdvice).toBeNull(); // no match: no picture sent
-    await H.mh.host({ port: port(), ballsPerGame: 3, displayName: 'Owner' });
+    await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
     // D8.7 (ADR 0009): both eyes gets told to set one eye, whatever the window; one eye is right and gets nothing.
     expect(H.mh.status().previewAdvice).toMatch(/^You are sending both eyes side by side/);
     media = { captureCrop: { width: 1440, height: 1392 }, captureStereo: 'sbs' };
@@ -833,7 +834,7 @@ describe('match host: the rig (A6, 2026-10-31)', () => {
     const m = fakeMedia();
     const H = make('none', 'ab'.repeat(32), { witness: wit.w, media: m.media });
     expect(H.mh.status()).toMatchObject({ rig: 'pc', rigReason: 'no match; decided again when you host or join (no VPX table open to probe; monitor assumed)' });
-    const st = await H.mh.host({ port: port(), ballsPerGame: 3, displayName: 'Owner' });
+    const st = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
     expect(st).toMatchObject({ rig: 'pc', rigReason: 'no VPX table open to probe; monitor assumed', vrRuntime: null });
   });
 
@@ -844,7 +845,7 @@ describe('match host: the rig (A6, 2026-10-31)', () => {
     const layer = fakeOverlay();
     const { log, lines } = logLines();
     const H = make('vd', 'ab'.repeat(32), { witness: wit.w, media: m.media, vrOverlay: o.overlay, vrLayer: layer.overlay, log });
-    const st = await H.mh.host({ port: port(), ballsPerGame: 3, displayName: 'Owner' });
+    const st = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
     expect(m.calls).toEqual(['setVr true', 'attach vr 0']);
     expect(layer.started).toEqual([m.source]);
     // D7.4: the layer gets the video source for theater, and the lobby's mode (the panel) once, before it starts.
@@ -882,7 +883,7 @@ describe('match host: the rig (A6, 2026-10-31)', () => {
     const o = fakeOverlay();
     const layer = fakeOverlay();
     const H = make('vd-late', 'ab'.repeat(32), { witness: wit.w, media: m.media, vrOverlay: o.overlay, vrLayer: layer.overlay });
-    await H.mh.host({ port: port(), ballsPerGame: 3, displayName: 'Owner' });
+    await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
     expect(m.calls).toEqual(['setVr false', 'attach desktop 0', 'showPanel']);
     expect(H.mh.status().vrOverlay).toEqual({ state: 'stopped', reason: null }); // the monitor: the SteamVR helper's (idle) status, as before
     wit.setVr(VR_VD);
@@ -898,7 +899,7 @@ describe('match host: the rig (A6, 2026-10-31)', () => {
     const o = fakeOverlay();
     const { log, lines } = logLines();
     const H = make('vd-nolayer', 'ab'.repeat(32), { witness: wit.w, media: m.media, vrOverlay: o.overlay, log });
-    const st = await H.mh.host({ port: port(), ballsPerGame: 3, displayName: 'Owner' });
+    const st = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
     expect(o.started).toEqual([]);
     expect(st).toMatchObject({ rig: 'vr_headset', vrRuntime: 'virtual-desktop', vrOverlay: null });
     expect(lines).toContain('match: in VR but no OpenXR layer; showing the desktop panel');
@@ -934,7 +935,7 @@ describe('match host: the rig (A6, 2026-10-31)', () => {
     const layer = fakeOverlay();
     const said = asked(layer);
     const H = make('board', 'ab'.repeat(32), { witness: liveWitness(VR_VD, VR_OFF).w, media: b.media, vrLayer: layer.overlay });
-    await H.mh.host({ port: port(), ballsPerGame: 3, displayName: 'Owner' });
+    await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
     expect(H.mh.status().settings).toMatchObject({ scoreboard: true, scoreboardCorner: 'top-right' });
     expect(b.pages).toEqual([true]);
     // D8.12.3: fixed in the room is the default, and rides along with every call.
@@ -962,7 +963,7 @@ describe('match host: the rig (A6, 2026-10-31)', () => {
     const b2 = withBoard(m2);
     const helper = fakeOverlay();
     const H2 = make('board-steam', 'ab'.repeat(32), { witness: liveWitness(VR_ON, VR_OFF).w, media: b2.media, vrOverlay: helper.overlay });
-    await H2.mh.host({ port: port(), ballsPerGame: 3, displayName: 'Owner' });
+    await H2.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
     expect(helper.started).toHaveLength(1);
     expect(b2.pages).toEqual([]);
     await H2.mh.leave();
@@ -973,7 +974,7 @@ describe('match host: the rig (A6, 2026-10-31)', () => {
     const H = make('mics', 'ab'.repeat(32), { witness: liveWitness(null, null).w, media: m.media });
     H.mh.refreshMicrophones();
     expect(m.calls).toEqual(['refreshMicrophones']);
-    await H.mh.host({ port: port(), ballsPerGame: 3, displayName: 'Owner' });
+    await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
     H.mh.refreshMicrophones();
     expect(m.calls.filter((c) => c === 'refreshMicrophones')).toHaveLength(1);
     // A bare media layer (no picker) is fine.
@@ -1014,14 +1015,13 @@ function loadingWitness() {
 }
 
 describe('match host: the lobby refresh (A6, 2026-10-31)', () => {
-  const port = (): number => 45000 + Math.floor(Math.random() * 2000);
   const row = (mh: MatchHost, name: string) => mh.status().participants.find((p) => p.name === name);
 
   it('a client whose table loads after joining: the right rig and no false mismatch on both sides; a real mismatch still flags; after the start nothing changes', async () => {
     const H = make('lobby-host', 'ab'.repeat(32));
     const krobs = loadingWitness();
     const C = make('lobby-client', 'ab'.repeat(32), { witness: krobs.w });
-    const hs = await H.mh.host({ port: port(), ballsPerGame: 3, displayName: 'Owner' });
+    const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
     await C.mh.join(hs.invite!, 'Krobs');
     await until(() => H.mh.status().participants.length === 2);
     // As in the match: joined before the table loaded.
@@ -1053,7 +1053,7 @@ describe('match host: the lobby refresh (A6, 2026-10-31)', () => {
     const owner = loadingWitness();
     const H = make('lobby-host2', 'ab'.repeat(32), { witness: owner.w });
     const C = make('lobby-client2', 'ab'.repeat(32));
-    const hs = await H.mh.host({ port: port(), ballsPerGame: 3, displayName: 'Owner' });
+    const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
     await C.mh.join(hs.invite!, 'Krobs');
     await until(() => H.mh.status().participants.length === 2);
     expect(row(H.mh, 'Krobs')?.tableMatch).toBe(false);
@@ -1070,7 +1070,7 @@ describe('match host: the lobby refresh (A6, 2026-10-31)', () => {
     const krobs = loadingWitness();
     const H = make('late-host', 'ab'.repeat(32), { witness: owner.w });
     const C = make('late-client', 'ab'.repeat(32), { witness: krobs.w });
-    const hs = await H.mh.host({ port: port(), ballsPerGame: 3, displayName: 'Owner' });
+    const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
     await C.mh.join(hs.invite!, 'Krobs');
     await until(() => H.mh.status().participants.length === 2);
     await H.mh.start();
@@ -1094,7 +1094,6 @@ describe('match host: the lobby refresh (A6, 2026-10-31)', () => {
 });
 
 describe('match host: A8 (2026-10-31)', () => {
-  const port = (): number => 47000 + Math.floor(Math.random() * 2000);
   const row = (mh: MatchHost, name: string) => mh.status().participants.find((p) => p.name === name);
   /** Resolves when a TCP connection to the port opens, rejects when it is refused. */
   const probe = (p: number): Promise<void> =>
@@ -1108,8 +1107,7 @@ describe('match host: A8 (2026-10-31)', () => {
     });
 
   it('the listener opens only after the panel is up and the public-IP lookup answered; the invite comes with it', async () => {
-    let answer: (ip: string | null) => void = () => undefined;
-    const ip = new Promise<string | null>((r) => (answer = r));
+    let ip: Promise<string | null> = Promise.resolve(null);
     const shown: string[] = [];
     const media = {
       attach: () => Promise.resolve(),
@@ -1125,30 +1123,38 @@ describe('match host: A8 (2026-10-31)', () => {
       detach: () => Promise.resolve(),
     };
     const H = make('order-host', 'ab'.repeat(32), { publicIp: () => ip, media });
-    const p = port();
-    const hosting = H.mh.host({ port: p, ballsPerGame: 3, displayName: 'Owner' });
-    await new Promise((r) => setTimeout(r, 50));
-    // Still waiting for the address: nobody can connect, no invite, no panel yet.
-    await expect(probe(p)).rejects.toThrow();
-    expect(H.mh.status().invite).toBeNull();
-    expect(shown).toEqual([]);
-    answer(null);
-    const hs = await hosting;
-    expect(shown).toEqual(['panel']);
-    expect(hs.ipSource).toBe('lan');
-    expect(hs.invite).toMatch(new RegExp(`:${p}#[A-Z]{6}$`));
-    await probe(p);
+    // The one test here that must know the port before the listener is up (it probes it while the host still waits):
+    // a port the system says is free now, and the whole step again on another one should the bind be refused after
+    // all (2026-11-24; the host is left as it was by a failed `host()`, the next test's subject).
+    await withFreePort(async (p) => {
+      let answer: (ip: string | null) => void = () => undefined;
+      ip = new Promise<string | null>((r) => (answer = r));
+      shown.length = 0;
+      const hosting = H.mh.host({ port: p, ballsPerGame: 3, displayName: 'Owner' });
+      await new Promise((r) => setTimeout(r, 50));
+      // Still waiting for the address: nobody can connect, no invite, no panel yet.
+      await expect(probe(p)).rejects.toThrow();
+      expect(H.mh.status().invite).toBeNull();
+      expect(shown).toEqual([]);
+      answer(null);
+      const hs = await hosting;
+      expect(shown).toEqual(['panel']);
+      expect(hs.ipSource).toBe('lan');
+      expect(hs.invite).toMatch(new RegExp(`:${p}#[A-Z]{6}$`));
+      await probe(p);
+    });
   }, 15_000);
 
   it('a port already in use: the half-built match is torn down, and hosting again works', async () => {
     const blocker = createServer();
-    const p = port();
-    await new Promise<void>((r) => blocker.listen(p, '127.0.0.1', () => r()));
+    // The system picks the blocker's port, and the host is then asked for exactly that one: taken for certain.
+    await new Promise<void>((r) => blocker.listen(0, '127.0.0.1', () => r()));
+    const p = (blocker.address() as { port: number }).port;
     try {
       const H = make('busy-host', 'ab'.repeat(32));
       await expect(H.mh.host({ port: p, ballsPerGame: 3, displayName: 'Owner' })).rejects.toThrow(/already in use/);
       expect(H.mh.status()).toMatchObject({ role: 'none', phase: 'none', invite: null, locked: false });
-      const hs = await H.mh.host({ port: port(), ballsPerGame: 3, displayName: 'Owner' });
+      const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
       expect(hs.role).toBe('host');
     } finally {
       blocker.close();
@@ -1159,7 +1165,7 @@ describe('match host: A8 (2026-10-31)', () => {
     const H = make('three-host', 'ab'.repeat(32));
     const A = make('three-a', 'cd'.repeat(32));
     const B = make('three-b', 'ab'.repeat(32));
-    const hs = await H.mh.host({ port: port(), ballsPerGame: 3, displayName: 'Owner' });
+    const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
     await A.mh.join(hs.invite!, 'Krobs');
     await B.mh.join(hs.invite!, 'Third');
     await until(() => B.mh.status().participants.length === 3 && A.mh.status().participants.length === 3);
@@ -1191,8 +1197,7 @@ describe('match host: a series (A10, 2026-11-02)', () => {
     const cw = feeding('ab'.repeat(32));
     const H = make('series-host', 'ab'.repeat(32), { witness: hw.w });
     const C = make('series-client', 'ab'.repeat(32), { witness: cw.w });
-    const port = 43000 + Math.floor(Math.random() * 2000);
-    const hs = await H.mh.host({ port, ballsPerGame: 3, displayName: 'Hosty' });
+    const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Hosty' });
     await C.mh.join(hs.invite!, 'Krobs');
     await until(() => H.mh.status().participants.length === 2);
     await H.mh.start();
@@ -1330,8 +1335,7 @@ describe('match host: tables that cannot report ball ends (A13, 2026-11-12)', ()
     const cw = capturing(sha, 'basic');
     const H = make('a13-host', sha, { witness: hw.w });
     const C = make('a13-client', sha, { witness: cw.w });
-    const port = 47000 + Math.floor(Math.random() * 2000);
-    const hs = await H.mh.host({ port, ballsPerGame: 3, displayName: 'Owner' });
+    const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
     // Alone in the lobby the host already reads why its own table will not do.
     expect(hs.panel?.message).toBe(`Waiting for players · Your table cannot report ball ends: ${DARK}`);
     await C.mh.join(hs.invite!, 'Krobs');
@@ -1377,7 +1381,7 @@ describe('match host: tables that cannot report ball ends (A13, 2026-11-12)', ()
   it('with nothing known about any table the start goes as before, with no confirmation', async () => {
     const H = make('a13-plain-host', 'ab'.repeat(32));
     const C = make('a13-plain-client', 'ab'.repeat(32));
-    const hs = await H.mh.host({ port: 47000 + Math.floor(Math.random() * 2000), ballsPerGame: 3, displayName: 'Owner' });
+    const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
     await C.mh.join(hs.invite!, 'Krobs');
     await until(() => H.mh.status().participants.length === 2);
     expect(H.mh.status().startWarnings).toEqual([]);
@@ -1444,9 +1448,10 @@ describe('D10.8 (2026-11-12): match control through ArcAid, and the router port 
     relay: () => ({ baseUrl: r.url, deviceId: `dev-${id}`, deviceToken: token }),
     relayTimeouts: { connectMs: 1500, ackMs: 1500 },
   });
-  // The hosts here listen on a port the OS picks (`host({ port: 0 })` with the `ephemeralPort` seam): a port picked
-  // by the test and bound later can sit in a range Windows has reserved (EACCES on a CI runner).
-  const mk = (name: string, extra: Partial<Parameters<typeof createMatchHost>[0]> = {}) => make(name, 'ab'.repeat(32), { ephemeralPort: true, ...extra });
+  // The hosts here listen on a port the OS picks (`host({ port: 0 })` with the `ephemeralPort` seam, which `make`
+  // sets for the whole file since 2026-11-24): a port picked by the test and bound later can sit in a range Windows
+  // has reserved (EACCES on a CI runner).
+  const mk = (name: string, extra: Partial<Parameters<typeof createMatchHost>[0]> = {}) => make(name, 'ab'.repeat(32), extra);
   const collect = () => {
     const lines: string[] = [];
     const log = { info: (l: string) => lines.push(l), warn: (l: string) => lines.push(l), error: (l: string) => lines.push(l), file: '' } as unknown as Logger;
@@ -2273,7 +2278,7 @@ describe('match host: the in-game menu and the quiet lobby (D8.9 / D8.10, 2026-1
       t += after;
       held.get(acc)!();
     };
-    const hs = await H.mh.host({ port: 43000 + Math.floor(Math.random() * 2000), ballsPerGame: 3, displayName: 'Owner' });
+    const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
     // D8.9: the panel shows at Host, then leaves the table alone once the lobby has been quiet for 8 s.
     expect(o.modes.at(-1)).toBe('panel');
     t += 9000;
@@ -2469,7 +2474,7 @@ describe('match host: the in-game menu and the quiet lobby (D8.9 / D8.10, 2026-1
     };
     const labels = (): string[] => menus.at(-1)!.items.map((i) => i.label);
     const LINE = 'Put the scoreboard where I look';
-    const hs = await H.mh.host({ port: 43000 + Math.floor(Math.random() * 2000), ballsPerGame: 3, displayName: 'Owner' });
+    const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
     await C.mh.join(hs.invite!, 'Krobs');
     await until(() => H.mh.status().participants.length === 2);
     // The lobby has no scoreboard, so no such line.
@@ -2511,7 +2516,7 @@ describe('match host: the in-game menu and the quiet lobby (D8.9 / D8.10, 2026-1
   it('says so when another program holds the menu key', async () => {
     const shortcuts = { register: (acc: string) => acc !== 'Control+Alt+M', unregister: () => undefined };
     const H = make('menu-taken', 'ab'.repeat(32), { shortcuts });
-    const st = await H.mh.host({ port: 43000 + Math.floor(Math.random() * 2000), ballsPerGame: 3, displayName: 'Owner' });
+    const st = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
     expect(st.menuKeyProblem).toBe('Ctrl+Alt+M could not be taken (another program holds it): choose another key');
     await H.mh.leave();
     expect(H.mh.status().menuKeyProblem).toBeNull();

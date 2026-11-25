@@ -131,6 +131,7 @@ function castcade(name: string, w: WitnessHost, dir?: string, extra: Partial<Opt
     lockFile: lock,
     listenAddress: '127.0.0.1',
     openPort: null,
+    ephemeralPort: true,
     ...extra,
   });
   hosts.push(mh);
@@ -155,9 +156,10 @@ const until = async (cond: () => boolean, ms = 8000): Promise<void> => {
   }
 };
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
-// Below Windows' dynamic range (49152 and up), where a PC with Hyper-V has blocks of a hundred ports reserved: a port
-// picked in 51000-52999 failed with EACCES on the dev PC (51947-52046 reserved there), five tests in one run (A18).
-const port = (): number => 39000 + Math.floor(Math.random() * 2000);
+// The system picks the port (`free-port.test-support.ts`: `host({ port: 0 })` through the `ephemeralPort` seam that
+// `castcade()` sets). A number picked here failed with EACCES inside the ranges Windows keeps for itself (A18 moved
+// it below them; PR 129's helper ends the guessing). A restarted host comes back on the port its saved record holds.
+const port = (): number => 0;
 const scoreOf = (mh: MatchHost, name: string): number | null | undefined => mh.status().panel?.players.find((p) => p.name === name)?.score;
 const up = (mh: MatchHost, ball: number): boolean => mh.status().panel?.myTurn === true && mh.status().panel?.ball === ball;
 

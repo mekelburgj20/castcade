@@ -465,7 +465,15 @@ export class StreamEngine extends EventEmitter {
 
   private async onExit(run: Running, code: number | null): Promise<void> {
     if (this.run === run) this.run = null;
-    if (run.kind === 'capture' && this.session) await this.session.endSegment(run.stopReason ?? `ffmpeg exited (${code})`);
+    if (run.kind === 'capture' && this.session) {
+      // 2026-11-24: a manifest that cannot be written at this moment (the recordings folder was removed or its drive
+      // went away while ffmpeg ran) is logged, and the rest of this exit still happens. Nothing awaits this function
+      // (`launch`), so the error used to be an unhandled rejection in the main process, and the lines below (the
+      // failure count, the state back to waiting) never ran.
+      await this.session.endSegment(run.stopReason ?? `ffmpeg exited (${code})`).catch((e: unknown) => {
+        this.deps.log.warn(`stream: the end of the segment could not be written to the recording's manifest (${e instanceof Error ? e.message : String(e)})`);
+      });
+    }
     if (!run.expected) {
       this.noteFailure(run);
       this.lastError = this.errors.at(-1) ?? `ffmpeg exited (${code})`;

@@ -58,6 +58,12 @@ export interface FakeRelayOptions {
   reverifyMs?: number;
   /** socket.io path, for a base URL with a path. Default `/socket.io`. */
   path?: string;
+  /**
+   * How long the device check takes (a database read on the server), in ms. Default: the next tick, which a test PC
+   * answers in well under a millisecond; a real answer from ArcAid takes tens of them, and what a client does while
+   * it waits for one only shows with a wait here (2026-11-24).
+   */
+  checkMs?: number;
 }
 
 interface Window {
@@ -159,7 +165,7 @@ export async function startFakeRelay(opts: FakeRelayOptions): Promise<FakeRelay>
   };
   /** The device check is a database read on the server: never in the same tick. */
   const deviceOf = async (s: Socket): Promise<string | null> => {
-    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => (opts.checkMs ? setTimeout(r, opts.checkMs) : setImmediate(r)));
     const { deviceId, deviceToken } = authOf(s);
     return deviceId !== '' && deviceToken !== '' && devices[deviceId] === deviceToken ? deviceId : null;
   };
