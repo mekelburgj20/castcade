@@ -133,6 +133,23 @@ describe('A17: the lobby in the schemas, on protocol 6', () => {
     expect([ack.payload.match, ack.payload.restart, ack.payload.more]).toEqual(['JHDFEF-1', false, true]);
   });
 
+  it('step 6: a start that was taken away says why, once; and the two codes only a lobby answers a RECONNECT with', () => {
+    const base = { hostPlayerId: 'p1', hostPublicKey: b64key, participants: [participant] };
+    const off = buildMessage('HELLO_ACK', { ...base, start: null, startOff: 'Krobs cancelled the start.' }, { ...at, matchId: null });
+    expect(decodeFrame(encodeFrame(off))).toEqual(off);
+    expect(off.payload.startOff).toBe('Krobs cancelled the start.');
+    expect(Object.keys(buildMessage('HELLO_ACK', base, { ...at, matchId: null }).payload)).not.toContain('startOff');
+    expect(() => buildMessage('HELLO_ACK', { ...base, startOff: 'x'.repeat(201) }, { ...at, matchId: null })).toThrow(ProtocolError);
+    for (const code of ['stale_seq', 'protocol_version'] as const) {
+      const no = buildMessage('RECONNECT_ACK', { accept: false, code, entries: [], logHash: '0'.repeat(64), logLength: 0 }, at);
+      expect(decodeFrame(encodeFrame(no))).toEqual(no);
+    }
+    expect(() => buildMessage('RECONNECT_ACK', { accept: false, code: 'replayed' as never, entries: [], logHash: hex64, logLength: 0 }, at)).toThrow(ProtocolError);
+    // The lobby's answer that puts a member's log away: no match, or another one, and no log in the answer itself.
+    const restart = buildMessage('RECONNECT_ACK', { accept: true, code: null, entries: [], logHash: '0'.repeat(64), logLength: 0, match: null, restart: true }, at);
+    expect([restart.payload.restart, restart.payload.match]).toEqual([true, null]);
+  });
+
   it('what a member asks of the lobby, and its end: START_REQUEST, START_CANCEL, END_REQUEST, TABLE_PICK, LOBBY_CLOSED', () => {
     const start = buildMessage('START_REQUEST', { fromTable: true }, at);
     expect(start.payload).toEqual({ fromTable: true, newMatch: false, anyway: false, now: false });

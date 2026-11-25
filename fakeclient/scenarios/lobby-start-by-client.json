@@ -1,0 +1,16 @@
+{
+  "name": "lobby-start-by-client",
+  "description": "A17 step 6: a client asks for the match from a button (START_REQUEST). Everyone is told the start with the asker's name and sees it count down; the asker goes first, in the match and in its next game, which the same client asks for. A watcher sees both starts and plays in neither.",
+  "matchId": "STARTC",
+  "ballsPerGame": 2,
+  "lobby": { "countdownMs": 15 },
+  "host": "p1",
+  "players": [
+    { "playerId": "p1", "displayName": "Lobby PC", "stance": "play", "scores": [1000, 2000] },
+    { "playerId": "p2", "displayName": "Player Two", "stance": "play", "scores": [1500, 3000] },
+    { "playerId": "p3", "displayName": "Watcher", "stance": "watch", "scores": [9, 9] }
+  ],
+  "matches": [
+    { "start": { "by": "p2" }, "games": 2 }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "name": "lobby-waiting-player-drops",
+  "description": "A17 step 6: a waiting player's link drops during another player's ball. Nothing is logged and nothing pauses until the turn reaches them; then the game waits, counted from that pause, forfeits them when the wait is over and goes on. They are back later, by RECONNECT, into a game they are out of.",
+  "matchId": "PDROPS",
+  "ballsPerGame": 2,
+  "lobby": { "turnMs": 80 },
+  "host": "p1",
+  "players": [
+    { "playerId": "p1", "displayName": "Lobby PC", "stance": "play", "scores": [1000, 2000] },
+    { "playerId": "p2", "displayName": "Player Two", "stance": "play", "scores": [1500, 3000] },
+    { "playerId": "p3", "displayName": "Player Three", "stance": "play", "scores": [1200, 2500], "drops": { "match": 1, "afterGrants": 2, "forMs": 600 } }
+  ],
+  "matches": [
+    {}
+  ]
+}

@@ -572,6 +572,18 @@
         }
       ]
     },
+    "startOff": {
+      "description": "A17: on the one HELLO_ACK that takes an announced start away without starting anything: the sentence that says why (\"Krobs cancelled the start.\"). Absent otherwise.",
+      "anyOf": [
+        {
+          "type": "string",
+          "maxLength": 200
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "stream3dWait": {
       "default": [],
       "description": "I11.4.9: the participants (the host included) whose PC is still making its 3D connection (`PARTICIPANT_UPDATE.stream3dWaitMs`), each with the ms after which the host stops waiting for it. A start from the host's table waits until this is empty, as it waits for `loading`. A duration, not a time. A participant not listed is not waited for: its 3D connection is settled, it has none, or its companion is from before I11.4.9. Defaulted and never logged.",

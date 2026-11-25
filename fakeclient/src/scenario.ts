@@ -39,6 +39,21 @@ export interface PlayerScript {
    * played, when the lobby's PC has issued `afterGrants` grants of it. It is sent that match's log and watches.
    */
   joinsAt?: { match: number; afterGrants: number };
+  /**
+   * A17 step 6, a lobby scenario run on links that can drop (`RunLobbyOptions.links`): this member's link to the
+   * lobby's PC drops when the lobby's PC has issued `afterGrants` grants of match `match` (1-based), and can be made
+   * again `forMs` later, or when `back` says (a grant of that or a later match). The member comes back by itself.
+   */
+  drops?: { match: number; afterGrants: number; forMs?: number; back?: { match: number; afterGrants: number } };
+}
+
+/** A17 step 6: who asks for a start in a lobby scenario, and how. */
+export interface LobbyAsk {
+  by: PlayerId;
+  /** `button` (default): the Match tab or the menu; `table`: a game started on the asker's own table. */
+  how?: 'button' | 'table';
+  /** The asker confirmed a start with a table that cannot report ball ends. */
+  anyway?: boolean;
 }
 
 /** A17 step 5 (2026-11-25): one match of a lobby scenario. The lobby's PC starts and ends it; who plays is said here. */
@@ -54,6 +69,20 @@ export interface LobbyMatchScript {
    * next match's start ends it (Start a new match). The last match of a scenario is always ended.
    */
   closes?: 'end' | 'new';
+  /**
+   * A17 step 6: the match is ASKED for (START_REQUEST, with the checks and the countdown), by this member; so is
+   * each next game of it. Omitted: the lobby's PC starts it itself, at once, as in step 5 (`startMatch`).
+   */
+  start?: LobbyAsk;
+  /** A17 step 6: a second ask in the same moment as `start` (two tables, or a button and a table). */
+  alsoStart?: LobbyAsk;
+  /** A17 step 6: once the start waits, this member presses again: start without what it waits for (`now`). */
+  startWithout?: PlayerId;
+  /**
+   * A17 step 6: the lobby's PC ends the match for everyone when it has issued this many grants of it: the game
+   * being played has no result.
+   */
+  endForEveryone?: { afterGrants: number };
 }
 
 export interface TransferScript {
@@ -90,7 +119,7 @@ export interface Scenario {
    * has a `stance`. Run by `runLobbyScenario` (`lobby.ts`), not by `runLocalScenario`. The object form sets the
    * lobby's own numbers (`logPageSize`, `logPageGapMs`: a join in the middle of a match gets the log in pages).
    */
-  lobby?: boolean | { size?: number; logPageSize?: number; logPageGapMs?: number };
+  lobby?: boolean | { size?: number; logPageSize?: number; logPageGapMs?: number; countdownMs?: number; placeMs?: number; turnMs?: number };
   /** A17 step 5: the matches of a lobby scenario, in order. */
   matches?: LobbyMatchScript[];
   expect?: {
@@ -134,6 +163,17 @@ export const LOBBY_SCENARIO_NAMES = [
   'lobby-join-mid-game',
   'lobby-long-log',
   'lobby-series-then-new-match',
+  // Step 6: asking, and dropping.
+  'lobby-start-by-client',
+  'lobby-start-from-starter-table',
+  'lobby-two-starts',
+  'lobby-start-without',
+  'lobby-ended-for-everyone',
+  'lobby-watcher-drops',
+  'lobby-waiting-player-drops',
+  'lobby-player-up-drops',
+  'lobby-rejoin-other-match',
+  'lobby-reconnect-replayed',
 ] as const;
 export type LobbyScenarioName = (typeof LOBBY_SCENARIO_NAMES)[number];
 
@@ -183,6 +223,10 @@ export function validateScenario(raw: unknown, source = '<inline>'): Scenario {
       for (const [id, v] of Object.entries(m.stances ?? {})) if (!ids.has(id) || !isStance(v)) throw new Error(`${source}: match ${i + 1}: a stance is play or watch, for a player of the scenario`);
       if (m.games !== undefined && (typeof m.games !== 'number' || m.games < 1)) throw new Error(`${source}: match ${i + 1}: games must be >= 1`);
       if (m.closes !== undefined && m.closes !== 'end' && m.closes !== 'new') throw new Error(`${source}: match ${i + 1}: closes is end or new`);
+      for (const ask of [m.start, m.alsoStart]) {
+        if (ask !== undefined && (!ids.has(ask.by) || (ask.how !== undefined && ask.how !== 'button' && ask.how !== 'table'))) throw new Error(`${source}: match ${i + 1}: a start is asked by a player of the scenario, from a button or a table`);
+      }
+      if (m.startWithout !== undefined && !ids.has(m.startWithout)) throw new Error(`${source}: match ${i + 1}: startWithout names a player of the scenario`);
     }
   } else if (s.matches !== undefined) {
     throw new Error(`${source}: matches needs lobby: true`);

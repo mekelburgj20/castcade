@@ -132,7 +132,7 @@
     "logHash": {
       "type": "string",
       "pattern": "^[0-9a-f]{64}$",
-      "description": "The host's log head when this page was sent; after the last page it is the receiver's head too."
+      "description": "The head of the log at the end of this page: the receiver's head once it has appended the entries (64 zeros for an empty log). Every page names the head of the log it carries."
     },
     "logLength": {
       "type": "integer",

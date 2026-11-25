@@ -354,43 +354,88 @@ to confirm the start); the host still may start, and such a match is played with
 that is off (`HostOptions.lobby`, `ClientOptions.lobby`). The protocol is still 6: a build with the option off
 sends none of the new messages and none of the new keys, so its frames are byte for byte those of 0.2.46 to
 0.2.50, and it plays with them. The version becomes 7 in the build that turns the lobby on; from then on a host
-is a lobby. What is marked *not built yet* has its shape here and no behaviour.
+is a lobby.
 
 A **lobby** is one connection per PC for an evening: one code, the people in it (**members**), what each has
-chosen (`Stance`: `play` or `watch`), and any number of matches, one after the other. The host is the lobby's
-PC; it arbitrates every match in the lobby, also one it does not play in. A **player** is a member who is in
-the match being played; a **watcher** is a member who is not.
+chosen (`Stance`: `play` or `watch`), a table, and any number of matches, one after the other. The host is the
+lobby's PC; it arbitrates every match in the lobby, also one it does not play in. A **player** is a member who
+is in the match being played; a **watcher** is a member who is not.
 
 - **Watch is a fact of the lobby, never of a match.** A match's log holds its players and nothing else, exactly
   as a log without a lobby does: `MATCH_READY.participants` and `playerOrder` are the players, `RESULT.entries`
   the players, `LOG_SIGN` from the players. No logged message changes shape, and the fold over the log is the
-  same. Never logged: who is in the lobby, who watches, who is away, joins and leaves of members.
+  same. Never logged: who is in the lobby, who watches, who is away, who asked for a start, the starter, the
+  table picks, joins and leaves of members.
 - **Joining.** `HELLO.throwdownCode` is the lobby's code, and `HELLO.stance` the sender's choice (absent:
   `play`). A lobby takes a `HELLO` in every phase while there is room (four people in all): it never refuses
-  with `match_started`, and `match_full` reads "This lobby is full (four people)."
+  with `match_started` or for a table that differs, and `match_full` reads "This lobby is full (four people)."
+  A `HELLO` in the name of somebody who is a member is refused (`duplicate_player`), also while that member is
+  away: a `HELLO` is not signed and never takes a place over.
 - **`HELLO_ACK` is the lobby as it is now**, sent to every member on every change, in every phase, also while a
   match is played: `participants` is the members (the host first, then in the order they joined), with
-  `stances`, `away`, `noCopy`, `ownGame`, `ballsPerGame` and `match` (the open match: its id, the players it
-  started with, the game number, and `game` or `between`; null when none is open). Every one of these keys is
-  optional and absent from a host that is not a lobby. `otherTable`, `tablePickedBy`, `starter` and `start` are
-  *not built yet*.
+  `stances`, `away`, `noCopy`, `ownGame`, `otherTable`, `tablePickedBy`, `ballsPerGame`, `starter`, `match` (the
+  open match: its id, the players it started with, the game number, and `game` or `between`; null when none is
+  open) and `start` (the start that is announced; null when none is). Every one of these keys is optional and
+  absent from a host that is not a lobby.
 - **`PARTICIPANT_UPDATE` counts in every phase** for `rig`, `game`, `ballEndReady`, `midnightMode`, `stance`,
-  `noCopy` and `ownGame`; the host answers with `HELLO_ACK` to every member and does not pass the update on
-  (an `advisory`, a flag about one ball, is still passed on as it came). A choice takes effect at the next
-  start: it changes nothing in a game that is being played.
-- **A match of a lobby.** The host starts it with the members set to Play who are on a link and have the
-  table, or with the players it names; two to four, and the host need not be one of them. `MATCH_READY.matchId`
-  is `<lobby code>-<n>`, `n` counting the lobby's matches from 1; grants, `RESULT` and the signatures carry
-  that id. `hostPlayerId` is the lobby's PC, which need not be in `playerOrder`; `game` is the fingerprint of
-  the first player's open table. `NEXT_GAME.playerOrder` is the open match's own players who are set to Play
-  and here: a member who is not in the open match comes into play only by a new match, never by a next game.
+  `noCopy` and `ownGame` (and `stream3dWaitMs` whenever no game is being played); the host answers with
+  `HELLO_ACK` to every member and does not pass the update on (an `advisory`, a flag about one ball, is still
+  passed on as it came). A choice takes effect at the next start: it changes nothing in a game that is being
+  played.
+- **The lobby's table is a pick.** `HELLO_ACK.hostGame` is the picked table: its identity keys (`kind`,
+  `tableName`, `tableHash`, `romName`), the other keys null or empty, because they are facts of one PC's copy;
+  `tablePickedBy` says who picked it (null: nobody yet; a lobby opened with no table takes the first table its
+  PC has open). A member's own table is compared with the pick on the identity keys only
+  (`tableMismatches`), the host's own like anyone's; `loading` lists the members whose table is not open,
+  `otherTable` those whose open table is another game (not the same ROM, nor the same name or title).
+  `TABLE_PICK {game}` (client -> host) picks; the answer is the `HELLO_ACK` that carries it, or `REJECT`
+  (`unexpected_state`) with the sentence: not during a game, and not while a start is announced. A pick of
+  another table ends the open match at that moment (`MATCH_END`, "the table changed"). What each PC then does
+  about its own VPX is not the protocol's.
+- **A match of a lobby.** Two to four members play it, and the host need not be one of them.
+  `MATCH_READY.matchId` is `<lobby code>-<n>`, `n` counting the lobby's matches from 1; grants, `RESULT` and the
+  signatures carry that id. `hostPlayerId` is the lobby's PC, which need not be in `playerOrder`; `game` is the
+  full fingerprint of the first player's open table, never a pick. `NEXT_GAME.playerOrder` is the open match's
+  own players who are set to Play and here: a member who is not in the open match comes into play only by a
+  new match, never by a next game.
+- **Asking for a start.** Any member asks: `START_REQUEST` (client -> host; the host's own owner asks its
+  engine). The host answers by announcing the start in `HELLO_ACK.start`, or with `REJECT` (`unexpected_state`)
+  whose `message` is the sentence the asker is shown.
+  - Who plays it: with no match open, or with `newMatch`, the members set to Play who are on a link and have a
+    copy of the table (`noCopy` counts as not set to Play), in the lobby's order: a new match, and an open one
+    is ended first. With a match open and without `newMatch`: that match's players who are set to Play and
+    here: its next game. The asker goes first when they play.
+  - **The starter** (`HELLO_ACK.starter`) is the one member whose own table may ask (`fromTable`: their game
+    began on their table, so it is the match's first and they go first): with no match open the first member
+    in the lobby's order who is set to Play, here and has the table; with one open the player who went first
+    in the game being played or just played, while here and set to Play, else the next in that game's order.
+    `fromTable` from anyone else is refused, and `fromTable` with `newMatch` always. The starter's `fromTable`
+    arriving while somebody else's start is announced puts the starter first in that start.
+  - The checks, in this order, at the request and again when the countdown runs out: no game is being played
+    (refused); no start is announced (a second request changes nothing); the last game's `RESULT` is out (the
+    start **waits**: `waitsFor: result`); two or more play it (refused, with who is set to Play); each of
+    their tables is open (`tables`), is the lobby's game (`other_tables`), and none of them is in a game of
+    their own other than the `fromTable` game (`own_games`): the start waits, `waitsOn` names for whom; each
+    of their tables can report ball ends (refused unless the request says `anyway`); their 3D connections are
+    settled (`3d`: it waits, 45 s at most from the first time it was held).
+  - When nothing is in the way the start **counts down** 5 s (`start.waitsFor` null, `leftMs`, and
+    `startsInMs`); each PC in `start.players` locks its table then, unless a game runs on it. When it runs out
+    the checks run again: `MATCH_READY` (after the open match's `MATCH_END`, for a new match) or `NEXT_GAME`
+    follows, or the start waits again, or it is taken away.
+  - A request with `now` while a start waits starts without what it waits for: without the members in
+    `waitsOn`, if two are left, and without the 3D connections. `START_CANCEL` (any member) takes the
+    announced start back. A member in the start who switches to Watch, goes away or leaves is taken out of it;
+    with fewer than two left, or without its asker while it waits, it is taken away; a switch to Play counts
+    from the next start. The one `HELLO_ACK` that takes a start away without starting anything says why in
+    `startOff`.
 - **Where one match's log ends and the next begins.** A match's log ends at the entry that ends its last game.
   `MATCH_END` (never logged) means "this match is over, back to the lobby": nobody leaves and no connection
-  closes; `games` is how many of its games have a `RESULT`. The next match's log starts from nothing: index 0,
-  `prevHash` 64 zeros, its own `MATCH_READY`, `grantSeq` from 1. Nothing chains one match to the next. The
-  envelope's `seq` is per sender for the whole lobby and never starts over. A new match started while one is
-  open between games ends that one first (`MATCH_END`), then `MATCH_READY` follows. (`MATCH_END.abandoned`, a
-  game ended for everyone with no result, is *not built yet*.)
+  closes; `games` is how many of its games have a `RESULT`. `END_REQUEST` (client -> host) ends the open match
+  between games. During a game only the lobby's PC ends it, **for everyone**: no `FORFEIT` is logged and no
+  `RESULT` is sent for that game; the log stops where it stands, and `MATCH_END.abandoned` names the game. The
+  next match's log starts from nothing: index 0, `prevHash` 64 zeros, its own `MATCH_READY`, `grantSeq` from 1.
+  Nothing chains one match to the next. The envelope's `seq` is per sender for the whole lobby and never starts
+  over.
 - **A watcher** receives what a player receives: every logged message, `STATE`, `DMD_FRAME`, `RESULT`. It keeps
   the same log and checks the same `RESULT`. It reports nothing and signs nothing: the host rejects a
   `BALL_END`, `GAME_OVER`, `FORFEIT`, `PAUSE`, `RESUME` or `LOG_SIGN` from a member who is not in the game
@@ -399,36 +444,63 @@ the match being played; a **watcher** is a member who is not.
 - **The log, unasked and in pages.** A member who joins while a match is open is sent `HELLO_ACK` (whose
   `match` names it) and then that match's whole log in `MATCH_LOG` messages of at most 100 entries (about
   50 KB; the relay takes 256 KB a frame). The first says `restart`: the receiver starts an empty log for
-  `match`. Each entry is checked against the hash chain as it is appended, as a `RECONNECT_ACK`'s entries are.
-  At the page that says `more: false` the receiver's head must be `logHash` / `logLength`; then it is current,
-  and the `RESULT`s of the match that are out follow.
+  `match`. Each entry is checked against the hash chain as it is appended. **Every page names the head of the
+  log at the page's end** (`logHash`, `logLength`), and the receiver's head must be that after it. At the page
+  that says `more: false` the receiver is current, and the `RESULT`s of the match that are out follow.
   **The host sends a logged message only to members whose log it has sent in full**: an entry committed while
   the pages go out is in a later page, never on the wire beside them. **A client takes a logged message, and a
   `RESULT`, only into a log it holds in full for the match the envelope names**, and drops any other. Without
   these two rules a `BALL_END` that falls between the `HELLO_ACK` and the log would be entry 0 of the
   newcomer's log, and the log that follows would not fit on it.
-- **A long reconnect.** In a lobby a `RECONNECT_ACK` that would hold more than 100 entries holds the first 100
-  and says `more`; the rest follows in `MATCH_LOG` (`restart: false`), and the client is back, and sends again
-  what the host never answered, at the last page. (`RECONNECT.match`, `RECONNECT_ACK.match` and `restart`, a
-  `RECONNECT` in every phase and its signed `seq` are *not built yet*: a member comes back as before, while a
-  match it plays in is open.)
-- **The envelope's `matchId`**: the lobby's code on what is said to the lobby (`PARTICIPANT_UPDATE`,
-  `MEDIA_SIGNAL`, `MATCH_LOG`, `LOBBY_CLOSED`, and the four requests below), the open match's id on the
-  messages of a match. The host takes the open match's id on a lobby message too. A match frame with the id of
-  a match that is over, or with none open, is dropped by whoever receives it (the host says so with a
-  `REJECT`, except for `STATE` and `DMD_FRAME`). And because `grantSeq` starts at 1 in every match, a client
-  also checks a grant against the `matchId` inside it, which is signed, and forgets the last `grantSeq` it saw
-  when a match ends.
-- **`LOBBY_CLOSED`** (host -> all, never logged): the lobby is over. A match that is open between games is
-  ended first (`MATCH_END`). Every member tears down, and nobody reconnects afterwards.
+- **Away.** A member whose link drops, past the grace of Pauses and timeouts, is away: `HELLO_ACK.away` lists
+  them, their place is kept, and nothing is logged. A link that drops changes the game only for the member
+  whose link it is, and only when the game needs them:
+  - a member the game does not need (a watcher; anyone while no game is played; a player whose own game is
+    over) keeps the place for 3 minutes, then the row goes;
+  - a player the game still needs changes nothing during another player's ball. When the turn reaches them, or
+    when they hold the grant, the game is paused for them (`PAUSE(disconnect, player)`), and from that pause
+    the host waits 3 minutes, then forfeits them (`FORFEIT` from the host; `disconnected` in the `RESULT`) and
+    resumes. A player who holds the grant and whose picture still reaches the lobby's PC is never forfeited by
+    the clock: the owner of the lobby's PC decides (wait on, end their ball with `TURN_PASS`, or play on
+    without them);
+  - while the lobby's PC is itself cut off from the relay, the members' links drop through no fault of theirs:
+    no leave is counted, nobody is paused for, both waits stand still, and they start from zero (after a new
+    grace) when it is back.
+- **`RECONNECT` is how a member comes back in every phase**, the lobby with no match open included. The
+  envelope's `matchId` is the lobby's code; `match` is the match the member holds a log of (null: none), and
+  `logHash` / `logLength` its head. The signature is over `{lobby, player, match, logHash, logLength, seq}`,
+  `seq` being the envelope's own, with the member's key as the lobby holds it (a watcher is in no match's
+  roster). The host checks the signature first and then takes the `seq` only when it is above the last it
+  took from that member: the same frame sent a second time is refused (`stale_seq`), and in a new envelope its
+  signature does not verify (`bad_signature`). A refused `RECONNECT` changes nothing about the member it names.
+  The answer:
+  - the same match is open and the head is known: the entries after it. More than 100: the first 100, `more`,
+    and the rest in `MATCH_LOG` (`restart: false`);
+  - another match is open, or none, or the head is not in the host's log: `restart`: the member puts its log
+    away, and the open match's whole log follows in `MATCH_LOG` (nothing follows when none is open);
+  - the member's place is gone: `unknown_player`. The link stays open, and the member says `HELLO` on it: a
+    newcomer, which a lobby takes while there is room.
+  **Every `RECONNECT_ACK` names the head of the log it carries**: with entries, the hash and the place of the
+  last one; a `restart` or a refusal, which carry no log, 64 zeros and 0. After the answer the host sends the
+  lobby as it is now (`HELLO_ACK`), then the `RESULT`s. The member then sends again what the host never
+  answered (Pauses and timeouts), so a ball that ended while the link was down, or while the lobby's PC was
+  away, is reported once the link is back.
+- **The lobby's PC away.** It is the one PC a match depends on. A member whose link to it is down goes on
+  trying to come back for 20 minutes, then treats the host as gone. Meanwhile the ball in play is the
+  player's own; its end is kept and reported on the return, as above. (How often a member may ask the relay
+  for a room that is not there is the transport's rule.)
+- **The envelope's `matchId`**: the lobby's code on what is said to the lobby (`RECONNECT`, `RECONNECT_ACK` in
+  answer to it, `START_REQUEST`, `START_CANCEL`, `END_REQUEST`, `TABLE_PICK`, `PARTICIPANT_UPDATE`,
+  `MEDIA_SIGNAL`, `MATCH_LOG`, `LOBBY_CLOSED`), the open match's id on the messages of a match. The host takes
+  the open match's id on a lobby message too. A match frame with the id of a match that is over, or with none
+  open, is dropped by whoever receives it (the host says so with a `REJECT`, except for `STATE` and
+  `DMD_FRAME`). And because `grantSeq` starts at 1 in every match, a client also checks a grant against the
+  `matchId` inside it, which is signed, and forgets the last `grantSeq` it saw when a match ends.
+- **`LOBBY_CLOSED`** (host -> all, never logged): the lobby is over. An open match is ended first (`MATCH_END`;
+  a game that is being played is ended for everyone). Every member tears down, and nobody reconnects
+  afterwards.
 - **No host transfer in a lobby**: the host never proposes one, and a client drops a `HOST_TRANSFER` and never
   proposes itself. (The transfer of a match without a lobby is unchanged.)
-- *Not built yet*, shapes only: `START_REQUEST` (a member asks for a start: `fromTable`, `newMatch`, `anyway`,
-  `now`), `START_CANCEL`, `END_REQUEST` and `TABLE_PICK` (client -> host; a host of this build answers each
-  with `REJECT` `unexpected_state`); until they are, the lobby's PC starts and ends the matches. A member whose
-  link drops is out of the lobby at once unless they are a player of the open match (then the rules of Pauses
-  and timeouts apply, and their place goes when that match is closed while they are still gone); `away` with
-  a place kept for three minutes replaces this.
 
 ## Simultaneous mode (arcade)
 

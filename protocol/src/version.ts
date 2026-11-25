@@ -49,5 +49,9 @@
  *   (`companion/src/match/lobby-off.test.ts` compares a whole match against frames recorded before this step);
  * - MATCH_END `games` may be 0 (it was 1 or more): the message is never logged, and no match without a lobby sends 0.
  * So every build before the one that says 7 plays with 0.2.46 to 0.2.50, and a fix can still be released on 6.
+ * Step 6 (same day): the engines answer the requests, keep members who are away, and take RECONNECT in every phase,
+ * all behind the same option. On the wire it adds HELLO_ACK `startOff` (optional) and two RECONNECT_ACK codes
+ * (`protocol_version`, `stale_seq`) that only a lobby sends; a lobby's RECONNECT signs another body (with the
+ * lobby's code and the envelope's `seq`), which a host without a lobby is never sent. Still 6.
  */
 export const PROTOCOL_VERSION = 6 as const;

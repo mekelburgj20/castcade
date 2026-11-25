@@ -150,9 +150,11 @@ describe('A17 step 5: the lobby and its members', () => {
     expect(seen?.match).toBeNull();
     expect(seen?.away).toEqual([]);
     expect(seen?.ballsPerGame).toBe(1);
-    // What the next step fills in is not said at all yet.
-    expect(seen && 'starter' in seen).toBe(false);
-    expect(seen && 'start' in seen).toBe(false);
+    // Step 6: who may start from their own table (the first set to Play), and that no start is announced.
+    expect(seen?.starter).toBe('h');
+    expect(seen?.start).toBeNull();
+    expect(seen?.tablePickedBy).toBe('h');
+    expect(seen?.otherTable).toEqual([]);
 
     // Each member changes their own choice; the lobby's PC its own, the same way.
     expect(r.clients['b']?.setStance('play')).toBe(true);
@@ -223,19 +225,6 @@ describe('A17 step 5: the lobby and its members', () => {
     expect(proposed).toEqual([]);
   });
 
-  it('what a member asks of the lobby is answered with a sentence until the engine learns it (the next step)', async () => {
-    const r = await lobby(['a']);
-    const said: PayloadOf<'REJECT'>[] = [];
-    r.clients['a']?.on('reject', (x) => said.push(x));
-    const t = (r.clients['a'] as ClientMatch).session;
-    t.transport.send('h', t.build('START_REQUEST', { fromTable: false }, 'JHDFEF'));
-    t.transport.send('h', t.build('START_CANCEL', {}, 'JHDFEF'));
-    t.transport.send('h', t.build('END_REQUEST', {}, 'JHDFEF'));
-    t.transport.send('h', t.build('TABLE_PICK', { game }, 'JHDFEF'));
-    await flush();
-    expect(said.map((x) => `${x.refType}:${x.code}`)).toEqual(['START_REQUEST:unexpected_state', 'START_CANCEL:unexpected_state', 'END_REQUEST:unexpected_state', 'TABLE_PICK:unexpected_state']);
-    expect(r.host.state.phase).toBe('lobby');
-  });
 });
 
 describe('A17 step 5: matches in sequence, players by choice, watchers', () => {
@@ -493,49 +482,6 @@ describe('A17 step 5: matches in sequence, players by choice, watchers', () => {
     await flush();
     expect(r.rejects.map((x) => `${x.refType}:${x.message}`)).toEqual(['GAME_OVER:no match is open']);
     expect(r.host.log.length).toBe(0);
-  });
-
-  it('a member whose link drops: out at once when no match holds them, kept while they are a player of the open one', async () => {
-    const r = await lobby(['a', 'b', 'c'], { stances: { c: 'watch' }, grace: 5000 });
-    const left: string[] = [];
-    r.host.on('peerLeft', (p) => left.push(p));
-    r.host.start();
-    await flush();
-    // The watcher: nothing in the match changes, and the others' lobby no longer lists them.
-    r.bus.disconnect('c');
-    await flush();
-    expect(left).toEqual(['c']);
-    expect(r.host.members().map((p) => p.playerId)).toEqual(['h', 'a', 'b']);
-    expect(r.clients['a']?.lobby()?.participants.map((p) => p.playerId)).toEqual(['h', 'a', 'b']);
-    expect(r.host.state.paused).toBeNull();
-    // A player who is not up: kept, and after the grace the lobby says they are away (A18's rules for the match).
-    r.bus.disconnect('b');
-    await flush();
-    expect(r.host.members().map((p) => p.playerId)).toEqual(['h', 'a', 'b']);
-    expect(r.clients['a']?.lobby()?.away).toEqual([]);
-    r.clock.advance(5000);
-    await flush();
-    expect(left).toEqual(['c', 'b']);
-    expect(r.clients['a']?.lobby()?.away).toEqual(['b']);
-    expect(r.host.playSet()).toEqual(['h', 'a']);
-    expect(r.host.state.paused).toBeNull();
-    // The match is played out without them (the lobby's PC forfeits them at their turn), and closed: their place goes.
-    r.host.localBallEnd(10, 'nvram');
-    await flush();
-    r.clients['a']?.reportBallEnd(20, 'script');
-    await flush();
-    expect(r.host.state.paused).toEqual({ reason: 'disconnect', player: 'b' });
-    r.host.forfeit('b', 'did not come back');
-    await flush();
-    r.clock.advance(10_000);
-    await flush();
-    expect(r.host.resultOut).toBe(true);
-    expect(r.host.endMatch()).toBe(true);
-    await flush();
-    expect(r.host.members().map((p) => p.playerId)).toEqual(['h', 'a']);
-    expect(r.clients['a']?.lobby()?.participants.map((p) => p.playerId)).toEqual(['h', 'a']);
-    expect(r.clients['a']?.lobby()?.away).toEqual([]);
-    expect(left).toEqual(['c', 'b']);
   });
 
   it('Close lobby: a match between games is ended, every member is told, and the lobby takes nobody after it', async () => {
@@ -817,10 +763,13 @@ describe('A17 step 5: a member`s facts while a match is played', () => {
     const r = await lobby(['a'], { grace: 5000 });
     r.host.start();
     await flush();
-    // Closed in the middle of a game (ending that game for everyone with a message of its own is the next step).
+    // Closed in the middle of a game: that game is ended for everyone first (step 6: MATCH_END with `abandoned`).
     const head = r.host.log.head();
+    const ends: PayloadOf<'MATCH_END'>[] = [];
+    r.clients['a']?.on('matchEnded', (x) => ends.push(x));
     expect(r.host.closeLobby('the PC is shutting down')).toBe(true);
     await flush();
+    expect(ends).toEqual([{ games: 0, reason: 'the lobby was closed', abandoned: 1 }]);
     expect(r.clients['a']?.matchEnded).toBe(true);
     const sent = r.bus.trace.filter((f) => f.from === 'h').length;
     (r.clients['a'] as ClientMatch).session.transport.send('h', (r.clients['a'] as ClientMatch).session.build('GAME_OVER', { finalScore: 1, ballsPlayed: 1 }, 'JHDFEF-1'));
@@ -828,8 +777,9 @@ describe('A17 step 5: a member`s facts while a match is played', () => {
     await flush();
     r.clock.advance(30 * 60 * 1000);
     await flush();
-    expect(r.host.log.head()).toEqual(head);
-    expect(r.host.state.paused).toBeNull();
+    expect(r.host.previousMatch()?.log.head()).toEqual(head);
+    expect(r.host.log.length).toBe(0);
+    expect(r.host.members().map((m) => m.playerId)).toEqual(['h', 'a']);
     expect(r.bus.trace.filter((f) => f.from === 'h').length).toBe(sent);
     expect(r.rejects).toEqual([]);
   });

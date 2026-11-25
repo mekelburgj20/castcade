@@ -14,14 +14,16 @@
             "unknown_log_hash",
             "unknown_player",
             "bad_signature",
-            "match_not_started"
+            "match_not_started",
+            "protocol_version",
+            "stale_seq"
           ]
         },
         {
           "type": "null"
         }
       ],
-      "description": "Why the RECONNECT was rejected; null when accepted."
+      "description": "Why the RECONNECT was rejected; null when accepted. A17: `protocol_version`: the sender speaks another version; `stale_seq`: the envelope's `seq` is not above the last this host took from that member (a RECONNECT sent a second time). In a lobby `unknown_player` means the member's place is gone: it joins again with a fresh HELLO on the same link."
     },
     "entries": {
       "type": "array",
@@ -141,7 +143,7 @@
     "logHash": {
       "type": "string",
       "pattern": "^[0-9a-f]{64}$",
-      "description": "The host's log head after these entries."
+      "description": "The host's log head after these entries. In a lobby's answer: the head of the log the answer carries (with `more`, at the end of this first page; for a `restart` or a refusal, which carry no log, 64 zeros and length 0)."
     },
     "logLength": {
       "type": "integer",

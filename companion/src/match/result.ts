@@ -74,3 +74,20 @@ export function reconnectSignBody(
 ): { matchId: string; player: PlayerId; logHash: string; logLength: number } {
   return { matchId, player, logHash, logLength };
 }
+
+/**
+ * A17 step 6 (2026-11-25): the object a RECONNECT signs in a lobby, with the member's key as the lobby holds it. The
+ * lobby's code and not a match's id (a member comes back in every phase, a watcher is in no match); the match it
+ * holds a log of; and the envelope's own `seq`, which the host takes only when it is above the last it took from
+ * that member: a captured RECONNECT sent again in a new envelope does not verify, and sent again as it was is stale.
+ */
+export function lobbyReconnectSignBody(
+  lobby: string,
+  player: PlayerId,
+  match: string | null,
+  logHash: string,
+  logLength: number,
+  seq: number,
+): { lobby: string; player: PlayerId; match: string | null; logHash: string; logLength: number; seq: number } {
+  return { lobby, player, match, logHash, logLength, seq };
+}

@@ -161,6 +161,15 @@ const HelloAckLobby = {
     .nullable()
     .optional()
     .describe('A17: the start that is announced, counting down or waiting; null or absent: none. Each PC in `players` locks its table when it counts down, unless a game runs on it.'),
+  // A17 step 6 (2026-11-25): not in the design's list. A start can go away for a reason only the lobby's PC knows
+  // (who cancelled, who set themselves to Watch, which check failed when the countdown ran out), and every panel is
+  // to say it; without this key the others could only see that `start` is null again.
+  startOff: z
+    .string()
+    .max(200)
+    .nullable()
+    .optional()
+    .describe('A17: on the one HELLO_ACK that takes an announced start away without starting anything: the sentence that says why ("Krobs cancelled the start."). Absent otherwise.'),
 };
 
 export const HelloAck = z
@@ -530,7 +539,9 @@ export const Reconnect = z
     player: PlayerId.describe('Who is resuming; must equal the envelope from.'),
     logHash: Sha256Hex.describe('Hash of the last log entry this participant holds; 64 zeros when it holds none.'),
     logLength: z.number().int().min(0),
-    signature: Signature.describe("The participant's signature over canonicalJson({matchId, player, logHash, logLength}) with its roster key."),
+    signature: Signature.describe(
+      "The participant's signature over canonicalJson({matchId, player, logHash, logLength}) with its roster key. In a lobby (A17; `match` is present) it is over canonicalJson({lobby, player, match, logHash, logLength, seq}): the lobby's code, the same `match` as below, and the envelope's own `seq`, so that a captured RECONNECT cannot be sent again in a new envelope.",
+    ),
     // A18 (2026-11-24): optional, never logged, not in the signed body; a peer that does not know it strips it, and
     // absent reads as "does not" (a companion up to 0.2.50).
     resends: z
@@ -538,7 +549,7 @@ export const Reconnect = z
       .optional()
       .describe('A18: true when the sender sends again, right after an accepted RECONNECT, its own BALL_END, GAME_OVER, FORFEIT and LOG_SIGN that the host never answered. Absent or false: it does not, and a ball end it reported into the dropped link comes back only for a grant the host issues again (after a PAUSE and its RESUME).'),
     // A17 (2026-11-25): optional, for the lobby's RECONNECT (every phase, the lobby code in the envelope, a signed
-    // `seq`): the schema is here, the engine sends and reads it from the step that builds that.
+    // `seq`). A lobby's client always sends it (null when it holds no log); nobody else does.
     match: MatchId.nullable().optional().describe('A17: the match the sender holds a log of; null: none. Absent: a RECONNECT from before the lobby, whose envelope names the match.'),
   })
   .describe('client -> host. First frame on a new socket to the current host, after a drop or a host transfer; never a fresh HELLO.');
@@ -547,11 +558,14 @@ export const ReconnectAck = z
   .object({
     accept: z.boolean(),
     code: z
-      .enum(['unknown_log_hash', 'unknown_player', 'bad_signature', 'match_not_started'])
+      // A17 step 6 (2026-11-25): two more values, sent by a lobby only (a peer up to 0.2.50 never meets them).
+      .enum(['unknown_log_hash', 'unknown_player', 'bad_signature', 'match_not_started', 'protocol_version', 'stale_seq'])
       .nullable()
-      .describe('Why the RECONNECT was rejected; null when accepted.'),
+      .describe(
+        "Why the RECONNECT was rejected; null when accepted. A17: `protocol_version`: the sender speaks another version; `stale_seq`: the envelope's `seq` is not above the last this host took from that member (a RECONNECT sent a second time). In a lobby `unknown_player` means the member's place is gone: it joins again with a fresh HELLO on the same link.",
+      ),
     entries: z.array(LogEntry).describe('Every log entry after the one the client named, in order; empty when it is current or rejected.'),
-    logHash: Sha256Hex.describe("The host's log head after these entries."),
+    logHash: Sha256Hex.describe("The host's log head after these entries. In a lobby's answer: the head of the log the answer carries (with `more`, at the end of this first page; for a `restart` or a refusal, which carry no log, 64 zeros and length 0)."),
     logLength: z.number().int().min(0),
     // A17 (2026-11-25): three more optional keys; a host whose lobby is off sends none of them.
     match: MatchId.nullable().optional().describe('A17: the match that is open now; null: none. Absent: not said (no lobby).'),
@@ -591,7 +605,7 @@ export const MatchLogPage = z
     match: MatchId.describe('The match the entries belong to.'),
     restart: z.boolean().describe('True on the first page of a whole log: the receiver starts an empty log for `match`. False: the entries follow the ones the receiver holds.'),
     entries: z.array(LogEntry).max(MATCH_LOG_PAGE_SIZE).describe('The next entries of the log, in order, verbatim.'),
-    logHash: Sha256Hex.describe("The host's log head when this page was sent; after the last page it is the receiver's head too."),
+    logHash: Sha256Hex.describe("The head of the log at the end of this page: the receiver's head once it has appended the entries (64 zeros for an empty log). Every page names the head of the log it carries."),
     logLength: z.number().int().min(0),
     more: z.boolean().describe('Another page follows. False: the receiver is current, and the logged messages reach it live from here on.'),
   })

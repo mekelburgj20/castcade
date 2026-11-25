@@ -1171,7 +1171,7 @@
     "to": "a",
     "kind": "ice",
     "candidate": {
-     "candidate": "candidate:1 1 udp 1 192.0.2.1 9 typ host",
+     "candidate": "candidate:1 1 udp 1 no-address 9 typ host",
      "sdpMid": "0",
      "sdpMLineIndex": 0
     },

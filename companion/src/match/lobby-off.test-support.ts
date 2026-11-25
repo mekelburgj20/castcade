@@ -181,7 +181,7 @@ export async function recordOptionOffMatch(): Promise<RecordedFrame[]> {
   host.localMidnightMode({ enabled: false, adjustment: 'A.2 14 Special Mode' });
   await step(100);
   a.sendMediaSignal('b', { kind: 'offer', sdp: 'v=0 offer a to b' });
-  host.sendMediaSignal('a', { kind: 'ice', candidate: { candidate: 'candidate:1 1 udp 1 192.0.2.1 9 typ host', sdpMid: '0', sdpMLineIndex: 0 }, channel: 'video' });
+  host.sendMediaSignal('a', { kind: 'ice', candidate: { candidate: 'candidate:1 1 udp 1 no-address 9 typ host', sdpMid: '0', sdpMLineIndex: 0 }, channel: 'video' });
   b.sendMediaSignal('h', { kind: 'answer', sdp: 'v=0 answer b to h', channel: 'stream' });
   await step(100);
 
