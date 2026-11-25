@@ -1368,4 +1368,47 @@ describe('a match through ArcAid, restarted (A15)', () => {
       await m.r.close();
     }
   }, 90_000);
+
+  it("A17 step 9: the lobby's PC is quit through ArcAid with somebody present: the question is there; Keep leaves the room without closing it, so ArcAid holds it for its own half minute and then closes it; the member, told that the lobby is kept, waits on past that; at its next start the lobby's PC is offered the lobby, opens it under the same code, and the member is back by themselves. Close ends the room at once", async () => {
+    // ArcAid's 30 s after a host is gone are 400 ms here.
+    const m = await relayed(400, { relayRejoin: { gapsMs: [300, 600, 2000], maxMisses: 60 } });
+    try {
+      expect(m.H.mh.quitQuestion()).toEqual({ code: m.code, names: ['Guest'] });
+      expect(m.C.mh.quitQuestion()).toBeNull();
+      await m.H.mh.stop({ lobby: 'keep' });
+      expect(JSON.parse(readFileSync(m.H.record, 'utf8'))).toMatchObject({ role: 'host', restart: 'quit', relay: true, code: m.code });
+      // Told before the link went: the sentence of a kept quit, not of a PC that is away for no known reason.
+      await until(() => m.C.mh.status().lobby?.hostAway != null);
+      expect(m.C.mh.status().panel?.message).toMatch(/^Host closed Castcade and kept the lobby: it goes on if Host opens Castcade again within 20 minutes/);
+      // The room was left open (a closed room would have told the member "the lobby is closed"); ArcAid closes it
+      // after its own wait, and the member goes on waiting: the lobby's 20 minutes are the companion's, not ArcAid's.
+      await until(() => m.r.rooms().length === 0);
+      await sleep(800);
+      expect(m.C.mh.status()).toMatchObject({ role: 'client', code: m.code });
+      expect(m.C.mh.status().lobby?.over).toBe(false);
+      expect(m.C.mh.status().panel?.message).toMatch(/^Host closed Castcade and kept the lobby/);
+      // The next start: offered, not gone back into; the click opens the same lobby under the same code.
+      const H2 = castcade('relay-host', m.hr.w, m.H.dir, m.via('h'));
+      m.hr.castcadeStarts();
+      expect(H2.mh.status().resume).toMatchObject({ role: 'host', auto: false, lost: false });
+      expect(H2.mh.status().role).toBe('none');
+      expect(m.r.rooms()).toEqual([]);
+      await H2.mh.rejoin();
+      expect(H2.mh.status()).toMatchObject({ role: 'host', code: m.code, via: 'relay' });
+      expect(m.r.rooms()).toEqual([m.code]);
+      await until(() => m.C.mh.status().lobby?.hostAway === null, 40_000);
+      expect(m.C.logs.some((l) => l.includes('joining again as a newcomer'))).toBe(false);
+      // The sentence of the kept quit goes with the next thing the member's panel says.
+      await until(() => !/closed Castcade/.test(m.C.mh.status().panel?.message ?? ''), 20_000);
+      // Close the lobby for everyone: the room is closed by its host, the member is told, nothing is kept.
+      await until(() => H2.mh.quitQuestion() !== null, 20_000);
+      await H2.mh.stop({ lobby: 'close' });
+      expect(existsSync(H2.record)).toBe(false);
+      await until(() => m.r.rooms().length === 0);
+      await until(() => (m.C.mh.status().panel?.message ?? m.C.mh.status().lastError ?? '').includes('closed the lobby'));
+    } finally {
+      for (const h of hosts.splice(0)) await h.stop();
+      await m.r.close();
+    }
+  }, 120_000);
 });

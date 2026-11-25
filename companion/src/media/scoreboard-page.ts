@@ -45,7 +45,7 @@ export interface ScoreboardRow {
 }
 
 export interface ScoreboardView {
-  /** `GAME 3 · BALL 2 OF 3`, `PAUSED · GAME 3 · BALL 2 OF 3`, `KROBS AWAY · GAME 3 · BALL 2 OF 3` (A17 step 4), `GAME 3 OVER`. */
+  /** `GAME 3 · BALL 2 OF 3`, `PAUSED · GAME 3 · BALL 2 OF 3`, `KROBS AWAY · GAME 3 · BALL 2 OF 3` (A17 step 4), `LOBBY PC AWAY · GAME 3 · BALL 2 OF 3` (step 9), `GAME 3 OVER`. */
   title: string;
   /** The players in turn order (the controller's), never re-sorted: a row does not jump while a score climbs. */
   rows: ScoreboardRow[];
@@ -86,6 +86,10 @@ export function scoreboardView(s: PanelState | null): ScoreboardView | null {
     const up = s.pausedFor && s.pausedFor === s.playerUp && !s.myTurn ? s.players.find((p) => p.id === s.pausedFor) : null;
     title = (up ? up.name.toUpperCase() + ' AWAY' : 'PAUSED') + ' · ' + title;
   }
+  // A17 step 9 (2026-11-27, design 11.9): the lobby's PC is away (the first of the lobby's rows is its own): the
+  // game goes on under the player who is up, and this card is all that player sees of it.
+  const lobbyPc = s.members && s.members.length > 0 ? s.members[0] : null;
+  if (lobbyPc && lobbyPc.flags.indexOf('away') >= 0 && title.indexOf(' AWAY · ') < 0) title = 'LOBBY PC AWAY · ' + title.replace(/^PAUSED · /, '');
   const rows = s.players.map((p) => ({
     name: p.name,
     score: p.score === null ? '–' : p.score.toLocaleString('en-US'),

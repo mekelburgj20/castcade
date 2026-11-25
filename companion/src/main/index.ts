@@ -66,6 +66,7 @@ import { createMatchHost, type MatchHost } from './match-host.js';
 import { readAbout, readAwayAnswer, readEndMatch, readPlayer, readStance } from './match-ipc.js';
 import { matchSignalling } from './match-setup.js';
 import { linkFromArgv, linkIsTrusted, looksLikePastedLink, registerLinkProtocol } from './deep-link.js';
+import { askQuit } from './quit-question.js';
 import { createOneStep, type OneStep } from './one-step.js';
 import { createRecentTables, listKnownTables, listTableFiles } from '../launch/known-tables.js';
 import { createTableHasher } from '../launch/table-hash.js';
@@ -346,23 +347,10 @@ async function quit(host: WitnessHost, install = false): Promise<void> {
   // the lobby: asked first. "Close" tells everyone the lobby is closed; "Keep" tells them Castcade was closed here
   // and the lobby is kept for them to wait in, and it is offered again at the next start; Cancel closes nothing. An
   // update restart is never asked (it keeps the lobby and goes back in by itself).
-  let lobby: 'close' | 'keep' | undefined;
-  const q = install ? null : (match?.quitQuestion() ?? null);
-  if (q) {
-    const who = q.names.length <= 1 ? (q.names[0] ?? '') : `${q.names.slice(0, -1).join(', ')} and ${q.names[q.names.length - 1]}`;
-    const r = await dialog.showMessageBox({
-      type: 'question',
-      title: 'Castcade',
-      message: `${who} ${q.names.length === 1 ? 'is' : 'are'} in your lobby ${q.code}.`,
-      detail: 'Close the lobby for everyone: they are told it is closed. Keep the lobby: they are told that Castcade was closed on this PC, and wait up to 20 minutes for it; Castcade offers the lobby again when it is next started.',
-      buttons: ['Close the lobby for everyone', 'Keep the lobby (the others wait up to 20 minutes for this PC)', 'Cancel'],
-      defaultId: 1,
-      cancelId: 2,
-      noLink: true,
-    });
-    if (r.response === 2) return;
-    lobby = r.response === 0 ? 'close' : 'keep';
-  }
+  // Step 9: the words and the three answers are quit-question.ts (tested there without Electron).
+  const answer = await askQuit(install ? null : (match?.quitQuestion() ?? null), (box) => dialog.showMessageBox(box));
+  if (answer === 'cancel') return;
+  const lobby: 'close' | 'keep' | undefined = answer ?? undefined;
   quitting = true;
   sidecarWatch?.stop();
   await overlay?.stop();

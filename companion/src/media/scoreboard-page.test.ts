@@ -29,6 +29,46 @@ const series: NonNullable<PanelState['series']> = [
   { id: 'owner', name: 'MekelburgJ', wins: 8, games: 18, total: 8_000_000, place: 2 },
 ];
 
+describe("a watcher's scoreboard, and the lobby's PC away (A17 step 9, 2026-11-27, alpha-match.md section 11.9)", () => {
+  const members: NonNullable<PanelState['members']> = [
+    { id: 'owner', name: 'MekelburgJ', stance: 'play', flags: [], inMatch: true },
+    { id: 'krobs', name: 'Krobs', stance: 'play', flags: [], inMatch: true },
+    { id: 'chuck', name: 'Chuck', stance: 'watch', flags: [], inMatch: false },
+  ];
+
+  it("a watcher's card is the players' card: the game and the ball, the players in turn order with the one who is up marked, the tally; the watcher is no row", () => {
+    // A watcher's panel state: not their turn, the match's players, the lobby's rows with themselves in them.
+    const watcher = state({ game: 2, ball: 1, members, stance: 'watch', series });
+    const player = state({ game: 2, ball: 1, members, stance: 'play', series });
+    expect(scoreboardView(watcher)).toEqual(scoreboardView(player));
+    expect(scoreboardView(watcher)).toEqual({
+      title: 'GAME 2 · BALL 1 OF 3',
+      rows: [
+        { name: 'MekelburgJ', score: '1,234,560', up: false, away: false },
+        { name: 'Krobs', score: '990,000', up: true, away: false },
+      ],
+      tally: '18 GAMES PLAYED · MekelburgJ 8 · Krobs 10',
+    });
+    expect(scoreboardWanted(watcher, true)).toBe(true);
+    // Not in the lobby: nothing to show there, for a watcher as for a player.
+    expect(scoreboardView(state({ phase: 'idle', playerUp: null, ball: null, members, stance: 'watch' }))).toBeNull();
+    expect(scoreboardWanted(state({ phase: 'idle', members, stance: 'watch' }), true)).toBe(false);
+  });
+
+  it("`LOBBY PC AWAY` stands before the title while the lobby's PC is away; a player who is up and away keeps their own words", () => {
+    const hostAway = members.map((m, i) => (i === 0 ? { ...m, flags: ['away' as const] } : m));
+    expect(scoreboardView(state({ game: 2, ball: 1, members: hostAway }))?.title).toBe('LOBBY PC AWAY · GAME 2 · BALL 1 OF 3');
+    expect(scoreboardView(state({ game: 2, ball: 1, members: hostAway, phase: 'paused' }))?.title).toBe('LOBBY PC AWAY · GAME 2 · BALL 1 OF 3');
+    expect(scoreboardView(state({ game: 2, ball: null, members: hostAway, phase: 'over', playerUp: null }))?.title).toBe('LOBBY PC AWAY · GAME 2 OVER');
+    // Krobs is up and away, read by somebody who watches: that is said, and not the lobby's PC with it.
+    expect(scoreboardView(state({ game: 2, ball: 1, members, phase: 'paused', pausedFor: 'krobs' }))?.title).toBe('KROBS AWAY · GAME 2 · BALL 1 OF 3');
+    expect(scoreboardView(state({ game: 2, ball: 1, members: hostAway, phase: 'paused', pausedFor: 'krobs' }))?.title).toBe('KROBS AWAY · GAME 2 · BALL 1 OF 3');
+    // Nobody away, or no lobby: the title as it was.
+    expect(scoreboardView(state({ game: 2, ball: 1, members }))?.title).toBe('GAME 2 · BALL 1 OF 3');
+    expect(scoreboardView(state({ game: 2, ball: 1, phase: 'paused' }))?.title).toBe('PAUSED · GAME 2 · BALL 1 OF 3');
+  });
+});
+
 describe('the corner scoreboard (D8.12)', () => {
   it('tally: games played and each player\'s wins in turn order; zeros before the first result; a player the series does not list has 0', () => {
     expect(tallyText(state({ series }))).toBe('18 GAMES PLAYED · MekelburgJ 8 · Krobs 10');

@@ -159,6 +159,9 @@ export function status(f: Fixture, base: any): { match: any; oneStep: any } {
         members: members.map((x) => ({ id: x.id, name: x.name, stance: x.stance, flags: x.flags, inMatch: x.inMatch })),
         starter,
         stance: watch.has(f.me) ? 'watch' : 'play',
+        // As controller.ts: the table's name while PCs are on their way to it; who a pause is for.
+        ...(f.table?.changing && !playing ? { changingTable: f.table.name } : {}),
+        ...(phase === 'paused' && f.waitedFor ? { pausedFor: f.waitedFor } : {}),
       }
     : null;
   const host = f.me === 'owner';
@@ -267,3 +270,41 @@ export const FIXTURES: Record<string, Fixture> = {
   'table-close-it': { says: 'The table was changed and this PC has to close the table that is open on it', me: 'chuck', here: four, flags: { krobs: ['changing'], chuck: ['close_table'], dana: ['no_table'] }, table: { name: OTHER_TABLE, pickedBy: 'krobs', pickedByName: 'Krobs', changing: true, endsMatch: false }, change: { state: 'close_it', table: OTHER_TABLE, open: TABLE, detail: `Close the table on this PC: Castcade opens ${OTHER_TABLE} when it is closed.` }, message: CHANGING_LINE },
   'table-open-it': { says: 'The table was changed and this PC asks first (Change tables for me is off): Open it', me: 'dana', here: four, flags: { dana: ['asked'] }, table: { name: OTHER_TABLE, pickedBy: 'krobs', pickedByName: 'Krobs', changing: true, endsMatch: false }, change: { state: 'offered', table: OTHER_TABLE, open: TABLE, detail: `The lobby's table is now ${OTHER_TABLE}. Open it: Castcade closes ${TABLE} and opens ${OTHER_TABLE}.` }, message: CHANGING_LINE },
 };
+
+/**
+ * The in-game menu's facts for a status, as main/match-host.ts `menuFacts` and `menuLobby` make them from the
+ * controller's status (the volumes are the defaults; the scoreboard line is there for a headset during a game).
+ */
+export function menuFacts(st: any): any {
+  const l = st.lobby;
+  if (!l) return null;
+  const playing = st.phase === 'playing' || st.phase === 'paused';
+  return {
+    role: st.role,
+    phase: st.phase,
+    players: st.participants.length,
+    startWarnings: st.startWarnings,
+    seriesOver: st.series?.over ?? false,
+    nextGameBlocker: null,
+    voice: 150,
+    theirTable: 100,
+    myTable: 100,
+    mic: 'open',
+    scoreboardPlace: st.rig === 'vr_headset' && playing ? 'ready' : null,
+    endBall: st.endBall,
+    lobby: {
+      opener: st.role === 'host',
+      stance: l.stance,
+      start: { label: l.startButton.label, off: l.startButton.off },
+      announced: l.start ? { without: l.startWithout } : null,
+      newMatch: l.newMatch ? { warnings: l.newMatch.warnings } : null,
+      game: l.gameKey,
+      hostAway: l.hostAway !== null,
+      over: l.over,
+      end: l.end,
+      giveUp: l.giveUp,
+      waitedFor: l.waitedFor?.name ?? null,
+      awayQuestion: l.awayQuestion ? { name: l.awayQuestion.name, score: l.awayQuestion.score } : null,
+    },
+  };
+}

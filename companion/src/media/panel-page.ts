@@ -272,11 +272,15 @@ export function headerText(s: PanelState): string {
   const game = typeof s.game === 'number' && s.game > 0 ? s.game : 1;
   if (s.phase === 'over') return s.seriesOver === false ? 'GAME ' + game + ' OVER' : 'MATCH OVER';
   // A17 step 1 (the review of PR 127): a lobby this PC has lost (its host is gone) is over, and says so.
-  if (s.phase === 'idle' && s.seriesOver === true) return 'LOBBY OVER';
-  if (s.phase === 'idle' && typeof s.countdown === 'number') return 'STARTING IN ' + s.countdown;
+  // Step 9: a lobby that was closed reads LOBBY CLOSED, as the Match tab says it.
+  if (s.phase === 'idle' && s.seriesOver === true) return s.members ? 'LOBBY CLOSED' : 'LOBBY OVER';
+  // A17 step 9 (2026-11-27): a countdown that has run out and is held (a player's link dropped a moment ago, see the
+  // line under it) reads STARTING: "IN 0" looked stuck.
+  if (s.phase === 'idle' && typeof s.countdown === 'number') return s.countdown > 0 ? 'STARTING IN ' + s.countdown : 'STARTING';
   // A17 step 10: tables are being changed (a start does not count down meanwhile; one that does is the header).
   if (s.phase === 'idle' && typeof s.changingTable === 'string' && s.changingTable !== '') return 'CHANGING TABLE · ' + s.changingTable.toUpperCase();
-  if (s.phase === 'idle') return 'WAITING FOR THE START';
+  // A17 step 9 (design 11.9): in a lobby the header is the lobby (`LOBBY · 3 HERE`); who starts, and how, is the line.
+  if (s.phase === 'idle') return s.members && s.members.length > 0 ? 'LOBBY · ' + s.members.length + ' HERE' : 'WAITING FOR THE START';
   const up = s.players.find((p) => p.id === s.playerUp);
   const ball = s.ball !== null ? ' ' + s.ball : '';
   const turn = (game > 1 ? 'GAME ' + game + ' · ' : '') + (s.myTurn ? 'YOUR BALL' + ball : up ? up.name.toUpperCase() + ' IS UP' : 'WAITING');
@@ -294,6 +298,12 @@ export function scoreText(score: number | null): string {
  * whose table is not open yet is flagged `LOADING`.
  */
 export function stripRows(s: PanelState): StripRow[] {
+  // A17 step 9 (2026-11-27, design 11.9): in the lobby the rows are the members, the lobby's PC first, each with their
+  // choice for the next start (PLAY / WATCH) and what is wrong or special about their row. No score: there is none.
+  if (s.phase === 'idle' && s.members && s.members.length > 0) {
+    const words: Record<string, string> = { away: 'AWAY', loading: 'LOADING', no_table: 'NO TABLE', other_table: 'OTHER TABLE', own_game: 'OWN GAME', close_table: 'HAS TO CLOSE THEIR TABLE', asked: 'ASKED TO OPEN IT', changing: 'CHANGING TABLE' };
+    return s.members.map((m) => ({ id: m.id, name: m.name, score: '', detail: m.stance === 'watch' ? 'WATCH' : 'PLAY', up: false, flags: m.flags.map((f) => words[f] || String(f).toUpperCase()), notes: [] }));
+  }
   const series = s.series || [];
   const wins = (n: number): string => n + (n === 1 ? ' WIN' : ' WINS');
   const many = series.some((x) => x.games > 1);
@@ -322,6 +332,17 @@ export function stripRows(s: PanelState): StripRow[] {
   });
 }
 
+/**
+ * A17 step 9 (2026-11-27, design 11.9): under the score strip of a game, who is in the lobby and not in the game:
+ * `Watching: Chuck, Dana`. A member who is away is not watching. Empty outside a game, without a lobby, and when
+ * everybody plays.
+ */
+export function watchingText(s: PanelState): string {
+  if ((s.phase !== 'playing' && s.phase !== 'paused') || !s.members) return '';
+  const names = s.members.filter((m) => !s.players.some((p) => p.id === m.id) && m.flags.indexOf('away') < 0).map((m) => m.name);
+  return names.length > 0 ? 'Watching: ' + names.join(', ') : '';
+}
+
 export function micText(mic: PanelState['mic']): string {
   return mic === 'open' ? 'MIC ON' : mic === 'muted' ? 'MIC MUTED' : 'NO MIC';
 }
@@ -343,7 +364,8 @@ export function stageText(s: PanelState | null, hasVideo: boolean, voiceUp = fal
   if (s.phase === 'over') return '';
   if (s.myTurn) return 'NO PICTURE FROM YOUR TABLE';
   const up = s.players.find((p) => p.id === s.playerUp);
-  return up ? 'WAITING FOR ' + up.name.toUpperCase() + "'S TABLE" : '';
+  // A17 step 9: "KROBS' TABLE", as every sentence of the lobby writes a name that ends in s (it read KROBS'S here alone).
+  return up ? 'WAITING FOR ' + up.name.toUpperCase() + (/s$/i.test(up.name) ? "' TABLE" : "'S TABLE") : '';
 }
 
 /**
@@ -1306,7 +1328,7 @@ export function tableWorkletSource(): string {
   ].join('\n');
 }
 
-const HELPERS = [cameraCapture, isCameraCapture, cameraFrameSize, eyesKey, stereoSignal, videoBitrateFor, headerText, scoreText, stripRows, tallyText, micText, videoPeer, stageText, videoCropRect, paintFrame, stereoOf, feedSize, stallStep, trackRole, tablePlays, volumeGains, outgoingSdp, preferH264, bitrateHintsFor, withBitrateHints, icePairInfo, icePairText, iceUfrag, iceWatchStep, iceRestartName, noPathText, iceRoundStart, iceRoundSeen, iceCandidateIds, iceRoundLine, iceRoundOver, iceRoundSparse, iceRoundLook, iceRoundCandidate];
+const HELPERS = [cameraCapture, isCameraCapture, cameraFrameSize, eyesKey, stereoSignal, videoBitrateFor, headerText, scoreText, stripRows, watchingText, tallyText, micText, videoPeer, stageText, videoCropRect, paintFrame, stereoOf, feedSize, stallStep, trackRole, tablePlays, volumeGains, outgoingSdp, preferH264, bitrateHintsFor, withBitrateHints, icePairInfo, icePairText, iceUfrag, iceWatchStep, iceRestartName, noPathText, iceRoundStart, iceRoundSeen, iceCandidateIds, iceRoundLine, iceRoundOver, iceRoundSparse, iceRoundLook, iceRoundCandidate];
 
 /** The page. `vr`: drawn offscreen for the headset (960x640) rather than as a 480x720 desktop window; same layout. */
 export function panelPageHtml(opts: { vr: boolean }): string {
@@ -1318,7 +1340,10 @@ export function panelPageHtml(opts: { vr: boolean }): string {
   * { box-sizing: border-box; margin: 0; }
   html, body { height: 100%; background: var(--bg); color: var(--text); overflow: hidden;
     font-family: 'Segoe UI', system-ui, sans-serif; font-weight: 700; }
-  body { display: grid; grid-template-rows: auto 1fr auto auto; gap: 1vmin; padding: 1.5vmin; }
+  /* A17 step 9 (2026-11-27): the one column is as wide as the page and no wider. Without this a long line in the
+     footer (the lobby's sentences are long) made the column as wide as the sentence: the header slid off centre and
+     the scores off the right edge. Seen in the first pictures ever taken of this page (renderer/story). */
+  body { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 1fr auto auto; gap: 1vmin; padding: 1.5vmin; }
   #head { font-size: 7.5vmin; line-height: 1.1; letter-spacing: 0.04em; text-align: center; padding: 1vmin 0; }
   #head.mine { color: var(--mine); }
   #stage { position: relative; min-height: 0; background: var(--panel); border-radius: 1vmin; overflow: hidden; }
@@ -1326,7 +1351,7 @@ export function panelPageHtml(opts: { vr: boolean }): string {
   #idle { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center;
     padding: 4vmin; font-size: 4.5vmin; color: var(--dim); }
   #strip { display: grid; gap: 0.6vmin; }
-  .row { display: grid; grid-template-columns: 1fr auto auto; gap: 2vmin; align-items: baseline; padding: 0.6vmin 1.5vmin;
+  .row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 2vmin; align-items: baseline; padding: 0.6vmin 1.5vmin;
     background: var(--panel); border-radius: 0.8vmin; font-size: 4.8vmin; }
   .row.up { outline: 0.5vmin solid var(--up); }
   .row .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1335,24 +1360,32 @@ export function panelPageHtml(opts: { vr: boolean }): string {
   .row .flag { color: var(--bad); font-size: 3vmin; margin-left: 1.5vmin; }
   .row .note { color: var(--dim); font-size: 3vmin; font-weight: 400; margin-left: 1.5vmin; }
   .tally { padding: 0.2vmin 1.5vmin; color: var(--dim); font-size: 3.4vmin; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  footer { display: flex; gap: 2vmin; align-items: baseline; font-size: 3.8vmin; min-height: 4.5vmin; }
+  footer { display: flex; gap: 2vmin; align-items: baseline; font-size: 3.8vmin; min-height: 4.5vmin; min-width: 0; }
   #mic { color: var(--dim); white-space: nowrap; }
   #mic.muted, #mic.none { color: var(--bad); }
-  #msg { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* Step 9: the line is read to its end: it wraps (the stage gives the room; the longest lobby sentence is three
+     lines in the headset and six in the desktop window), and is cut only past that. It was one line cut with "…",
+     which dropped the half of a lobby sentence that says what to do. */
+  #msg { flex: 1; min-width: 0; overflow: hidden; line-height: 1.15; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 6; }
   #vid { color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #vid:empty { display: none; }
   /* D8.10: the in-game menu covers the stage and the score strip; the header and the footer stay. */
   #menu { display: none; grid-row: 2 / 4; grid-column: 1; position: relative; z-index: 2; background: var(--panel);
     border-radius: 1vmin; padding: 2vmin; flex-direction: column; gap: 0.8vmin; min-height: 0; overflow: hidden; }
   #menu.open { display: flex; }
-  #menuitems { display: grid; gap: 0.8vmin; }
+  /* A17 step 9 (2026-11-27): the list is a window onto the lines, and keeps the chosen one in it. A lobby's menu has
+     up to thirteen lines where a match's had seven: the lines past the seventh were cut off, and with them the
+     question under the list and the keys (seen in the first pictures of this page, renderer/story). */
+  #menuitems { display: grid; gap: 0.8vmin; align-content: start; flex: 1 1 auto; min-height: 0; overflow: hidden; padding: 0.6vmin; margin: -0.6vmin; scroll-padding-block: 1.2vmin; }
+  .more { font-size: 2.6vmin; line-height: 1; text-align: center; color: var(--dim); visibility: hidden; }
+  .more.on { visibility: visible; }
   #head { grid-row: 1; } #stage { grid-row: 2; grid-column: 1; } #strip { grid-row: 3; grid-column: 1; } footer { grid-row: 4; }
   .mi { display: flex; justify-content: space-between; gap: 2vmin; padding: 1vmin 2vmin; border-radius: 0.8vmin;
     font-size: 5vmin; background: #1b2029; }
   .mi.sel { outline: 0.6vmin solid var(--mine); color: var(--mine); }
   .mi.off { color: var(--dim); }
   .mi .val { font-variant-numeric: tabular-nums; }
-  #menunote { margin-top: auto; font-size: 3.8vmin; color: var(--mine); min-height: 4.5vmin; }
+  #menunote { font-size: 3.8vmin; color: var(--mine); min-height: 4.5vmin; }
   #menuhint { font-size: 3vmin; font-weight: 400; color: var(--dim); }
 </style></head>
 <body class="${opts.vr ? 'vr' : 'desktop'}">
@@ -1360,7 +1393,7 @@ export function panelPageHtml(opts: { vr: boolean }): string {
 <div id="stage"><video id="video" autoplay playsinline muted></video><div id="idle"></div></div>
 <video id="src" autoplay playsinline muted style="position: fixed; left: 0; top: 0; width: 2px; height: 2px; opacity: 0; pointer-events: none"></video>
 <div id="strip"></div>
-<div id="menu"><div id="menuitems"></div><div id="menunote"></div><div id="menuhint"></div></div>
+<div id="menu"><div id="menuup" class="more">▲ MORE</div><div id="menuitems"></div><div id="menudown" class="more">▼ MORE</div><div id="menunote"></div><div id="menuhint"></div></div>
 <footer><span id="mic"></span><span id="vid"></span><span id="msg"></span></footer>
 <script>
 'use strict';
@@ -1579,6 +1612,14 @@ function render() {
     tally.textContent = tallyText(panel);
     strip.appendChild(tally);
   }
+  // A17 step 9: who watches the game that is being played.
+  const watching = panel ? watchingText(panel) : '';
+  if (watching) {
+    const line = document.createElement('div');
+    line.className = 'tally';
+    line.textContent = watching;
+    strip.appendChild(line);
+  }
   const mic = panel ? panel.mic : micState;
   $('mic').textContent = micText(mic);
   $('mic').className = mic === 'open' ? '' : mic === 'muted' ? 'muted' : 'none';
@@ -1591,6 +1632,9 @@ function render() {
 // D8.10: the in-game menu (main's C.menu): the lines, the chosen one outlined, a note and the keys under them.
 function renderMenu() {
   $('menu').className = menu ? 'open' : '';
+  // A17 step 9: the score strip is under the menu, and the outline of the row of the player who is up showed past the menu's edges.
+  const under = $('strip');
+  if (under && under.style) under.style.visibility = menu ? 'hidden' : '';
   const list = $('menuitems');
   list.replaceChildren();
   if (!menu) return;
@@ -1607,6 +1651,13 @@ function renderMenu() {
   });
   $('menunote').textContent = menu.note || '';
   $('menuhint').textContent = menu.hint || '';
+  // A17 step 9: the chosen line is in sight, and the list says when there are lines above or below what it shows.
+  const sel = list.children[menu.index];
+  if (sel && sel.scrollIntoView) sel.scrollIntoView({ block: 'nearest' });
+  const up = $('menuup');
+  const down = $('menudown');
+  if (up) up.className = list.scrollTop > 1 ? 'more on' : 'more';
+  if (down) down.className = list.scrollTop + list.clientHeight < list.scrollHeight - 1 ? 'more on' : 'more';
 }
 
 async function sendDevices() {

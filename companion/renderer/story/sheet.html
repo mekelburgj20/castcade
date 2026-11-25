@@ -4,20 +4,23 @@
     <meta charset="UTF-8" />
     <title>Castcade story: several states side by side</title>
     <style>
-      body { margin: 0; background: #000; display: flex; gap: 6px; align-items: flex-start; font: 12px system-ui, sans-serif; }
+      body { margin: 0; background: #000; display: flex; flex-wrap: wrap; gap: 6px; align-items: flex-start; font: 12px system-ui, sans-serif; }
       figure { margin: 0; }
       figcaption { color: #9aa0a6; padding: 3px 6px; background: #000; }
-      iframe { border: 0; display: block; }
+      iframe { border: 0; display: block; transform-origin: 0 0; }
+      .frame { overflow: hidden; }
     </style>
   </head>
   <body>
     <script>
-      // A17 step 9 (2026-11-27): `?page=match.html&states=a,b,c&w=420&h=900[&press=…]`: the named states of one story
+      // A17 step 9 (2026-11-27): `?page=match.html&states=a,b,c&w=420&h=900[&zoom=0.5][&more=vr%3D0]`: the named states of one story
       // page next to each other, each in a frame of the app's own width, to compare a thing's place between states.
       const q = new URLSearchParams(location.search);
       const page = q.get('page') ?? 'match.html';
       const w = Number(q.get('w') ?? 420);
       const h = Number(q.get('h') ?? 900);
+      const zoom = Number(q.get('zoom') ?? 1);
+      const more = q.get('more') ? `&${q.get('more')}` : '';
       const states = (q.get('states') ?? '').split(',').filter(Boolean);
       for (const state of states) {
         const [name, press] = state.split('~');
@@ -27,11 +30,17 @@
         const i = document.createElement('iframe');
         i.width = String(w);
         i.height = String(h);
-        i.src = `${page}?state=${encodeURIComponent(name)}${press ? `&press=${encodeURIComponent(press)}` : ''}`;
-        f.append(c, i);
+        i.src = `${page}?state=${encodeURIComponent(name)}${press ? `&press=${encodeURIComponent(press)}` : ''}${more}`;
+        i.style.transform = `scale(${zoom})`;
+        const box = document.createElement('div');
+        box.className = 'frame';
+        box.style.width = `${w * zoom}px`;
+        box.style.height = `${h * zoom}px`;
+        box.append(i);
+        f.append(c, box);
         document.body.append(f);
       }
-      setTimeout(() => (document.documentElement.dataset.tall = String(h + 24)), 2500);
+      setTimeout(() => (document.documentElement.dataset.tall = String(document.documentElement.scrollHeight)), 2500);
     </script>
   </body>
 </html>

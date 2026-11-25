@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { PanelState } from './match-media-types.js';
-import { bitrateHintsFor, cameraCapture, cameraFrameSize, eyesKey, isCameraCapture, LAYER_CAMERA_SOURCE_ID, stereoSignal, feedSize, headerText, ICE_ROUND_LOOK, ICE_WATCH, icePairInfo, icePairText, iceUfrag, iceRestartName, iceRoundSparse, iceWatchStep, micText, noPathText, PANEL_CHANNELS, paintFrame, panelPageHtml, preferH264, SBS_MIN_ASPECT, scoreText, stageText, stallStep, CAPTURE_STALL_MS, STATS_MS, stereoOf, stripRows, VIDEO_FEED_MAX, videoBitrateFor, videoCropRect, videoPeer, withBitrateHints, volumeGains, VOLUME_NOTE_MS, type Paint2D } from './panel-page.js';
+import { bitrateHintsFor, cameraCapture, cameraFrameSize, eyesKey, isCameraCapture, LAYER_CAMERA_SOURCE_ID, stereoSignal, feedSize, headerText, ICE_ROUND_LOOK, ICE_WATCH, icePairInfo, icePairText, iceUfrag, iceRestartName, iceRoundSparse, iceWatchStep, micText, noPathText, PANEL_CHANNELS, paintFrame, panelPageHtml, preferH264, SBS_MIN_ASPECT, scoreText, stageText, stallStep, CAPTURE_STALL_MS, STATS_MS, stereoOf, stripRows, VIDEO_FEED_MAX, videoBitrateFor, videoCropRect, videoPeer, watchingText, withBitrateHints, volumeGains, VOLUME_NOTE_MS, type Paint2D } from './panel-page.js';
 
 const state = (o: Partial<PanelState> = {}): PanelState => ({
   playerUp: 'krobs',
@@ -97,7 +97,7 @@ describe('panel text (D2)', () => {
     expect(videoPeer(state({ phase: 'paused' }))).toBe('krobs');
     expect(videoPeer(state({ phase: 'idle' }))).toBeNull();
     expect(videoPeer(state({ phase: 'over' }))).toBeNull();
-    expect(stageText(state(), false)).toBe("WAITING FOR KROBS'S TABLE");
+    expect(stageText(state(), false)).toBe("WAITING FOR KROBS' TABLE");
     expect(stageText(state(), true)).toBe('');
     expect(stageText(state({ myTurn: true }), false)).toBe('NO PICTURE FROM YOUR TABLE');
     expect(stageText(null, false)).toBe('');
@@ -112,7 +112,7 @@ describe('panel text (D2)', () => {
     expect(stageText({ ...lobby, mic: 'muted' }, false, true)).toBe('');
     expect(stageText({ ...lobby, mic: 'unavailable' }, false, true)).toBe('');
     // During a game and after it the stage is the picture's, as before.
-    expect(stageText(state(), false, true)).toBe("WAITING FOR KROBS'S TABLE");
+    expect(stageText(state(), false, true)).toBe("WAITING FOR KROBS' TABLE");
     expect(stageText(state({ phase: 'over' }), false, true)).toBe('');
     // The page embeds the function and tells it whether a connection is up.
     expect(panelPageHtml({ vr: true })).toContain('stageText(panel, hasVideo, voiceUp())');
@@ -147,6 +147,85 @@ function fakeCtx() {
   };
   return ctx;
 }
+
+describe("the panel's lobby view (A17 step 9, 2026-11-27, alpha-match.md section 11.9)", () => {
+  const members: NonNullable<PanelState['members']> = [
+    { id: 'owner', name: 'Owner', stance: 'play', flags: [], inMatch: false },
+    { id: 'krobs', name: 'Krobs', stance: 'play', flags: ['loading'], inMatch: false },
+    { id: 'chuck', name: 'Chuck', stance: 'watch', flags: ['no_table'], inMatch: false },
+    { id: 'dana', name: 'Dana', stance: 'play', flags: ['away'], inMatch: false },
+  ];
+  const lobby = (o: Partial<PanelState> = {}): PanelState => state({ phase: 'idle', playerUp: null, ball: null, members, starter: 'owner', stance: 'play', ...o });
+
+  it('headerText: the lobby and how many are here; a countdown; a held countdown; tables being changed; a match with no lobby keeps its words', () => {
+    expect(headerText(lobby())).toBe('LOBBY · 4 HERE');
+    expect(headerText(lobby({ countdown: 5 }))).toBe('STARTING IN 5');
+    expect(headerText(lobby({ countdown: 0 }))).toBe('STARTING');
+    expect(headerText(lobby({ changingTable: 'Congo (Williams 1995)' }))).toBe('CHANGING TABLE · CONGO (WILLIAMS 1995)');
+    expect(headerText(lobby({ seriesOver: true }))).toBe('LOBBY CLOSED');
+    expect(headerText(state({ phase: 'idle', playerUp: null, ball: null }))).toBe('WAITING FOR THE START');
+    // In a game the header is what it was, for a player and for a watcher alike.
+    expect(headerText(lobby({ phase: 'playing', playerUp: 'krobs', ball: 2, myTurn: true }))).toBe('YOUR BALL 2');
+    expect(headerText(lobby({ phase: 'playing', playerUp: 'krobs', ball: 2 }))).toBe('KROBS IS UP');
+  });
+
+  it('the rows: in the lobby every member with PLAY or WATCH and what is wrong with their row, no score; in a game the players of the match as before', () => {
+    expect(stripRows(lobby()).map((r) => [r.name, r.detail, r.score, r.flags.join('|')])).toEqual([
+      ['Owner', 'PLAY', '', ''],
+      ['Krobs', 'PLAY', '', 'LOADING'],
+      ['Chuck', 'WATCH', '', 'NO TABLE'],
+      ['Dana', 'PLAY', '', 'AWAY'],
+    ]);
+    const way = lobby({
+      members: [
+        { id: 'a', name: 'A', stance: 'play', flags: ['close_table'], inMatch: false },
+        { id: 'b', name: 'B', stance: 'play', flags: ['asked', 'own_game'], inMatch: false },
+        { id: 'c', name: 'C', stance: 'play', flags: ['changing', 'other_table'], inMatch: false },
+      ],
+    });
+    expect(stripRows(way).map((r) => r.flags)).toEqual([['HAS TO CLOSE THEIR TABLE'], ['ASKED TO OPEN IT', 'OWN GAME'], ['CHANGING TABLE', 'OTHER TABLE']]);
+    expect(stripRows(lobby({ phase: 'playing', playerUp: 'krobs' })).map((r) => r.name)).toEqual(['Owner', 'Krobs']);
+    // A match with no lobby (no `members`) keeps the players' rows before the start.
+    expect(stripRows(state({ phase: 'idle', playerUp: null, ball: null })).map((r) => r.name)).toEqual(['Owner', 'Krobs']);
+    expect(stripRows(state({ phase: 'idle', playerUp: null, ball: null })).map((r) => r.detail)).not.toContain('PLAY');
+  });
+
+  it('the `Watching:` line: during a game, the members who are not in it and are here; nothing in the lobby, without a lobby, or when everybody plays', () => {
+    expect(watchingText(lobby({ phase: 'playing', playerUp: 'krobs' }))).toBe('Watching: Chuck');
+    expect(watchingText(lobby({ phase: 'paused', playerUp: 'krobs', members: members.map((m) => ({ ...m, flags: [] })) }))).toBe('Watching: Chuck, Dana');
+    expect(watchingText(lobby())).toBe('');
+    expect(watchingText(state())).toBe('');
+    expect(watchingText(lobby({ phase: 'playing', members: members.slice(0, 2) }))).toBe('');
+    // The page draws it under the strip, with the helper in it.
+    for (const vr of [false, true]) {
+      const html = panelPageHtml({ vr });
+      expect(html).toContain('function watchingText(');
+      expect(html).toContain('const watching = panel ? watchingText(panel) : ');
+    }
+  });
+});
+
+describe('the in-game menu on the panel (A17 step 9, 2026-11-27)', () => {
+  it("is a window onto its lines: a lobby's menu has more lines than fit, so the chosen one is brought into sight, the list says when there is more, and the question and the keys keep their place under it", () => {
+    for (const vr of [false, true]) {
+      const html = panelPageHtml({ vr });
+      expect(html).toContain('<div id="menuup" class="more">');
+      expect(html).toContain('<div id="menudown" class="more">');
+      expect(html).toContain("if (sel && sel.scrollIntoView) sel.scrollIntoView({ block: 'nearest' });");
+      // The list takes the room that is left and no more: what stands under it is never pushed out of the panel.
+      expect(html).toMatch(/#menuitems \{[^}]*flex: 1 1 auto; min-height: 0; overflow: hidden;/);
+    }
+  });
+
+  it('the page is as wide as its window and no wider, and its line wraps: a long sentence does not push the header and the scores off the panel', () => {
+    for (const vr of [false, true]) {
+      const html = panelPageHtml({ vr });
+      expect(html).toMatch(/body \{ display: grid; grid-template-columns: minmax\(0, 1fr\);/);
+      expect(html).toMatch(/#msg \{[^}]*-webkit-line-clamp: 6;/);
+      expect(html).not.toMatch(/#msg \{[^}]*white-space: nowrap/);
+    }
+  });
+});
 
 describe('match video crop (D2.5)', () => {
   it('the crop in the video\'s own pixels: as given at the display\'s size, scaled when Chromium delivers it smaller, clamped, none before a frame', () => {
