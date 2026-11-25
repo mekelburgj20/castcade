@@ -486,9 +486,13 @@ export function createOneStep(o: OneStepOptions): OneStep {
     return [...known, ...files];
   };
 
-  /** The link of the match being hosted: the clickable web form when ArcAid carries the match (A14.2), else `castcade://`. */
+  /**
+   * The link of the lobby this PC is in: the clickable web form when ArcAid carries it (A14.2), else `castcade://`.
+   * A17 step 9 (2026-11-27, design 11.9): every member has it, not only the PC that opened the lobby (`invite` is
+   * the code for a member of a lobby through ArcAid, and null for a member of one reached by address).
+   */
   const linkOf = (m: MatchStatus): string | null =>
-    m.role === 'host' && m.invite ? (formatWebJoinLink(m.invite, o.arcaidBaseUrl?.() ?? null) ?? formatJoinLink(m.invite)) : null;
+    m.role !== 'none' && m.invite ? (formatWebJoinLink(m.invite, o.arcaidBaseUrl?.() ?? null) ?? formatJoinLink(m.invite)) : null;
 
   const status = (): OneStepStatus => {
     const m = match.status();
@@ -880,7 +884,8 @@ export function createOneStep(o: OneStepOptions): OneStep {
     }
     // The link goes on the clipboard once per hosted match, when the invite exists (it comes after the listener is up).
     const link = linkOf(m);
-    if (link && m.code && copiedFor === null) copyNow(link, m.code, 'the join link');
+    // A17 step 9: a member has the link too, and theirs is copied when they ask for it: joining a lobby leaves the clipboard alone.
+    if (link && m.role === 'host' && m.code && copiedFor === null) copyNow(link, m.code, 'the join link');
     // A14.7: a held table is for this match only, and a table the player opened meanwhile is the one that is used.
     if (held && (m.code !== held.code || open !== null)) held = null;
     // A17 step 3: the lobby's table (the pick). Its first naming is the table of the join (a table that is open here

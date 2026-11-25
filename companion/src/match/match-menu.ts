@@ -56,6 +56,14 @@ export type MenuItemId =
   // start that goes without what it waits for is `startNow`, never `start`; End match for everyone is `endMatchAll`.
   | 'cancelStart'
   | 'startNow'
+  // A17 step 9 (2026-11-27, the earlier second reader): the last two lines whose meaning moved under one id. The
+  // start of the next game of the open match is `nextGame`, never `start` (a question asked about Start match is
+  // not answered as Next game once a game has been played meanwhile). Leaving is three things: `leave` (a member
+  // goes), `leaveGame` (a member goes during their own game, which they give up by it), `closeLobby` (the lobby's
+  // PC closes the lobby for everyone).
+  | 'nextGame'
+  | 'leaveGame'
+  | 'closeLobby'
   | 'newMatch'
   | 'stance'
   | 'giveUp'
@@ -270,7 +278,7 @@ function lobbyItems(f: MenuFacts, l: MenuLobby): MenuItem[] {
   } else if (!game) {
     // Not while a game is being played: nothing can start then, and the first line of the menu is not one that is off.
     items.push({
-      id: 'start',
+      id: l.start.label === 'Next game' ? 'nextGame' : 'start',
       label: l.start.label,
       value: null,
       off: l.start.off,
@@ -296,13 +304,11 @@ function lobbyItems(f: MenuFacts, l: MenuLobby): MenuItem[] {
   // Two lines with two ids: a question asked about the one is never answered as the other.
   if (l.end === 'match') items.push({ id: 'endMatch', label: 'End match', value: null, off: null, confirm: 'Choose again to end the match; everyone stays in the lobby', subject });
   if (l.end === 'everyone') items.push({ id: 'endMatchAll', label: 'End match for everyone', value: null, off: null, confirm: 'Choose again to end the match for everyone: the game being played gets no result', subject });
-  items.push({
-    id: 'leave',
-    label: l.opener ? 'Close lobby' : 'Leave lobby',
-    value: null,
-    off: null,
-    confirm: l.opener ? 'Choose again to close the lobby for everyone' : 'Choose again to leave the lobby',
-  });
+  // Step 9: three lines with three ids. A member who leaves during their own game gives it up by leaving (design
+  // 11.2): the question says so, and is about that game.
+  if (l.opener) items.push({ id: 'closeLobby', label: 'Close lobby', value: null, off: null, confirm: 'Choose again to close the lobby for everyone' });
+  else if (l.giveUp) items.push({ id: 'leaveGame', label: 'Leave lobby', value: null, off: null, confirm: 'Choose again to leave the lobby: you give up the game you are playing', subject });
+  else items.push({ id: 'leave', label: 'Leave lobby', value: null, off: null, confirm: 'Choose again to leave the lobby' });
   items.push({ id: 'close', label: 'Close menu', value: null, off: null, confirm: null });
   return items;
 }
@@ -424,6 +430,7 @@ export function menuPress(state: MenuState, items: readonly MenuItem[], facts: M
   }
   switch (item.id) {
     case 'start':
+    case 'nextGame':
       return { state: MENU_CLOSED, effect: { kind: 'start', anyway: item.confirm !== null } };
     case 'startNow':
       // The review of PR 138: the press says what it was about (the line's own words): the shell does nothing when
@@ -461,6 +468,8 @@ export function menuPress(state: MenuState, items: readonly MenuItem[], facts: M
     case 'endBall':
       return { state: MENU_CLOSED, effect: { kind: 'endBall', ...(asked !== null ? { grantSeq: asked } : {}) } };
     case 'leave':
+    case 'leaveGame':
+    case 'closeLobby':
       return { state: MENU_CLOSED, effect: { kind: 'leave' } };
     default:
       return { state: MENU_CLOSED, effect: null };

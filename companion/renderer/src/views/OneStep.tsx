@@ -133,7 +133,7 @@ export function TablePicker({
   );
 }
 
-export function OneStepCard({ bridge, one, role, phase }: { bridge: CastcadeBridge; one: OneStepStatus | null; role: MatchStatus['role']; phase: MatchStatus['phase'] }) {
+export function OneStepCard({ bridge, one, role, phase, lobby = false }: { bridge: CastcadeBridge; one: OneStepStatus | null; role: MatchStatus['role']; phase: MatchStatus['phase']; /** A17 step 9: in a lobby the link is in the lobby's own card (Match.tsx `LobbyInvite`), on every member's tab. */ lobby?: boolean }) {
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState<'link' | 'message' | null>(null);
   if (!one) return null;
@@ -144,7 +144,7 @@ export function OneStepCard({ bridge, one, role, phase }: { bridge: CastcadeBrid
     setTimeout(() => setCopied(null), 2000);
   };
   const { pending, launch } = one;
-  const showLink = role === 'host' && phase !== 'none' && phase !== 'connecting' && one.link !== null;
+  const showLink = !lobby && role === 'host' && phase !== 'none' && phase !== 'connecting' && one.link !== null;
   const showLaunch = launch.state !== 'idle' && launch.detail !== null;
   // A14.7: the picked table waits here until the invite is sent.
   const toStart = role === 'host' ? one.tableToStart : null;
@@ -159,12 +159,12 @@ export function OneStepCard({ bridge, one, role, phase }: { bridge: CastcadeBrid
           <p>
             A link asks Castcade to join the lobby {pending.code}
             {pending.address ? ` at ${pending.address}` : ' through ArcAid'}. Joining turns your microphone on for the people in it and starts the lobby&apos;s table in VPX.
-            Only join a match someone you know sent you.
+            Only join a lobby someone you know sent you.
           </p>
           <button type="button" className="primary" onClick={() => call(bridge.launch.confirm())}>
             Join and start the table
           </button>{' '}
-          <button type="button" onClick={() => call(bridge.launch.dismiss())}>
+          <button type="button" className="quiet" onClick={() => call(bridge.launch.dismiss())}>
             Not now
           </button>
         </>

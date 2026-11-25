@@ -154,7 +154,8 @@ function world(
       async join(invite, name) {
         joins.push([invite, name]);
         if (o.joinError) throw new Error(o.joinError);
-        Object.assign(m, { role: 'client', phase: 'lobby', code: invite.slice(-6).toUpperCase(), invite: null });
+        // A17 step 9: as match-host.ts `status()`: a member who joined by a code alone (a lobby through ArcAid) has that code as the invite; one who joined by address has none.
+        Object.assign(m, { role: 'client', phase: 'lobby', code: invite.slice(-6).toUpperCase(), invite: /^[A-Za-z]{6}$/.test(invite) ? invite.toUpperCase() : null });
         sayMatch();
         return status();
       },
@@ -417,6 +418,25 @@ describe('one step to a match: Host (A14 step 1)', () => {
     // The web link pasted into the Join box joins like the castcade:// one.
     const guest = world();
     expect((await guest.one.joinLink('https://arcaid.app/castcade/join/JHDFEF')).role).toBe('client');
+  });
+
+  // A17 step 9 (design 11.9): the invite is on every member's tab. The fake match gives a member the code as the
+  // real one does for a lobby through ArcAid (match-host.ts `status()`), and null for a lobby reached by address.
+  it('a client has the link and the chat line', async () => {
+    const w = world({ relay: true, arcaid: 'https://arcaid.app' });
+    await w.one.joinLink('https://arcaid.app/castcade/join/JHDFEF');
+    expect(w.one.status().link).toBe('https://arcaid.app/castcade/join/JHDFEF');
+    expect(w.one.status().message).toContain('https://arcaid.app/castcade/join/JHDFEF');
+    // Joining put nothing on this person's clipboard; Copy does, when they ask.
+    expect(w.clips).toEqual([]);
+    w.one.copy('link');
+    w.one.copy('message');
+    expect(w.clips).toEqual(['https://arcaid.app/castcade/join/JHDFEF', w.one.status().message]);
+    // A member of a lobby reached by address has no invite of their own to hand on.
+    const direct = world();
+    await direct.one.joinLink('castcade://join/castcade%3Aws%3A%2F%2F203.0.113.7%3A27401%23HOSTED');
+    expect(direct.one.status().link).toBeNull();
+    expect(direct.one.status().message).toBeNull();
   });
 
   it('hosts, puts the join link on the clipboard and starts VPX on the picked table; the table opening ends the wait', async () => {

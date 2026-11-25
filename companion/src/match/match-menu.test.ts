@@ -259,7 +259,11 @@ describe("the in-game menu in a lobby (A17 step 7, 2026-11-25, alpha-match.md se
   it('anybody starts: the start line is on every PC, with its words, and is not there while a game is played', () => {
     expect(ids(inLobby())).toEqual(['start', 'stance', 'voice', 'theirTable', 'myTable', 'mic', 'leave', 'close']);
     expect(line(inLobby(), 'start')).toMatchObject({ label: 'Start match', off: null, confirm: null });
-    expect(line(inLobby({ start: { label: 'Next game', off: null } }, { phase: 'over' }), 'start')?.label).toBe('Next game');
+    // A17 step 9: the next game of the open match is a line of its own (`nextGame`), with the same effect.
+    const next = inLobby({ start: { label: 'Next game', off: null }, game: 'JHDFEF-1/1/between' }, { phase: 'over' });
+    expect(line(next, 'nextGame')?.label).toBe('Next game');
+    expect(line(next, 'start')).toBeUndefined();
+    expect(run(next, ['menu', 'choose'])).toEqual({ state: MENU_CLOSED, effects: [{ kind: 'start', anyway: false }] });
     expect(ids(inLobby({}, { phase: 'playing' }))).toEqual(['stance', 'voice', 'theirTable', 'myTable', 'mic', 'leave', 'close']);
     expect(ids(inLobby({}, { phase: 'paused' }))).not.toContain('start');
     // One choose starts; a start that cannot be made says why and stays open.
@@ -301,7 +305,7 @@ describe("the in-game menu in a lobby (A17 step 7, 2026-11-25, alpha-match.md se
     expect(run(inLobby({ stance: 'watch' }), ['menu', 'down', 'choose']).effects).toEqual([{ kind: 'stance', to: 'play' }]);
 
     const between = inLobby({ start: { label: 'Next game', off: null }, newMatch: { warnings: [] }, end: 'match', game: 'JHDFEF-1/1/between' }, { phase: 'over' });
-    expect(ids(between)).toEqual(['start', 'newMatch', 'stance', 'voice', 'theirTable', 'myTable', 'mic', 'endMatch', 'leave', 'close']);
+    expect(ids(between)).toEqual(['nextGame', 'newMatch', 'stance', 'voice', 'theirTable', 'myTable', 'mic', 'endMatch', 'leave', 'close']);
     const asked = run(between, to(between, 'newMatch').concat('choose'));
     expect(asked.effects).toEqual([]);
     expect(asked.state).toMatchObject({ confirming: 'newMatch', note: 'Choose again: the open match ends' });
@@ -311,7 +315,7 @@ describe("the in-game menu in a lobby (A17 step 7, 2026-11-25, alpha-match.md se
     const dana = "Dana's table cannot report ball ends: it is not patched, an original table, or a machine whose ball ends cannot be read";
     const unreadable = inLobby({ start: { label: 'Next game', off: null }, newMatch: { warnings: [dana] }, end: 'match', game: 'JHDFEF-1/1/between' }, { phase: 'over' });
     expect(line(unreadable, 'newMatch')?.confirm).toBe(`${dana}. Choose again to start anyway: the open match ends`);
-    expect(line(unreadable, 'start')?.confirm).toBeNull();
+    expect(line(unreadable, 'nextGame')?.confirm).toBeNull();
     expect(run(unreadable, to(unreadable, 'newMatch').concat('choose', 'choose')).effects).toEqual([{ kind: 'newMatch', anyway: true }]);
   });
 
@@ -418,10 +422,37 @@ describe("the in-game menu in a lobby (A17 step 7, 2026-11-25, alpha-match.md se
 
   it("leaving: a member's line is Leave lobby, the opener's is Close lobby, and each says what it does before it does it", () => {
     expect(line(inLobby(), 'leave')).toMatchObject({ label: 'Leave lobby', confirm: 'Choose again to leave the lobby' });
-    expect(line(inLobby({ opener: true }, { role: 'host' }), 'leave')).toMatchObject({ label: 'Close lobby', confirm: 'Choose again to close the lobby for everyone' });
+    // A17 step 9: three lines, three ids: a member goes, a member goes and gives up their game by it, the lobby's PC closes the lobby.
+    expect(line(inLobby({ opener: true }, { role: 'host' }), 'closeLobby')).toMatchObject({ label: 'Close lobby', confirm: 'Choose again to close the lobby for everyone' });
+    expect(line(inLobby({ opener: true }, { role: 'host' }), 'leave')).toBeUndefined();
     const f = inLobby({ opener: true }, { role: 'host' });
-    expect(run(f, to(f, 'leave').concat('choose')).effects).toEqual([]);
-    expect(run(f, to(f, 'leave').concat('choose', 'choose')).effects).toEqual([{ kind: 'leave' }]);
+    expect(run(f, to(f, 'closeLobby').concat('choose')).effects).toEqual([]);
+    expect(run(f, to(f, 'closeLobby').concat('choose', 'choose')).effects).toEqual([{ kind: 'leave' }]);
+  });
+
+  it('A17 step 9: a question asked about one line is never answered as the line that took its place', () => {
+    // Leave lobby is asked between games; a game begins and this member is one of its players: the same key now
+    // gives the game up, so it asks again, in its own words, and only the second choose after that leaves.
+    const before = inLobby({ game: 'JHDFEF-1/1/between' }, { phase: 'over' });
+    const asked = run(before, to(before, 'leave').concat('choose'));
+    expect(asked.state).toMatchObject({ confirming: 'leave', note: 'Choose again to leave the lobby' });
+    const during = inLobby({ game: 'JHDFEF-1/2/game', giveUp: true }, { phase: 'playing' });
+    expect(line(during, 'leaveGame')).toMatchObject({ label: 'Leave lobby', confirm: 'Choose again to leave the lobby: you give up the game you are playing' });
+    expect(line(during, 'leave')).toBeUndefined();
+    const settled = menuSettle(asked.state, menuItems(during));
+    expect(settled.confirming).toBeNull();
+    const again = run(during, to(during, 'leaveGame').concat('choose'));
+    expect(again.effects).toEqual([]);
+    expect(again.state).toMatchObject({ confirming: 'leaveGame', confirmSubject: 'JHDFEF-1/2/game' });
+    expect(run(during, ['choose'], again.state).effects).toEqual([{ kind: 'leave' }]);
+    // Start match with a warning is asked; the match is started by somebody else and its first game ends: the first
+    // line is Next game now, and the question about Start match does not start it.
+    const warned = inLobby({}, { startWarnings: ["Krobs's table cannot report ball ends"] });
+    const q = run(warned, ['menu', 'choose']);
+    expect(q.state.confirming).toBe('start');
+    const next = inLobby({ start: { label: 'Next game', off: null }, game: 'JHDFEF-1/1/between' }, { phase: 'over', startWarnings: ["Krobs's table cannot report ball ends"] });
+    expect(menuSettle(q.state, menuItems(next)).confirming).toBeNull();
+    expect(run(next, ['choose'], menuSettle(q.state, menuItems(next))).effects).toEqual([]);
   });
 
   it("the lobby's PC and a player who is away: Play on without them at their own turn; the three answers when they are up and still seen playing; Give up this game for a player of the game", () => {

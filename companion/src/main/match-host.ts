@@ -177,7 +177,7 @@ export interface MatchStatus {
   phase: MatchPhase;
   /** This companion's listener (host), e.g. `ws://0.0.0.0:27401`. */
   endpoint: string | null;
-  /** D10.8: the code alone when the match goes through ArcAid, else the address invite. */
+  /** D10.8: the code alone when the match goes through ArcAid, else the address invite. A17 step 9: a member of a lobby through ArcAid has the code too; a member of one reached by address has null. */
   invite: string | null;
   /**
    * D10.8: the address invite of a host whose invite is the code (its listener still serves LAN players, forwarded
@@ -1111,7 +1111,10 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       role: a ? a.role : 'none',
       phase,
       endpoint: a?.ws?.endpoint ?? null,
-      invite: a?.invite ?? null,
+      // A17 step 9 (2026-11-27, design 11.9): the invite is on every member's tab, not only the opener's: a member of
+      // a lobby that goes through ArcAid has its code (what they joined with) to pass on. A member of a lobby reached
+      // by address has none here: that invite is the opener's own address, and stays the opener's to give.
+      invite: a ? (a.invite ?? (a.role === 'client' && a.via === 'relay' ? a.code : null)) : null,
       directInvite: a?.directInvite ?? null,
       ipSource: a?.ipSource ?? null,
       via: a?.via ?? null,
@@ -2714,11 +2717,14 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   const runMenuEffect = (effect: MenuEffect): void => {
     // A refusal (the lobby is not complete, no next game yet) comes back onto the menu, on the line that asked.
     const refused =
-      (at: 'start' | 'next' | 'startNow') =>
+      (...lines: Array<'start' | 'nextGame' | 'next' | 'startNow'>) =>
       (e: unknown): void => {
         if (!active) return;
         // The review of PR 136: on the line that asked only while it is still there; else the sentence is the panel's.
-        if (!menuItems(menuFacts(active)).some((it) => it.id === at)) {
+        // A17 step 9: the start's line is `start` or `nextGame` (match-menu.ts): the one of them that is in the menu now.
+        const items = menuItems(menuFacts(active));
+        const at = lines.find((id) => items.some((it) => it.id === id));
+        if (at === undefined) {
           active.controller.notify(e instanceof Error ? e.message : String(e));
           return;
         }
@@ -2737,7 +2743,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     switch (effect.kind) {
       case 'start':
         log.info(`match: ${effect.now ? 'Start without what the start waits for' : 'Start'} chosen in the menu${effect.anyway ? ' (anyway)' : ''}`);
-        void api.start({ anyway: effect.anyway, now: effect.now === true, ...(effect.without !== undefined ? { without: effect.without } : {}) }).catch(refused(effect.now ? 'startNow' : 'start'));
+        void api.start({ anyway: effect.anyway, now: effect.now === true, ...(effect.without !== undefined ? { without: effect.without } : {}) }).catch(effect.now ? refused('startNow') : refused('start', 'nextGame'));
         return;
       case 'cancelStart':
         log.info('match: Cancel the start chosen in the menu');
