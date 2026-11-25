@@ -23,6 +23,11 @@
  * A17 step 4 (2026-11-24, alpha-match.md §11.2, §11.9): "End my ball" for the player who is up: their ball ends at
  * the score as it stands and the turn passes (their own BALL_END, `manual`). For a table whose ball ends Castcade
  * cannot read and for a stuck ball, from the headset, where the player is; it asks for a second choose.
+ *
+ * The review of PR 131: the question is about one grant. `MenuFacts.endBall` carries the grant, the first choose
+ * notes it (`MenuState.confirmFor`), and a second choose for another grant (the table ended the ball with an extra
+ * ball in between: the same ball number, another score) only asks again. And the question says what becomes of a
+ * ball that is still on the table: it is played out at the next turn.
  */
 
 import type { PanelMenu } from '../media/match-media-types.js';
@@ -57,7 +62,7 @@ export interface MenuFacts {
    * A17 step 4: the "End my ball" line: the ball this player is playing and the score it would end at; null (or absent,
    * in facts from before it): no such line (it is not this player's ball, or the match is paused).
    */
-  endBall?: { ball: number; score: number } | null;
+  endBall?: { ball: number; score: number; grantSeq?: number; tableBall?: boolean } | null;
 }
 
 export interface MenuItem {
@@ -79,6 +84,14 @@ export const MENU_VOLUME: Record<MenuVolume, { min: number; max: number; step: n
 };
 
 const isVolume = (id: MenuItemId): id is MenuVolume => id === 'voice' || id === 'theirTable' || id === 'myTable';
+
+/**
+ * The menu's question before a ball is ended by hand: the score it ends at, and, on a table whose ball is still in
+ * play, that the ball is not lost (the review of PR 131: it is played out first at the player's next turn).
+ */
+export function endBallQuestion(b: { score: number; tableBall?: boolean }): string {
+  return `Choose again to end your ball at ${b.score.toLocaleString('en-US')}${b.tableBall ? '. The ball on your table is played out first at your next turn' : ''}`;
+}
 
 export function menuItems(f: MenuFacts): MenuItem[] {
   const items: MenuItem[] = [];
@@ -120,7 +133,7 @@ export function menuItems(f: MenuFacts): MenuItem[] {
   }
   // A17 step 4: the player who is up may end their own ball by hand; the score is said before it is done.
   if (f.endBall) {
-    items.push({ id: 'endBall', label: 'End my ball', value: null, off: null, confirm: `Choose again to end your ball at ${f.endBall.score.toLocaleString('en-US')}` });
+    items.push({ id: 'endBall', label: 'End my ball', value: null, off: null, confirm: endBallQuestion(f.endBall) });
   }
   // The host's leave between games is End match (A10); at any other time, and for a client, it is Leave match.
   const ends = f.role === 'host' && f.phase === 'over' && !f.seriesOver;
@@ -143,6 +156,8 @@ export interface MenuState {
   confirming: MenuItemId | null;
   /** One line under the menu: the question, a refusal, or what the last choose did. */
   note: string | null;
+  /** The review of PR 131: for End my ball, the grant the question on screen was asked about (absent: none). */
+  confirmFor?: number | null;
 }
 
 export const MENU_CLOSED: MenuState = { open: false, at: null, confirming: null, note: null };
@@ -158,7 +173,7 @@ export type MenuEffect =
   /** D8.12.3: the layer captures the scoreboard's place again, where the head points now. */
   | { kind: 'placeScoreboard' }
   /** A17 step 4: this player's own ball ends now, by hand. */
-  | { kind: 'endBall' }
+  | { kind: 'endBall'; grantSeq?: number }
   | { kind: 'leave' };
 
 /** The index of the chosen line among `items` (the first line when it is gone or none was chosen). */
@@ -197,7 +212,11 @@ export function menuPress(state: MenuState, items: readonly MenuItem[], facts: M
   }
   if (key === 'left') return { state, effect: null };
   if (item.off !== null) return { state: { ...here, note: item.off }, effect: null };
-  if (item.confirm !== null && state.confirming !== item.id) return { state: { ...here, confirming: item.id, note: item.confirm }, effect: null };
+  // The review of PR 131: End my ball's question is about one grant: asked again when the grant is another by now.
+  const asked = item.id === 'endBall' ? (facts.endBall?.grantSeq ?? null) : null;
+  if (item.confirm !== null && (state.confirming !== item.id || (item.id === 'endBall' && (state.confirmFor ?? null) !== asked))) {
+    return { state: { ...here, confirming: item.id, note: item.confirm, ...(item.id === 'endBall' ? { confirmFor: asked } : {}) }, effect: null };
+  }
   switch (item.id) {
     case 'start':
       return { state: MENU_CLOSED, effect: { kind: 'start', anyway: item.confirm !== null } };
@@ -209,7 +228,7 @@ export function menuPress(state: MenuState, items: readonly MenuItem[], facts: M
       // The menu closes: the panel goes, and the scoreboard is seen at its new place at once.
       return { state: MENU_CLOSED, effect: { kind: 'placeScoreboard' } };
     case 'endBall':
-      return { state: MENU_CLOSED, effect: { kind: 'endBall' } };
+      return { state: MENU_CLOSED, effect: { kind: 'endBall', ...(asked !== null ? { grantSeq: asked } : {}) } };
     case 'leave':
       return { state: MENU_CLOSED, effect: { kind: 'leave' } };
     default:

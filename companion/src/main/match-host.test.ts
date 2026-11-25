@@ -1395,7 +1395,7 @@ describe('match host: tables that cannot report ball ends (A13, 2026-11-12)', ()
     await until(() => H.mh.status().participants.length === 2 && H.mh.status().startWarnings.length === 2);
     // Nobody has a ball to end before the match.
     expect(H.mh.status().endBall).toBeNull();
-    await expect(H.mh.endMyBall()).rejects.toThrow('Your ball cannot be ended now: it is not your ball');
+    await expect(H.mh.endMyBall(1)).rejects.toThrow('Your ball cannot be ended now: it is not your ball');
     // The start still asks, and now says who ends such a ball: the player, or the host.
     await expect(H.mh.start()).rejects.toThrow(/cannot report ball ends.*Start anyway to play it by hand: that player ends each ball with End my ball \(the in-game menu or the Match tab\), or you end it with Pass the turn\.$/);
     await H.mh.start({ anyway: true });
@@ -1404,16 +1404,21 @@ describe('match host: tables that cannot report ball ends (A13, 2026-11-12)', ()
     for (let ball = 1; ball <= 3; ball++) {
       // The host's ball: only the host has it to end; a client that tries is told it is not its ball.
       await until(() => H.mh.status().endBall?.ball === ball, 8000);
-      expect(H.mh.status().endBall).toEqual({ ball, score: 0 });
+      // Nothing would be left on such a table: no ball end will ever come from it (`tableBall`).
+      const asked = H.mh.status().endBall!.grantSeq;
+      expect(H.mh.status().endBall).toEqual({ grantSeq: asked, ball, score: 0, tableBall: false });
       expect(C.mh.status().endBall).toBeNull();
-      await expect(C.mh.endMyBall()).rejects.toThrow('Your ball cannot be ended now: it is not your ball');
-      const ended = await H.mh.endMyBall();
+      await expect(C.mh.endMyBall(asked)).rejects.toThrow('Your ball cannot be ended now: it is not your ball');
+      // The review of PR 131: an answer to a question about another grant ends nothing, in the main process.
+      await expect(H.mh.endMyBall(asked + 1000)).rejects.toThrow('Your ball was not ended: the question was about an earlier ball (the table ended that one meanwhile, or the turn went round). Press End my ball again for this one.');
+      expect(H.mh.status().endBall?.grantSeq).toBe(asked);
+      const ended = await H.mh.endMyBall(asked);
       expect(ended).toMatchObject({ endBall: null, lastError: null });
       // The client's ball: the same from the other seat. Until now only the host's Pass the turn moved this turn on.
       await until(() => C.mh.status().endBall?.ball === ball && C.mh.status().locked === false, 8000);
       expect(H.mh.status().endBall).toBeNull();
       expect(existsSync(H.lock)).toBe(true);
-      await C.mh.endMyBall();
+      await C.mh.endMyBall(C.mh.status().endBall!.grantSeq);
       await until(() => C.mh.status().locked || C.mh.status().phase === 'over', 8000);
     }
     await until(() => H.mh.status().phase === 'over' && C.mh.status().phase === 'over', 8000);
@@ -1842,6 +1847,129 @@ describe('D10.8 (2026-11-12): match control through ArcAid, and the router port 
     expect(existsSync(H.lock)).toBe(true);
   }, 30_000);
 
+  it("A17 step 4 (the review of PR 131): paused for the player up with the native video arriving (the helper's recv stats above 0 frames a second): the theater stays; 0 for the grace: the panel; frames again: the theater", async () => {
+    const r = await fakeRelay();
+    const hv = stubHelper();
+    const cv = stubHelper();
+    const signalling = (role: Parameters<typeof matchSignalling>[0], me: string) => matchSignalling(role, me);
+    const o = fakeOverlay();
+    const hl = collect();
+    // The host's panel page never has a video track from the client here: the native helper is the only picture.
+    const H = mk('a17-4-native-host', { ...paired(r, 'h'), witness: liveWitness(VR_ON, VR_OFF).w, media: fakeMedia().media, vrOverlay: o.overlay, log: hl.log, signalling, upAwayPictureMs: 300, nativeVideo: { helper: hv.helper as never, sendRing: 'HOSTsend_ABCDEFG', recvRing: 'HOSTrecv_ABCDEFG' } });
+    const C = mk('a17-4-native-client', { ...paired(r, 'c'), signalling, nativeVideo: { helper: cv.helper as never, sendRing: 'CLNTsend_ABCDEFG', recvRing: 'CLNTrecv_ABCDEFG' } });
+    const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
+    await C.mh.join(hs.invite!, 'Krobs');
+    await until(() => H.mh.status().participants.length === 2);
+    const cid = C.mh.status().localId as string;
+    await until(() => H.mh.status().media?.nativeVideo?.peers[cid]?.ice === 'connected', 8000);
+    const frames = (fps: number): void => hv.say({ event: 'stats', id: cid, dir: 'recv', fps, kbps: fps > 0 ? 8000 : 0, width: fps > 0 ? 1354 : 0, height: fps > 0 ? 1440 : 0 });
+    await H.mh.start();
+    await until(() => C.mh.status().phase === 'playing');
+    await H.mh.passTurn();
+    await until(() => C.mh.status().panel?.myTurn === true && o.modes.at(-1) === 'theater', 8000);
+    frames(60);
+    const modes = o.modes.length;
+
+    // Krobs' link to the host goes for good; he plays on, and his picture (helper to helper) still arrives.
+    r.revoke('dev-c');
+    r.dropDevice('dev-c');
+    await until(() => H.mh.status().phase === 'paused', 8000);
+    expect(H.mh.status().panel).toMatchObject({ phase: 'paused', playerUp: cid, pausedFor: cid, myTurn: false });
+    expect(H.mh.status().media?.nativeVideo?.peers[cid]?.recv?.fps).toBe(60);
+    await new Promise((res) => setTimeout(res, 700)); // more than twice the time a missing picture is given
+    frames(58);
+    expect(o.modes.slice(modes)).toEqual([]);
+    expect(hl.lines.filter((l) => l.includes('paused for Krobs, who is up and away from the host; their picture still arrives on this PC'))).toHaveLength(1);
+
+    // The helper's statistics say no frame arrives: the grace, then the panel.
+    frames(0);
+    expect(o.modes.slice(modes)).toEqual([]);
+    await until(() => o.modes.at(-1) === 'panel', 3000);
+    expect(o.modes.slice(modes)).toEqual(['panel']);
+    expect(hl.lines).toContain("match: Krobs's picture no longer arrives on this PC (the match is still paused for them): the panel now");
+    // Frames again while the pause stands: the theater again.
+    frames(60);
+    expect(o.modes.slice(modes)).toEqual(['panel', 'theater']);
+    expect(existsSync(H.lock)).toBe(true);
+  }, 30_000);
+
+  it("A17 step 4 (the review of PR 131, finding 2): a ball ended by hand drains during the other player's turn, and on the next ball ArcAid drops the match for a moment: the old drain is not fed again and the ball in play is not ended; its own end ends it, once", async () => {
+    const r = await fakeRelay();
+    const H = a18Seat('a17-4-owed-host', 'h', r, 111, 4000);
+    const C = a18Seat('a17-4-owed-client', 'c', r, 222, 4000);
+    const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
+    await C.mh.join(hs.invite!, 'Krobs');
+    await until(() => H.mh.status().participants.length === 2);
+    await H.mh.start();
+    await until(() => C.mh.status().phase === 'playing');
+    await H.mh.passTurn();
+    await until(() => C.mh.status().panel?.myTurn === true && C.mh.status().locked === false, 8000);
+    const krobs = (): { score: number | null; ballsDone: number } | undefined => H.mh.status().panel?.players.find((p) => p.name === 'Krobs');
+    C.feed({ kind: 'game_start', players: 1 });
+    C.feed({ kind: 'current_scores', scores: [1200], ball: 1 });
+    await until(() => C.mh.status().endBall?.score === 1200);
+    expect(C.mh.status().endBall).toMatchObject({ ball: 1, score: 1200, tableBall: true });
+    await C.mh.endMyBall(C.mh.status().endBall!.grantSeq);
+    await until(() => H.mh.status().panel?.myTurn === true && H.mh.status().panel?.ball === 2, 8000);
+    // The ball drains on the client's locked table during the host's ball: nothing is reported for it.
+    C.feed({ kind: 'ball_end', ball: 1, extraBalls: 0 });
+    C.feed({ kind: 'current_scores', scores: [1250], ball: 1 });
+    expect(C.lines).toContain('match: the ball that was ended by hand has ended on the table: nothing is reported for it');
+    await H.mh.passTurn();
+    await until(() => C.mh.status().panel?.myTurn === true && C.mh.status().panel?.ball === 2 && C.mh.status().locked === false, 8000);
+    expect(C.mh.status().panel?.message ?? '').not.toContain('still on the table');
+    C.feed({ kind: 'current_scores', scores: [1500], ball: 2 });
+    await until(() => krobs()?.score === 1500);
+
+    // ArcAid loses the host for a moment, inside the grace: everybody is back by themselves.
+    r.dropDevice('dev-h');
+    await until(() => H.lines.some((l) => l.includes('ArcAid is not carrying this match for the moment')));
+    await until(() => C.lines.some((l) => l.startsWith('match: the link to the host was away for a moment and is back (')), 10_000);
+    await new Promise((res) => setTimeout(res, 300));
+    // Until this fix the client said here: "2 table event(s) since the log last grew go to the match now (1 ball
+    // end(s))", "ball 2 ended on the table", "BALL_END ball 2 score 1500".
+    expect(C.lines.filter((l) => l.includes('ball 2 ended on the table') || l.includes('BALL_END ball 2') || / \([1-9]\d* ball end\(s\)\)/.test(l))).toEqual([]);
+    expect(C.mh.status()).toMatchObject({ phase: 'playing', locked: false, panel: { myTurn: true, ball: 2 } });
+    expect(krobs()).toMatchObject({ score: 1500, ballsDone: 1 });
+    // The ball's own end ends it, once.
+    C.feed({ kind: 'current_scores', scores: [2400], ball: 2 });
+    C.feed({ kind: 'ball_end', ball: 2, extraBalls: 0 });
+    C.feed({ kind: 'current_scores', scores: [2400], ball: 2 });
+    await until(() => H.mh.status().panel?.myTurn === true && H.mh.status().panel?.ball === 3, 10_000);
+    expect(krobs()).toMatchObject({ score: 2400, ballsDone: 2 });
+    expect(C.lines.filter((l) => l.startsWith('match: BALL_END ball 2'))).toEqual(['match: BALL_END ball 2 score 2400']);
+    expect(H.lines.concat(C.lines).filter((l) => l.includes('rejected'))).toEqual([]);
+  }, 40_000);
+
+  it('A17 step 4 (the review of PR 131): a ball end of the table that comes with no grant held (a second "ball end" after the turn has passed) is not kept either: a reconnect on the next ball feeds nothing', async () => {
+    const r = await fakeRelay();
+    const H = a18Seat('a17-4-stray-host', 'h', r, 111, 4000);
+    const C = a18Seat('a17-4-stray-client', 'c', r, 222, 4000);
+    const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
+    await C.mh.join(hs.invite!, 'Krobs');
+    await until(() => H.mh.status().participants.length === 2);
+    await H.mh.start();
+    await until(() => C.mh.status().phase === 'playing');
+    await H.mh.passTurn();
+    await until(() => C.mh.status().panel?.myTurn === true && C.mh.status().locked === false, 8000);
+    C.feed({ kind: 'game_start', players: 1 });
+    C.feed({ kind: 'current_scores', scores: [800], ball: 1 });
+    C.feed({ kind: 'ball_end', ball: 1, extraBalls: 0 });
+    C.feed({ kind: 'current_scores', scores: [800], ball: 1 });
+    await until(() => H.mh.status().panel?.myTurn === true && H.mh.status().panel?.ball === 2, 8000);
+    // The table says "ball end" again with the turn gone (the host is up): an end of nothing.
+    C.feed({ kind: 'ball_end', ball: 1, extraBalls: 0 });
+    await H.mh.passTurn();
+    await until(() => C.mh.status().panel?.myTurn === true && C.mh.status().panel?.ball === 2 && C.mh.status().locked === false, 8000);
+    C.feed({ kind: 'current_scores', scores: [900], ball: 2 });
+    r.dropDevice('dev-h');
+    await until(() => H.lines.some((l) => l.includes('ArcAid is not carrying this match for the moment')));
+    await until(() => C.lines.some((l) => l.startsWith('match: the link to the host was away for a moment and is back (')), 10_000);
+    await new Promise((res) => setTimeout(res, 300));
+    expect(C.lines.filter((l) => l.includes('ball 2 ended on the table') || l.includes('BALL_END ball 2') || / \([1-9]\d* ball end\(s\)\)/.test(l))).toEqual([]);
+    expect(C.mh.status()).toMatchObject({ phase: 'playing', locked: false, panel: { myTurn: true, ball: 2 } });
+  }, 40_000);
+
   /**
    * The review of PR 127: every way a lobby ends for a client while its page still holds a voice peer. A seat whose
    * page records its peers and its detach; the linger after "the lobby is over" is short here (20 s in the app).
@@ -2248,18 +2376,71 @@ describe('match host: the in-game menu and the quiet lobby (D8.9 / D8.10, 2026-1
     expect(menus.at(-1)!.index).toBe(4);
     // The first choose asks, with the score as it stands; the ball is still this player's.
     press('Control+Alt+K');
-    expect(menus.at(-1)!.note).toBe('Choose again to end your ball at 12,345,670');
+    // A game runs on this table and its ball is in play: the question says the ball is not lost.
+    const QUESTION = 'Choose again to end your ball at 12,345,670. The ball on your table is played out first at your next turn';
+    expect(menus.at(-1)!.note).toBe(QUESTION);
     expect(H.mh.status().panel?.myTurn).toBe(true);
-    // The second ends it: the menu closes, the table locks and the turn passes to the client.
+    // The review of PR 131, finding 4: the key is still held (it repeats 30 ms apart): the repeats do not answer the
+    // question, with the choose key or with Right.
+    press('Control+Alt+K', 30);
+    press('Control+Alt+K', 30);
+    press('Right', 30);
+    press('Control+Alt+K', 300);
+    expect(menus.at(-1)!.note).toBe(QUESTION);
+    expect(H.mh.status()).toMatchObject({ locked: false, panel: { myTurn: true, ball: 1 } });
+    expect(C.mh.status().panel?.myTurn).toBe(false);
+    // A keyboard as Windows installs it: the first repeat comes 500 ms after the press, which is past the 400 ms,
+    // and the next ones 33 ms apart. The first repeat looks like a press of its own until the second is there:
+    // nothing is answered while the key is held, however long.
+    press('Down');
+    press('Up');
     press('Control+Alt+K');
-    expect(menus.at(-1)).toBeNull();
+    expect(menus.at(-1)!.note).toBe(QUESTION);
+    press('Control+Alt+K', 500);
+    for (let i = 0; i < 40; i++) press('Control+Alt+K', 33);
+    await new Promise((res) => setTimeout(res, 400)); // more than twice the wait a first repeat is given
+    expect(menus.at(-1)!.note).toBe(QUESTION);
+    expect(H.mh.status()).toMatchObject({ locked: false, panel: { myTurn: true, ball: 1 } });
+    expect(C.mh.status().panel?.myTurn).toBe(false);
+
+    // Finding 3: the question was about one grant. The table ends the ball with an extra ball before the answer: the
+    // same ball number is granted again, at another score, and the question goes from the menu with its grant.
+    const asked = H.mh.status().endBall!.grantSeq;
+    for (const cb of heard) cb({ kind: 'ball_end', t: 0, player: 1, ball: 1, extraBalls: 1 } as Feed);
+    for (const cb of heard) cb({ kind: 'current_scores', t: 0, scores: [12_400_000], player: 1, ball: 1 } as Feed);
+    await until(() => H.mh.status().endBall?.score === 12_400_000 && H.mh.status().endBall?.grantSeq !== asked, 8000);
+    expect(H.mh.status().panel).toMatchObject({ myTurn: true, ball: 1 });
+    expect(menus.at(-1)).toMatchObject({ index: 4, note: null });
+    // One choose now only asks again, for this grant and at this score.
+    press('Control+Alt+K');
+    const AGAIN = 'Choose again to end your ball at 12,400,000. The ball on your table is played out first at your next turn';
+    expect(menus.at(-1)!.note).toBe(AGAIN);
+    expect(H.mh.status()).toMatchObject({ locked: false, panel: { myTurn: true, ball: 1 } });
+    // And an answer that names the old grant ends nothing, whoever sends it (the Match tab's confirmation row).
+    await expect(H.mh.endMyBall(asked)).rejects.toThrow(/^Your ball was not ended: the question was about an earlier ball/);
+    expect(H.mh.status().panel?.myTurn).toBe(true);
+    // The second ends it (a moment later: the press is first seen not to be a repeat): the menu closes, the table
+    // locks and the turn passes to the client.
+    press('Control+Alt+K');
+    expect(menus.at(-1)!.note).toBe(AGAIN);
+    await until(() => menus.at(-1) === null, 3000);
     await until(() => C.mh.status().panel?.myTurn === true && H.mh.status().locked, 8000);
-    expect(H.mh.status().panel?.players.find((p) => p.name === 'Owner')).toMatchObject({ score: 12_345_670, ballsDone: 1 });
-    expect(C.mh.status().panel?.players.find((p) => p.name === 'Owner')).toMatchObject({ score: 12_345_670, ballsDone: 1 });
+    expect(H.mh.status().panel?.players.find((p) => p.name === 'Owner')).toMatchObject({ score: 12_400_000, ballsDone: 1 });
+    expect(C.mh.status().panel?.players.find((p) => p.name === 'Owner')).toMatchObject({ score: 12_400_000, ballsDone: 1 });
     // It is the client's ball now: the host's menu has no such line any more.
     press('Control+Alt+M');
     expect(labels()).toEqual(['Voice volume', 'Their table sound', 'My table while I play', 'Microphone', 'Leave match', 'Close menu']);
-  }, 20_000);
+    // Finding 4 for Leave match: a held choose key asks and does not answer; a press of its own does.
+    for (let i = 0; i < 4; i++) press('Down');
+    expect(menus.at(-1)!.index).toBe(4);
+    press('Control+Alt+K');
+    press('Control+Alt+K', 30);
+    press('Right', 30);
+    expect(menus.at(-1)!.note).toBe('Choose again to leave the match');
+    expect(H.mh.status().role).toBe('host');
+    press('Control+Alt+K', 400);
+    await until(() => H.mh.status().role === 'none', 8000);
+  }, 30_000);
 
   it('D8.12.3: "Put the scoreboard where I look" is on the menu of a layer rig in a match, asks the layer once, and is off for a layer that cannot', async () => {
     type Menu = { items: Array<{ label: string; value: string | null; off: boolean }>; index: number; note: string | null; hint: string } | null;

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_MATCH_SETTINGS, patchMatchSettings } from '../main/match-setup.js';
 import { DEFAULT_VR_VIEW, vrViewMode } from './controller.js';
-import { MENU_CLOSED, cleanShortcut, menuItems, menuPress, menuView, readMenuKey, shortcutWords, steppedVolume, type MenuFacts, type MenuKey, type MenuState } from './match-menu.js';
+import { MENU_CLOSED, cleanShortcut, endBallQuestion, menuItems, menuPress, menuView, readMenuKey, shortcutWords, steppedVolume, type MenuFacts, type MenuKey, type MenuState } from './match-menu.js';
 
 const facts = (over: Partial<MenuFacts> = {}): MenuFacts => ({
   role: 'host',
@@ -139,7 +139,7 @@ describe('the in-game menu (D8.10, 2026-11-14)', () => {
     // The first choose asks, with the score; nothing is done yet.
     const asked = run(f, [...to, 'choose']);
     expect(asked.effects).toEqual([]);
-    expect(asked.state).toEqual({ open: true, at: 'endBall', confirming: 'endBall', note: 'Choose again to end your ball at 12,345,670' });
+    expect(asked.state).toEqual({ open: true, at: 'endBall', confirming: 'endBall', note: 'Choose again to end your ball at 12,345,670', confirmFor: null });
     // The second does it and closes the menu; the arrow to the right chooses like the choose key; left does nothing.
     const done = run(f, [...to, 'choose', 'choose']);
     expect(done.effects).toEqual([{ kind: 'endBall' }]);
@@ -152,6 +152,29 @@ describe('the in-game menu (D8.10, 2026-11-14)', () => {
     expect(menuItems({ ...f, endBall: { ball: 1, score: 0 } }).find((i) => i.id === 'endBall')?.confirm).toBe('Choose again to end your ball at 0');
     // Leave match is one line further down, and still asks twice.
     expect(run(f, [...to, 'menu', 'choose', 'choose']).effects).toEqual([{ kind: 'leave' }]);
+  });
+
+  it('A17 step 4 (the review of PR 131): the question of End my ball is about one grant: the answer carries it, a choose under another grant only asks again, and the question says when the ball stays on the table', () => {
+    const to: MenuKey[] = ['menu', 'menu', 'menu', 'menu', 'menu'];
+    const f = facts({ role: 'host', phase: 'playing', endBall: { grantSeq: 7, ball: 1, score: 1_000_000, tableBall: true } });
+    const QUESTION = 'Choose again to end your ball at 1,000,000. The ball on your table is played out first at your next turn';
+    expect(endBallQuestion({ score: 1_000_000, tableBall: true })).toBe(QUESTION);
+    expect(endBallQuestion({ score: 1_000_000, tableBall: false })).toBe('Choose again to end your ball at 1,000,000');
+    const asked = run(f, [...to, 'choose']);
+    expect(asked.state).toEqual({ open: true, at: 'endBall', confirming: 'endBall', note: QUESTION, confirmFor: 7 });
+    // The same grant: the second choose ends that ball, and says which.
+    expect(run(f, ['choose'], asked.state).effects).toEqual([{ kind: 'endBall', grantSeq: 7 }]);
+    // The table ended the ball with an extra ball meanwhile: ball 1 again under grant 8, at another score. The second
+    // choose does not end it: it asks about this one.
+    const regranted = { ...f, endBall: { grantSeq: 8, ball: 1, score: 1_050_000, tableBall: true } };
+    const again = run(regranted, ['choose'], asked.state);
+    expect(again.effects).toEqual([]);
+    expect(again.state).toEqual({ open: true, at: 'endBall', confirming: 'endBall', note: 'Choose again to end your ball at 1,050,000. The ball on your table is played out first at your next turn', confirmFor: 8 });
+    expect(run(regranted, ['right'], again.state).effects).toEqual([{ kind: 'endBall', grantSeq: 8 }]);
+    // Leave match keeps no grant: its second choose leaves, whatever the turn did meanwhile.
+    const leaving = run(f, [...to, 'menu', 'choose']);
+    expect(leaving.state).toEqual({ open: true, at: 'leave', confirming: 'leave', note: 'Choose again to leave the match' });
+    expect(run({ ...f, endBall: null }, ['choose'], leaving.state).effects).toEqual([{ kind: 'leave' }]);
   });
 
   it('keeps its place when a line goes (the match started while the menu was open)', () => {

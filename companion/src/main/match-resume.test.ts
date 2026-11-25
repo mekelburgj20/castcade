@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { AnyMessage } from '@castcade/protocol';
 import { MatchLog, type LogEntry } from '../match/log.js';
 import type { JournalMark } from '../witness/types.js';
-import { AUTO_RESUME_MS, CLIENT_RESUME_MAX_MS, HOST_WAIT_MS, TableBacklog, createResumeStore, parseResume, resumeFreshness, turnEndsOf, type ResumeRecord } from './match-resume.js';
+import { AUTO_RESUME_MS, CLIENT_RESUME_MAX_MS, HOST_WAIT_MS, TableBacklog, createResumeStore, parseResume, resumeFreshness, turnEndSeqsOf, turnEndsOf, type ResumeRecord } from './match-resume.js';
 
 /** A log entry carrying just what `turnEndsOf` reads. */
 const msg = (type: string, from: string, payload: Record<string, unknown> = {}): AnyMessage => ({ type, from, payload }) as unknown as AnyMessage;
@@ -29,6 +29,7 @@ const record = (patch: Partial<ResumeRecord> = {}): ResumeRecord => ({
   mark: { path: '/journal/t.jsonl', session: 's1', loaded: 50, offset: 120 },
   aliveAt: 1_000_000,
   restart: null,
+  owed: [],
   ...patch,
 });
 
@@ -103,6 +104,29 @@ describe('the saved match record (A15)', () => {
     expect(turnEndsOf(log, 'h')).toBe(1);
     expect(turnEndsOf([...log, ...logOf(msg('NEXT_GAME', 'h'), msg('BALL_END', 'p1')).slice(0)], 'p1')).toBe(1);
   });
+
+  it('A17 step 4 (the review of PR 131): the table ball ends still owed are kept with the record; one from before has none, and anything that is not a grant number is dropped', () => {
+    const text = (owed: unknown): string => JSON.stringify({ ...record(), owed });
+    expect(parseResume(text([7, 12]))?.owed).toEqual([7, 12]);
+    expect(parseResume(text([7, 'x', -1, 2.5, null, 9]))?.owed).toEqual([7, 9]);
+    expect(parseResume(text('7'))?.owed).toEqual([]);
+    const before = { ...record() } as Partial<ResumeRecord>;
+    delete before.owed;
+    expect(parseResume(JSON.stringify(before))?.owed).toEqual([]);
+  });
+
+  it("A17 step 4 (the review of PR 131): the grants of this player's turn ends in the current game, as `turnEndsOf` counts them", () => {
+    const log = logOf(
+      msg('MATCH_READY', 'h'),
+      msg('BALL_END', 'h', { grantSeq: 1 }),
+      msg('BALL_END', 'p1', { grantSeq: 2 }),
+      msg('TURN_PASS', 'h', { player: 'p1', grantSeq: 4 }),
+      msg('TURN_PASS', 'h', { player: 'p2', grantSeq: 5 }),
+    );
+    expect(turnEndSeqsOf(log, 'p1')).toEqual([2, 4]);
+    expect(turnEndSeqsOf(log, 'h')).toEqual([1]);
+    expect(turnEndSeqsOf(logOf(msg('MATCH_READY', 'h'), msg('BALL_END', 'p1', { grantSeq: 2 }), msg('NEXT_GAME', 'h'), msg('BALL_END', 'p1', { grantSeq: 9 })), 'p1')).toEqual([9]);
+  });
 });
 
 describe('TableBacklog: what of the table is news to the match (A15)', () => {
@@ -124,6 +148,25 @@ describe('TableBacklog: what of the table is news to the match (A15)', () => {
     b.clear();
     expect(b.pending()).toEqual([]);
     expect(b.holdsEnd()).toBe(false);
+  });
+
+  it('A17 step 4 (the review of PR 131): an end the match will never take is forgotten, that one alone; the rest stays for the log to answer', () => {
+    const b = new TableBacklog<Ev>(null, false);
+    const drain: Ev = { kind: 'ball_end', ball: 1 };
+    const real: Ev = { kind: 'ball_end', ball: 2 };
+    b.take({ kind: 'current_scores', score: 1 }, live(10));
+    b.take(drain, live(20));
+    expect(b.holdsEnd()).toBe(true);
+    b.forget(drain);
+    expect(b.holdsEnd()).toBe(false);
+    expect(b.pending()).toEqual([{ kind: 'current_scores', score: 1 }]);
+    b.take(drain, live(30));
+    b.take(real, live(40));
+    b.forget(drain);
+    expect(b.pending()).toEqual([{ kind: 'current_scores', score: 1 }, real]);
+    // Something it never held: nothing happens.
+    b.forget({ kind: 'ball_end', ball: 2 });
+    expect(b.pending()).toHaveLength(2);
   });
 
   it('after a restart: nothing at or before the saved mark, everything after it', () => {

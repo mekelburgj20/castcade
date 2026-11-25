@@ -76,7 +76,7 @@ import { replayLog, type MatchState } from '../match/state.js';
 import type { ForkLaunch } from '../launch/vpx-launch.js';
 import type { GameEvent } from '../witness/journal-detector.js';
 import type { JournalMark } from '../witness/types.js';
-import { HOST_WAIT_MS, RESUME_FILE, RESUME_HEARTBEAT_MS, TableBacklog, createResumeStore, resumeFreshness, turnEndsOf, type ResumeRecord } from './match-resume.js';
+import { HOST_WAIT_MS, RESUME_FILE, RESUME_HEARTBEAT_MS, TableBacklog, createResumeStore, resumeFreshness, turnEndSeqsOf, turnEndsOf, type ResumeRecord } from './match-resume.js';
 import type { Transport } from '../match/transport.js';
 import { CompositeTransport, RelayClientTransport, RelayError, RelayHostTransport, type RejoinPolicy } from '../match/transport-relay.js';
 import { ForeignVersionError, WsPeerTransport, type ErrorHandler } from '../match/transport-ws.js';
@@ -210,9 +210,11 @@ export interface MatchStatus {
   pass: { name: string; ball: number; score: number } | null;
   /**
    * A17 step 4 (2026-11-24): for the player who is up, while they can end their own ball by hand (End my ball): the
-   * ball and the score it would end at. Else null (not this player's ball, the match paused, no match).
+   * ball and the score it would end at. Else null (not this player's ball, the match paused, no match). The review of
+   * PR 131: `grantSeq`, the grant the question is about (`endMyBall` takes it back and refuses another), and
+   * `tableBall`: the ball on this table would still be in play, and is played out first at this player's next turn.
    */
-  endBall: { ball: number; score: number } | null;
+  endBall: { grantSeq: number; ball: number; score: number; tableBall: boolean } | null;
   /** A8 (2026-10-31): a host transfer under way (proposed, not committed yet), with names; the engine acks it by itself. */
   transfer: { proposer: string; newHost: string | null; reason: 'host_left' | 'host_requested' } | null;
   /**
@@ -315,8 +317,10 @@ export interface MatchHost {
    * it stands (the last one their table reported) and the turn passes: their own BALL_END, `manual`, an ordinary ball
    * end to every host since protocol 1. For a table whose ball ends cannot be read and for a stuck ball. The Match
    * tab and the in-game menu confirm first. Throws when this player has no ball to end (`status().endBall` is null).
+   * The review of PR 131: `grantSeq` is the grant the player was asked about (`status().endBall.grantSeq`); when the
+   * ball is played under another grant by now, nothing is ended and it throws: a confirmation is for one grant.
    */
-  endMyBall(): Promise<MatchStatus>;
+  endMyBall(grantSeq: number): Promise<MatchStatus>;
   /** A8 (2026-10-31): host only: end a pause nobody resumed (a dropped player that is not coming back reconnects never). */
   resume(): Promise<MatchStatus>;
   /** Leave the match; A10: the host's leave between games is End match (MATCH_END to everyone first). */
@@ -527,6 +531,19 @@ const THEATER_WATCH_MS = 1_000;
  * comes: the Castcade VPX build ends a 3D watch after as long without a frame.
  */
 const UP_AWAY_PICTURE_MS = 3_000;
+/**
+ * The review of PR 131, finding 4: a choose that would confirm a question of the in-game menu is ignored this long
+ * after the question came up: a key held past the keyboard's repeat delay must not ask and answer in one press.
+ */
+const MENU_CONFIRM_MIN_MS = 400;
+/**
+ * The same finding, for the keyboards that rule alone does not cover. A held key repeats: Windows sends the first
+ * repeat 250 ms to 1 s after the press (500 ms as installed) and the next ones about 33 ms apart. That first repeat
+ * can come after `MENU_CONFIRM_MIN_MS`, and when it arrives nothing tells it from a press of its own; what gives it
+ * away is the next repeat right behind it. So a choose that would answer a question waits this long before it does,
+ * and one more choose inside that time means the key is held: nothing is answered then, nor by any repeat after it.
+ */
+const MENU_HELD_KEY_MS = 150;
 /** D10.8: how long teardown waits for the router to drop the port mapping. */
 const UNMAP_TIMEOUT_MS = 2_000;
 /** D10.8: a code the relay says is in use is replaced this many times before the match goes direct. */
@@ -621,6 +638,9 @@ interface Active {
   reconcileDue: boolean;
   /** A15: this player's turn ends in the saved log, and VPX closed while the saved match waited. */
   savedTurnEnds: number;
+  /** The review of PR 131: the grants of those turn ends (`turnEndSeqsOf`), and what was last saved of the table's owed ball ends. */
+  savedEndSeqs: number[];
+  owedSaved?: string;
   pendingExit: boolean;
   heartbeat: ReturnType<typeof setInterval> | null;
   /** A15: no (more) record for this match: it ended, or it changed hands. */
@@ -1347,6 +1367,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     if (active) {
       // A15: a match that is over for good leaves nothing to go back to; a reconnect's replay runs once the grant is settled.
       if (!active.recordOff && active.controller.status().series.over) dropRecord(active);
+      // The review of PR 131: what the table owes is saved the moment it changes (a ball ended by hand, its drain).
+      if (active.owedSaved !== undefined && active.owedSaved !== JSON.stringify(owed(active))) saveResume(active);
       tryReconcile(active);
     }
     if (active) {
@@ -1429,7 +1451,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     if (!a.backlog.take(ev, meta)) return;
     if (a.hold) return;
     if (a.backlog.tableReopened()) a.controller.feed({ kind: 'table_exit' });
-    a.controller.feed(ev);
+    feedTable(a, ev, meta?.backlog === true);
   });
   // A16.2: the machine wrote its high-score list: the end of an initials hold. Not a game event (no backlog).
   witness.onHighScores?.((ev) => active?.controller.feed(ev));
@@ -1464,7 +1486,27 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       mark: a.mark,
       aliveAt: Date.now(),
       restart,
+      owed: owed(a),
     });
+    a.owedSaved = JSON.stringify(owed(a));
+  };
+  /** The review of PR 131: the table ball ends the controller says this table still owes the match. */
+  const owed = (a: Active): number[] => a.controller.status().owedTableEnds;
+  /**
+   * The review of PR 131, finding 2: a table event goes to the controller, and a ball end the controller says the
+   * match will never take (swallowed as owed, or come with no grant held) is taken out of the backlog. When no other
+   * end waits there, the journal mark moves past it and the record is saved, so that neither a reconnect nor a
+   * restart of Castcade feeds it again: it used to end the ball the player was on by then. `replay`: the event is
+   * fed again, or comes from the journal's backlog after a restart (`MatchController.feed`).
+   */
+  const feedTable = (a: Active, ev: GameEvent, replay: boolean): void => {
+    if (!a.controller.feed(ev, replay)) return;
+    a.backlog.forget(ev);
+    if (!a.hold && !a.backlog.holdsEnd()) {
+      a.backlog.clear();
+      a.mark = witness.journalMark?.() ?? null;
+    }
+    saveResume(a);
   };
   /** Every entry of the match log is saved as it is made (before anything is sent), and the record is touched every 15 s. */
   const followLog = (a: Active): void => {
@@ -1511,8 +1553,11 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     a.reconcileDue = false;
     if (a.hold) {
       a.hold = false;
-      // Ball ends the host already had (reported just before Castcade closed, or passed by the host meanwhile).
-      a.backlog.skipEnds(turnEndsOf(role.log.entries(), me) - a.savedTurnEnds);
+      // Ball ends the host already had (reported just before Castcade closed, or passed by the host meanwhile). The
+      // review of PR 131: less the ones that were ended by hand with the table's ball still in play: the controller
+      // holds those as owed and swallows their end itself, whether it is in the journal already or still to come.
+      const byHand = a.controller.settledOwed().filter((seq) => !a.savedEndSeqs.includes(seq)).length;
+      a.backlog.skipEnds(turnEndsOf(role.log.entries(), me) - a.savedTurnEnds - byHand);
       if (a.pendingExit || a.backlog.tableReopened()) {
         a.pendingExit = false;
         log.warn('match: the table was closed while Castcade was closed');
@@ -1521,10 +1566,10 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     }
     const events = a.backlog.pending();
     if (events.length > 0) log.info(`match: ${events.length} table event(s) since the log last grew go to the match now (${events.filter((e) => e.kind === 'ball_end').length} ball end(s))`);
-    for (const ev of events) a.controller.feed(ev);
+    for (const ev of events) feedTable(a, ev, true);
   };
   /** A fresh match's share of `Active`; `rec`: one picked up from the saved record. */
-  const tracking = (invite: string | null, rec: ResumeRecord | null): Pick<Active, 'joinInvite' | 'backlog' | 'mark' | 'hold' | 'reconcileDue' | 'savedTurnEnds' | 'pendingExit' | 'heartbeat' | 'recordOff' | 'stream'> => ({
+  const tracking = (invite: string | null, rec: ResumeRecord | null): Pick<Active, 'joinInvite' | 'backlog' | 'mark' | 'hold' | 'reconcileDue' | 'savedTurnEnds' | 'savedEndSeqs' | 'pendingExit' | 'heartbeat' | 'recordOff' | 'stream'> => ({
     stream: null,
     joinInvite: invite,
     backlog: rec ? (pendingBacklog ?? new TableBacklog<GameEvent>(rec.mark, true)) : new TableBacklog<GameEvent>(null, false),
@@ -1532,6 +1577,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     hold: rec !== null,
     reconcileDue: rec !== null,
     savedTurnEnds: rec ? turnEndsOf(rec.log, rec.playerId) : 0,
+    savedEndSeqs: rec ? turnEndSeqsOf(rec.log, rec.playerId) : [],
     pendingExit: rec !== null && pendingExit,
     heartbeat: null,
     recordOff: false,
@@ -1643,7 +1689,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     controller.setLocalMidnightMode(mode);
   };
 
-  const makeController = (engine: HostMatch | ClientMatch, ballsPerGame?: number, resumed = false): MatchController => {
+  const makeController = (engine: HostMatch | ClientMatch, ballsPerGame?: number, resumed = false, owedTableEnds: readonly number[] = []): MatchController => {
     // D10.3: the match signalling split by channel: the panel page's mesh gets `rtc`, the native video mesh `video`.
     const sig = opts.signalling?.(engine, engine.localId);
     const split = sig ? splitSignalling(sig) : null;
@@ -1663,6 +1709,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       preMatchPlay: settings.preMatchPlay,
       tableGameRunning: liveGameRunning(),
       resumed,
+      // The review of PR 131: what the table still owed the match when Castcade closed.
+      owedTableEnds,
       // A16.2: the witness knows the machine's high-score list (a test witness may not).
       highScoreQualifies: (score) => witness.highScoreQualifies?.(score) ?? false,
     });
@@ -1934,6 +1982,15 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   let menuKeyAt: number | null = null;
   let menuBefore: MenuState | null = null;
   let menuTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The review of PR 131, finding 4: when the question on the menu came up (the clock a held key is read by). */
+  let menuAskedAt: number | null = null;
+  /** The last choose (the choose key or Right) that came in, answered or not, and the answer that is waiting out `MENU_HELD_KEY_MS`. */
+  let menuChooseAt: number | null = null;
+  let menuAnswer: ReturnType<typeof setTimeout> | null = null;
+  const dropMenuAnswer = (): void => {
+    if (menuAnswer) clearTimeout(menuAnswer);
+    menuAnswer = null;
+  };
   let arrowsHeld = false;
   let menuSent = 'null';
   const menuFacts = (a: Active): MenuFacts => {
@@ -1960,6 +2017,13 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   };
   /** The menu as it is now to the panel page; only when it changed (a status emit calls this often). */
   const pushMenu = (): void => {
+    // The review of PR 131, finding 3: End my ball's question is about one grant. When that grant is gone (the table
+    // ended the ball, with or without an extra ball; the turn went round) the question goes with it: the next choose
+    // asks again, with the score as it is then.
+    if (active && menu.open && menu.confirming === 'endBall' && (menu.confirmFor ?? null) !== (menuFacts(active).endBall?.grantSeq ?? null)) {
+      menu = { ...menu, confirming: null, confirmFor: null, note: null };
+      menuAskedAt = null;
+    }
     const view = active ? menuView(menu, menuItems(menuFacts(active)), menuHint()) : null;
     const text = JSON.stringify(view);
     if (text === menuSent) return;
@@ -1980,6 +2044,9 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     menu = MENU_CLOSED;
     menuKeyAt = null;
     menuBefore = null;
+    menuAskedAt = null;
+    menuChooseAt = null;
+    dropMenuAnswer();
     holdArrows(false);
   };
   const armMenuTimer = (): void => {
@@ -2032,7 +2099,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       }
       case 'endBall':
         log.info('match: End my ball chosen in the menu');
-        void api.endMyBall().catch((e: unknown) => log.warn(`match: End my ball from the menu: ${describeError(e)}`));
+        // The grant the menu's question was about: the main process refuses any other.
+        void api.endMyBall(effect.grantSeq ?? -1).catch((e: unknown) => log.warn(`match: End my ball from the menu: ${describeError(e)}`));
         return;
       case 'leave':
         log.info('match: Leave chosen in the menu');
@@ -2043,10 +2111,37 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   const pressMenu = (key: MenuKey): void => {
     const a = active;
     if (!a) return;
+    // The review of PR 131, finding 4: a key held down repeats, and a repeat of the press that asked a question would
+    // answer it (End my ball, Leave match, Start anyway). A choose that would answer one is ignored for
+    // `MENU_CONFIRM_MIN_MS` after the question came up, and for as long as it is one of a run of repeats; one that
+    // could be the first repeat of a held key waits `MENU_HELD_KEY_MS` to see whether another follows.
+    if (key === 'choose' || key === 'right') {
+      const now = clock();
+      const since = menuChooseAt === null ? null : now - menuChooseAt;
+      menuChooseAt = now;
+      if (menu.open && menu.confirming !== null) {
+        dropMenuAnswer();
+        if (since !== null && since < MENU_HELD_KEY_MS) return;
+        if (menuAskedAt !== null && now - menuAskedAt < MENU_CONFIRM_MIN_MS) return;
+        const asked = menu;
+        menuAnswer = setTimeout(() => {
+          menuAnswer = null;
+          // Still the same question on the same menu: answered now. Anything else by now (the menu moved, closed, the
+          // grant the question was about is gone) and the press is forgotten.
+          if (active === a && menu === asked) applyMenuPress(a, key);
+        }, MENU_HELD_KEY_MS);
+        return;
+      }
+    }
+    applyMenuPress(a, key);
+  };
+  const applyMenuPress = (a: Active, key: MenuKey): void => {
     const facts = menuFacts(a);
     const wasOpen = menu.open;
     const r = menuPress(menu, menuItems(facts), facts, key);
     if (r.state === menu && r.effect === null) return;
+    // A question came up (a first one, or End my ball's again for another grant): the hold starts from here.
+    menuAskedAt = r.effect === null && r.state.confirming !== null ? clock() : null;
     menu = r.state;
     if (menu.open) {
       if (!wasOpen) {
@@ -2666,7 +2761,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     // The counter of the last run is lost; the wall clock is above anything it reached (Session.seqStart).
     const session = new Session({ transport, keys: matchIdentity().keys, log: saved, seqStart: Date.now() });
     const engine = ClientMatch.adopt(session, { participant: meInfo, game, throwdownCode: rec.code, companionVersion: opts.appVersion.slice(0, 32), ...clientLink });
-    const controller = makeController(engine, undefined, true);
+    const controller = makeController(engine, undefined, true, rec.owed ?? []);
     const offs: (() => void)[] = [];
     const answer = new Promise<{ ok: true } | { ok: false; code: string | null }>((resolve, reject) => {
       offs.push(engine.on('reconnected', () => resolve({ ok: true })));
@@ -2732,7 +2827,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       transport.close();
       throw e;
     }
-    const controller = makeController(engine, st0.ballsPerGame, true);
+    const controller = makeController(engine, st0.ballsPerGame, true, rec.owed ?? []);
     const ws = witness.status();
     const game = gameFingerprintFrom(ws, RECIPE_VERSION);
     const a: Active = {
@@ -2880,6 +2975,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     a.hold = false;
     a.reconcileDue = false;
     a.savedTurnEnds = 0;
+    a.savedEndSeqs = [];
     a.pendingExit = false;
     // D2.8: this rig's table sounds again at once (the emit that follows would do it too, a moment later).
     opts.tableAudio?.apply({ mutePid: null, tapPid: null });
@@ -3020,16 +3116,18 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       emit();
       return status();
     },
-    async endMyBall() {
+    async endMyBall(grantSeq) {
       const a = active;
       if (!a) return fail(new Error('No match'));
       const b = a.controller.status().endBall;
-      if (!b || !a.controller.endMyBall()) {
+      // The review of PR 131: the question was about one grant (its ball, its score); another grant is another question.
+      if (b && b.grantSeq !== grantSeq) return fail(new Error('Your ball was not ended: the question was about an earlier ball (the table ended that one meanwhile, or the turn went round). Press End my ball again for this one.'));
+      if (!b || !a.controller.endMyBall(grantSeq)) {
         const st = a.controller.status();
         return fail(new Error(`Your ball cannot be ended now: ${st.phase === 'paused' ? 'the match is paused' : !st.myTurn ? 'it is not your ball' : 'the turn is changing hands'}`));
       }
       lastError = null;
-      log.info(`match: ${a.code} End my ball: ball ${b.ball} ended by hand at ${b.score}`);
+      log.info(`match: ${a.code} End my ball: ball ${b.ball} ended by hand at ${b.score}${b.tableBall ? " (the table's ball is still in play: played out at this player's next turn)" : ''}`);
       emit();
       return status();
     },

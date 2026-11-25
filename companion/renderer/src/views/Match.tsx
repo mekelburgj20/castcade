@@ -465,14 +465,19 @@ export function Match({ state }: { state: CastcadeState }) {
             )}
             {confirming?.what === 'endBall' && confirming.turn === endBallKey(st) && st.endBall && st.phase === 'playing' && (
               <div className="row">
-                <span className="warn">End your ball now at {st.endBall.score.toLocaleString()}? The turn passes.</span>
+                <span className="warn">
+                  End your ball now at {st.endBall.score.toLocaleString()}? The turn passes.
+                  {st.endBall.tableBall ? ' The ball on your table is not lost: you play it out first at your next turn, then your next ball.' : ''}
+                </span>
                 <button
                   type="button"
                   className="small"
                   disabled={busy}
                   onClick={() => {
+                    // The grant the question was about: the main process ends no other ball with it.
+                    const asked = st.endBall?.grantSeq ?? -1;
                     setConfirming(null);
-                    void run(() => bridge.match.endMyBall());
+                    void run(() => bridge.match.endMyBall(asked));
                   }}
                 >
                   End my ball
@@ -1001,9 +1006,9 @@ function mediaLine(m: MatchStatus['media']): string {
  * not running. D10.3.6 (2026-11-07): once the mesh fell back (a peer's connection failed with the helper's restarts
  * exhausted, or the helper went away), the line says the Electron video serves this match, and keeps the encoder.
  */
-/** A17 step 4: the ball End my ball was asked about, so a confirmation never lands on a later ball. */
+/** A17 step 4: the ball End my ball was asked about, by its grant (the review of PR 131: a shoot-again grant is the same ball number), so a confirmation never lands on another ball. */
 function endBallKey(st: MatchStatus): string {
-  return st.endBall ? `${st.endBall.ball}#${st.panel?.game ?? 1}` : '';
+  return st.endBall ? `${st.endBall.grantSeq}#${st.endBall.ball}#${st.panel?.game ?? 1}` : '';
 }
 
 /** A13: the turn Pass the turn was asked about (who and which ball), so a confirmation never lands on a later turn. */

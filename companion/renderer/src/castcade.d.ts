@@ -621,7 +621,7 @@ interface MatchStatus {
   /** A13: for the host while a turn is held: whose ball Pass the turn would end, and at what score. */
   pass: { name: string; ball: number; score: number } | null;
   /** A17 step 4: for the player who is up, while they can end their own ball by hand: the ball and the score it would end at. */
-  endBall: { ball: number; score: number } | null;
+  endBall: { grantSeq: number; ball: number; score: number; tableBall: boolean } | null;
   /** A8: a host transfer under way (names), else null. */
   transfer: { proposer: string; newHost: string | null; reason: 'host_left' | 'host_requested' } | null;
   /** A10: the game being played or just played, whether the series is over, and why Next game cannot start (null: it can). */
@@ -746,7 +746,7 @@ interface CastcadeBridge {
     /** A13: host only: end the turn holder's ball at its last known score and grant the next turn. */
     passTurn(): Promise<MatchStatus>;
     /** A17 step 4: the player who is up ends their own ball at the score as it stands; the turn passes. */
-    endMyBall(): Promise<MatchStatus>;
+    endMyBall(grantSeq: number): Promise<MatchStatus>;
     /** A8: host only: end a pause nobody resumed. */
     resume(): Promise<MatchStatus>;
     /** D7.6.3: save the next 2 s of layer-camera and theater frames to `<logs>/frames/<date>/`. */
