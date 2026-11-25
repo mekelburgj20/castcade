@@ -63,6 +63,8 @@ export const SHEETS: Shot[] = [
   sheet('ask-3', ['waited-for~Play on without Chuck', 'between-newmatch~Start a new match', 'four-player~Change table…'], 1100),
   sheet('long', ['long-four', 'long-game', 'long-away-question'], 1000),
   sheet('long-2', ['long-between', 'alone-start-table', 'long-away-question~Play on without Krobswxyzwxyzwxyzwxyzwx…'], 1100),
+  sheet('offer', ['offer-other-table', 'offer-nothing-open', 'no-table-yet'], 1000),
+  sheet('pick', ['no-table-yet~Change table…|select:Congo|Change table', 'four-player~Change table…|select:Congo|Change table|Change table~pick=wait', 'four-player~Change table…|select:Congo|Change table|Change table~pick=refused'], 1100),
   sheet('ask-4', ['four-player~Change table…|select:Congo', 'between~Change table…|select:Congo|Change table', 'away-question~End Krobs\' ball'], 1100),
 ];
 
@@ -70,7 +72,7 @@ const who = (state: string): string => NAMES[FIXTURES[state]?.me ?? 'owner'] ?? 
 const says = (state: string): string => FIXTURES[state]?.says ?? state;
 
 /** The panel page as the headset draws it (960 x 640), as the desktop panel window (480 x 720), and with the menu open. */
-const PANEL_VR = ['alone', 'four-starter', 'four-player', 'four-watcher', 'start-countdown', 'start-waits-table', 'start-held-grace', 'member-away-lobby', 'table-changing', 'table-close-it', 'table-one-asked', 'game-up', 'game-waiting', 'game-watcher', 'waited-for', 'host-away', 'between', 'match-ended', 'given-up-me', 'host-kept-quit', 'lobby-closed', 'long-four', 'long-game', 'long-away-question'];
+const PANEL_VR = ['alone', 'four-starter', 'four-player', 'four-watcher', 'start-countdown', 'start-waits-table', 'start-held-grace', 'member-away-lobby', 'table-changing', 'table-close-it', 'table-one-asked', 'game-up', 'game-waiting', 'game-watcher', 'waited-for', 'host-away', 'between', 'match-ended', 'given-up-me', 'host-kept-quit', 'lobby-closed', 'long-four', 'long-game', 'long-away-question', 'offer-other-table', 'offer-nothing-open', 'no-table-yet'];
 const PANEL_DESKTOP = ['four-starter', 'start-waits-3d', 'table-changing', 'game-watcher', 'host-away', 'between', 'long-game', 'long-away-question'];
 const PANEL_MENU = ['four-starter', 'game-up', 'between-newmatch', 'away-question', 'long-away-question'];
 const BOARD = ['game-up', 'game-watcher', 'waited-for', 'away-question', 'host-away', 'between', 'long-game', 'long-away-question'];
@@ -108,7 +110,8 @@ SHEETS.push(
   panelSheet('lobby', PANEL_VR.slice(0, 6)),
   panelSheet('start', PANEL_VR.slice(6, 12)),
   panelSheet('game', PANEL_VR.slice(12, 18)),
-  panelSheet('game-2', PANEL_VR.slice(18)),
+  panelSheet('game-2', PANEL_VR.slice(18, 24)),
+  panelSheet('offer', PANEL_VR.slice(24)),
   panelSheet('desktop', PANEL_DESKTOP.slice(0, 4), false),
   panelSheet('desktop-2', PANEL_DESKTOP.slice(4), false),
   panelSheet('menu', [...PANEL_MENU.map((x) => `${x}~~menu=1`), 'game-owner~~menu=1&at=closeLobby&asked=1']),
@@ -136,5 +139,8 @@ export const SHOTS: Shot[] = [
   pressed('picker', 'four-player', ['Change table…'], 'Change table was pressed: the picker'),
   pressed('picker-chosen', 'four-player', ['Change table…', 'select:Congo'], 'A table was chosen in the picker: Change table can be pressed'),
   pressed('ask-change-table', 'between', ['Change table…', 'select:Congo', 'Change table'], 'Change table was pressed between games: the question, which says that the open match ends'),
+  pressed('ask-first-table', 'no-table-yet', ['Change table…', 'select:Congo', 'Change table'], 'A first table is picked in a lobby that has none yet: the question'),
+  pressed('pick-asking', 'four-player', ['Change table…', 'select:Congo', 'Change table', 'Change table'], "A member confirmed a pick: the lobby's PC is asked, and has not answered yet", '&pick=wait'),
+  pressed('pick-refused', 'four-player', ['Change table…', 'select:Congo', 'Change table', 'Change table'], "A member's pick was refused by the lobby's PC: its sentence, under the table", '&pick=refused'),
   pressed('picker-empty', 'four-player', ['Change table…'], 'Change table was pressed on a PC that knows no table: the picker says so', '&tables=0'),
 ];

@@ -373,4 +373,47 @@ describe("A17 step 7: the controller in a lobby, from one game and one match to 
     await flush();
     expect(r.host.announcedStart()).toMatchObject({ waitsFor: null, players: ['h', 'c'] });
   });
+
+  it("the step 9 last pass: a pick has an answer of its own: taken, refused with the lobby PC's sentence for that very pick (another refusal arriving in the same moment is not it), or none when nothing comes in time", async () => {
+    const r = await lobby(['c', 'd'], 1);
+    const { h: H, c: C } = r.seats as { h: Seat; c: Seat };
+    const congo: GameFingerprint = { ...game, tableName: 'Congo', tableHash: 'cd'.repeat(32) };
+    // Taken: the lobby's table is the picked one, picked by this PC. On the lobby's own PC the answer is at once.
+    const taken = C.ctl.pickTableAnswered(congo, null, 8000);
+    await flush();
+    expect(await taken).toEqual({ kind: 'taken' });
+    expect(r.host.table()).toMatchObject({ pickedBy: 'c' });
+    // (The lobby's table is not changed twice within ten seconds: that refusal, too, is the pick's own answer.)
+    expect(await H.ctl.pickTableAnswered(game, null, 8000)).toMatchObject({ kind: 'refused', sentence: expect.stringContaining('changed a moment ago') });
+    await r.tick(11_000);
+    expect(await H.ctl.pickTableAnswered(game, null, 8000)).toEqual({ kind: 'taken' });
+    await r.tick(11_000);
+    // A member's pick of the table the lobby has (somebody else picked it): the lobby's PC says nothing to it, and
+    // the answer is at once: the lobby's table is the picked one. It does not wait out its eight seconds.
+    expect(await C.ctl.pickTableAnswered({ ...game, tableName: ` ${game.tableName.toUpperCase()} ` }, null, 8000)).toEqual({ kind: 'taken' });
+    // Refused: a start is counting down. In the same moment another request of this PC is refused too (End match,
+    // with no match open): each answer goes to its own request, and the pick's is not shown as this PC's sentence.
+    expect(H.ctl.requestStart()).toBeNull();
+    await flush();
+    const notices: string[] = [];
+    const refused = C.ctl.pickTableAnswered(congo, null, 8000);
+    C.ctl.requestEnd();
+    C.ctl.onChange((st) => void (st.panel.message !== null && notices.push(st.panel.message)));
+    await flush();
+    expect(await refused).toEqual({ kind: 'refused', sentence: 'A match is starting: cancel the start to change the table.' });
+    expect(notices.some((n) => n.includes('cancel the start to change the table'))).toBe(false);
+    expect(notices).toContain('No match is open.');
+    expect(H.ctl.cancelStart()).toBeNull();
+    await flush();
+    // No answer: the lobby's PC is out of reach. After the wait the answer is `none`, and a late refusal changes nothing.
+    r.bus.disconnect('h');
+    const none = C.ctl.pickTableAnswered(congo, null, 8000);
+    await r.tick(7999);
+    let settled = false;
+    void none.then(() => void (settled = true));
+    await flush();
+    expect(settled).toBe(false);
+    await r.tick(1);
+    expect(await none).toEqual({ kind: 'none' });
+  });
 });

@@ -1260,9 +1260,11 @@ export function iceRestartName(k: number, n: number): string {
  * instead. `trying`: the watchdog goes on restarting (it always does now: `iceWatchStep`'s `persist`), and the text
  * without a direct picture says so too.
  */
-export function noPathText(name: string, ice: string, restarts: number, relay: boolean, videoDirect?: boolean, trying?: boolean): string {
+export function noPathText(name: string, ice: string, restarts: number, relay: boolean, videoDirect?: boolean, trying?: boolean, lobbyPc?: boolean): string {
   // D2.12: ICE still `new` never tried a path at all (GNBKHT 2026-11-15): that is the connection, not a router.
-  if (ice === 'new') return 'Voice with ' + name + ' did not start (ICE new after ' + restarts + ' restarts): leave the match and join again.';
+  // The step 9 last pass: "leave the lobby", not the match; and on the lobby's own PC, where leaving closes the lobby
+  // for everyone, the other person is the one who joins again.
+  if (ice === 'new') return 'Voice with ' + name + ' did not start (ICE new after ' + restarts + ' restarts): ' + (lobbyPc ? name + ' can leave the lobby and join again.' : 'leave the lobby and join again.');
   if (videoDirect) return 'Voice with ' + name + ' is not connected yet (ICE ' + ice + ' after ' + restarts + ' restarts). The picture has a direct path to their PC, so no relay is needed: still trying.';
   const why = relay ? 'the TURN relay did not get through either' : 'both routers blocked the direct connection; a TURN relay is needed';
   return 'No path to ' + name + ' (ICE ' + ice + ' after ' + restarts + ' restarts): ' + why + '.' + (trying ? ' Still trying.' : '');
@@ -2248,7 +2250,9 @@ function noPathMessage() {
     const w = r.watch;
     if (!w || !w.gaveUp) continue;
     const said = w.said || { ice: r.pc.iceConnectionState, restarts: w.restarts };
-    return noPathText(peerName(peer), said.ice, said.restarts, hasRelay(), hasVideoDirect(peer), true);
+    // (The lobby's rows begin with the lobby's PC: on that PC, the other one is the one who joins again.)
+    const lobbyPc = !!(panel && panel.members && panel.members.length > 0 && panel.members[0].id === localId);
+    return noPathText(peerName(peer), said.ice, said.restarts, hasRelay(), hasVideoDirect(peer), true, lobbyPc);
   }
   return null;
 }

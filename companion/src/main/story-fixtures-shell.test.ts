@@ -32,7 +32,7 @@ describe("the story fixtures say what the shell says (A17 step 9)", () => {
 
     // ---- a table change, as this PC's one-step says it (and the panel's line with it)
     const changes = Object.entries(F).filter(([, f]) => f.change);
-    expect(changes.map(([name]) => name).sort()).toEqual(['table-asked-after-away', 'table-changing', 'table-close-it', 'table-open-it']);
+    expect(changes.map(([name]) => name).sort()).toEqual(['offer-nothing-open', 'offer-other-table', 'table-asked-after-away', 'table-changing', 'table-close-it', 'table-open-it']);
     for (const [name, f] of changes) {
       const c = f.change;
       expect(c.detail, name).toBe(changeWords(c.state, c.table, c.open, c.why, c.by));

@@ -92,7 +92,7 @@ import { objectsDisagreeLine } from '../launch/table-objects.js';
 import type { VpxCloser } from '../launch/vpx-close.js';
 import type { ForkLaunch, LaunchResult, VpxLauncher } from '../launch/vpx-launch.js';
 import { formatJoinLink, formatWebJoinLink, inviteMessage, looksLikePastedLink, parseJoinLink, type JoinLink } from './deep-link.js';
-import type { MatchStatus } from './match-host.js';
+import type { MatchStatus, PickAnswer } from './match-host.js';
 import { NO_TABLE_NAME, ZERO_SHA256, isTableOpen } from './match-setup.js';
 import { INITIALS_HOLD_CAP_MS } from '../match/controller.js';
 import { TABLE_NAME_SHOWN, tableWords } from '../match/table-identity.js';
@@ -235,8 +235,11 @@ export interface OneStepOptions {
      * what this PC follows. Absent: nothing is followed (the table of a join is still found from `hostGame`).
      */
     lobbyTable?(): { game: GameFingerprint; joined: string } | null;
-    /** A17 step 10: pick the lobby's table (`MatchHost.pickTable`). Absent: this Castcade cannot. */
-    pickTable?(o: { game: GameFingerprint; objects: ForkIdentity | null; about?: string | null }): Promise<MatchStatus>;
+    /**
+     * A17 step 10: pick the lobby's table (`MatchHost.pickTable`), with the answer to this very request (the step 9
+     * last pass): taken, refused with the sentence, or none within `waitMs`. Absent: this Castcade cannot.
+     */
+    pickTable?(o: { game: GameFingerprint; objects: ForkIdentity | null; about?: string | null; waitMs: number }): Promise<PickAnswer>;
     /** A17 step 10: this PC's own open table as it says it to the lobby (`MatchHost.ownTable`); null: none. */
     ownTable?(): GameFingerprint | null;
     /** A17 step 10: where this PC stands on its way to the lobby's table, and the sentence for its own panel (`MatchHost.setTableChange`). */
@@ -431,7 +434,10 @@ export function changeWords(state: ChangeState, table: string, open: string | nu
  * (it read "The host plays …" and "You stay in the match", from before there was a lobby).
  */
 export function noCopyAtJoinWords(table: string): string {
-  return `The lobby's table is ${table}. Castcade found no copy of it on this PC: open it in VPX if you have it under another name. You stay in the lobby and can watch.`;
+  // The step 9 last pass: what is true. It read "open it in VPX if you have it under another name", a promise: a
+  // file opened by hand is taken only when Castcade can tell it is the same game (`judge`: its bytes, the ROM its
+  // lists know, or its own table name), so that is said; it ends with what always works.
+  return `The lobby's table is ${table}. Castcade found no copy of it on this PC. If you have it under another name, open it in VPX: Castcade takes it when it can tell it is the same game. Otherwise you can watch, or pick another table.`;
 }
 
 const IDLE: OneStepStatus['launch'] = { state: 'idle', table: null, detail: null };
@@ -1735,42 +1741,25 @@ export function createOneStep(o: OneStepOptions): OneStep {
    * Until then nothing on this PC counts the pick as made: "asks first" stands, and no table is closed or opened for
    * it (that follows the lobby's table, which a refused pick does not change). `path`: the file that was picked,
    * which this PC then opens for it (null: the table that is open here).
+   *
+   * The step 9 last pass: the answer is the match host's for this very request (`MatchHost.pickTable`). It was read
+   * from the Match tab's one sentence (`lastError`), where another refusal arriving in the same moment (a start, an
+   * End match) was taken for the pick's.
    */
   const askPick = async (game: GameFingerprint, objects: ForkIdentity | null, about: string | null, path: string | null): Promise<MatchStatus> => {
     if (!match.pickTable) throw new Error("This Castcade cannot change the lobby's table.");
     const code = match.status().code;
     const before = myPick;
     myPick = path !== null ? { code, name: game.tableName, path } : null;
-    const isIt = (): boolean => {
-      const now = match.lobbyTable?.()?.game ?? null;
-      return now !== null && sameName(now.tableName, game.tableName);
-    };
     let st: MatchStatus;
     try {
-      st = await match.pickTable({ game, objects, about });
-      if (match.status().role === 'client' && !isIt()) {
-        await new Promise<void>((resolve, reject) => {
-          let timer: unknown = null;
-          let off: () => void = () => undefined;
-          const done = (why: Error | null): void => {
-            off();
-            if (timer !== null) cancel(timer);
-            timer = null;
-            if (why) reject(why);
-            else resolve();
-          };
-          const look = (now: MatchStatus): void => {
-            if (isIt()) return done(null);
-            if (now.role === 'none' || now.code !== code) return done(new PickUnanswered('You left the lobby before its PC answered.'));
-            // What the lobby's PC answered with (the match host cleared this before the pick went out).
-            if (now.lastError) return done(new Error(now.lastError));
-          };
-          off = match.onStatus(look);
-          timer = later(() => done(new PickUnanswered("The lobby's PC has not answered yet. If the lobby's table changes in a moment, it took the pick; if it does not, press again.")), o.pickAnswerMs ?? PICK_ANSWER_MS);
-          look(match.status());
-        });
-        st = match.status();
+      const a = await match.pickTable({ game, objects, about, waitMs: o.pickAnswerMs ?? PICK_ANSWER_MS });
+      if (a.kind === 'refused') throw new Error(a.sentence);
+      if (a.kind === 'none') {
+        const m = match.status();
+        throw new PickUnanswered(m.role === 'none' || m.code !== code ? 'You left the lobby before its PC answered.' : "The lobby's PC has not answered yet. If the lobby's table changes in a moment, it took the pick; if it does not, press again.");
       }
+      st = a.status;
     } catch (e) {
       // Refused: this PC's pick of before is what stands. No answer: the pick may yet be taken, and is then this PC's.
       if (!(e instanceof PickUnanswered)) myPick = before;

@@ -68,6 +68,8 @@ export interface Fixture {
   tableToStart?: string | null;
   /** Another name for one of the four (the longest a name can be), to see that nothing it touches breaks. */
   names?: Partial<Record<Who, string>>;
+  /** The table that is open on this PC (the witness's word): the lobby's unless said; null: none is open. */
+  open?: string | null;
   /** Balls per game (3 unless a state was reached in a game of one ball). */
   balls?: number;
   /** The match that ended last (controller.ts `LobbyStatus.lastMatch`): games, and the standing as [who, games won, total score]. */
@@ -134,7 +136,7 @@ export function status(f: Fixture, base: any): { match: any; oneStep: any } {
       ? `${names(playSet)} play.${watchers.length > 0 ? ` ${names(watchers)} ${watchers.length === 1 ? 'watches' : 'watch'}.` : ''}${awayNow.length > 0 ? ` ${names(awayNow)} ${awayNow.length === 1 ? 'is' : 'are'} away.` : ''}`
       : '';
   const onWay = playSet.filter((w) => (f.flags?.[w] ?? []).some((x) => x === 'changing' || x === 'close_table' || x === 'asked')).length;
-  const waits = onWay > 0 ? ` A start waits for the table${onWay > 1 ? 's' : ''} that ${onWay > 1 ? 'are' : 'is'} being changed.` : '';
+  const waits = onWay > 0 ? ` A start waits for the table${onWay > 1 ? 's' : ''} that ${onWay > 1 ? 'are' : 'is'} not open yet.` : '';
   const off =
     f.startOff !== undefined
       ? f.startOff
@@ -254,6 +256,12 @@ const CLOSING = CHANGE('closing', null, `Krobs changed the lobby's table to ${OT
 const CLOSE_IT = CHANGE('close_it', null, `Close the table on this PC: Castcade opens ${OTHER_TABLE} when it is closed.`);
 const ASKS_OFTEN = CHANGE('offered', 'often', `Krobs changed the lobby's table to ${OTHER_TABLE}. Open it: Castcade closes ${TABLE} and opens ${OTHER_TABLE}. The table has changed several times in a few minutes, so Castcade asks before it changes tables again.`);
 const ASKS_AWAY = CHANGE('offered', 'away', `Krobs changed the lobby's table to ${OTHER_TABLE} while this PC was away from the lobby. Open it: Castcade closes ${TABLE} and opens ${OTHER_TABLE}.`);
+// The lobby's table is offered to a PC whose open table is not its copy of it (one-step.ts, `why: 'here'`): with
+// another table open, and with nothing open (a join by code starts no table).
+const OFFER_OTHER = { state: 'offered', table: TABLE, open: OTHER_TABLE, why: 'here', by: null, detail: `The lobby's table is ${TABLE}, and ${OTHER_TABLE} is open on this PC. Open it: Castcade closes ${OTHER_TABLE} and opens ${TABLE}.` };
+const OFFER_NONE = { state: 'offered', table: TABLE, open: null, why: 'here', by: null, detail: `The lobby's table is ${TABLE}, and no table is open on this PC. Open it: Castcade opens ${TABLE}.` };
+/** What the lobby's PC answers to a member who picks again a moment after their own pick (host.ts; held in match/story-fixtures.test.ts). */
+export const PICK_REFUSED = "You changed the lobby's table a moment ago: you can change it again in 30 s.";
 const PICKED = { name: OTHER_TABLE, pickedBy: 'krobs', pickedByName: 'Krobs', endsMatch: false };
 const ON_THE_WAY = { owner: ['changing'], krobs: ['changing'], chuck: ['close_table'], dana: ['asked'] };
 
@@ -283,7 +291,7 @@ export const FIXTURES: Record<string, Fixture> = {
   'start-waits-3d': { says: 'A start waits for the 3D connections', me: 'krobs', here: ['owner', 'krobs'], start: START('krobs', ['krobs', 'owner'], { waitsFor: '3d', waitsOn: ['owner'], seconds: null, line: 'You start the match once the 3D connection to Owner is up (45 s at most; started without it, the first turn may be the 2D video)' }), startWithout: 'Start without 3D', message: 'You start the match once the 3D connection to Owner is up (45 s at most; started without it, the first turn may be the 2D video)' },
   'start-held-grace': { says: "A start's countdown ran out and is held for a player whose link dropped a moment ago", me: 'owner', here: ['owner', 'krobs', 'chuck'], countdown: 0, locked: true, start: START('owner', ['owner', 'krobs', 'chuck'], { seconds: 0, line: "You start the match in a few seconds (a player's link dropped a moment ago: waiting to see whether they are back)" }), message: "You start the match in a few seconds (a player's link dropped a moment ago: waiting to see whether they are back)" },
   'member-away-lobby': { says: 'A member is away in the lobby (the row says since when)', me: 'owner', here: four, flags: { dana: ['away'] }, message: 'Everyone in? Start a game on your table (or Start match in the menu)' },
-  'no-table': { says: "A member has no copy of the lobby's table: they are not counted for a start", me: 'dana', here: four, flags: { dana: ['no_table'] }, launch: { state: 'needed', table: TABLE, detail: `The lobby's table is ${TABLE}. Castcade found no copy of it on this PC: open it in VPX if you have it under another name. You stay in the lobby and can watch.` }, message: "Castcade found no copy of the lobby's table on this PC: you can watch" },
+  'no-table': { says: "A member has no copy of the lobby's table: they are not counted for a start", me: 'dana', here: four, flags: { dana: ['no_table'] }, launch: { state: 'needed', table: TABLE, detail: `The lobby's table is ${TABLE}. Castcade found no copy of it on this PC. If you have it under another name, open it in VPX: Castcade takes it when it can tell it is the same game. Otherwise you can watch, or pick another table.` }, message: "Castcade found no copy of the lobby's table on this PC: you can watch" },
   'cannot-save': { says: "The lobby's record cannot be written on this PC", me: 'owner', here: ['owner', 'krobs'], lastError: `Castcade cannot save this lobby (the folder ${SAVE_FOLDER}: ${SAVE_ERROR}). The lobby goes on. If Castcade closes before it can be saved again, it comes back as it was last saved, or not at all.`, message: 'Castcade cannot save this lobby on this PC: see the Match tab' },
   'relay-waiting': { says: "The lobby's PC started again and ArcAid does not answer yet", me: 'owner', here: four, flags: { krobs: [], chuck: [], dana: [] }, relayNote: 'ArcAid is not carrying this lobby yet (it did not answer when Castcade started again). Castcade keeps asking; the others can come back once it does', lastError: `Castcade on this PC started again: the lobby ${CODE} is open again as it was. Castcade is waiting for ArcAid to carry it again: the others can come back once it does.`, message: 'Everyone in? Start a game on your table (or Start match in the menu)' },
 
@@ -312,8 +320,11 @@ export const FIXTURES: Record<string, Fixture> = {
   'table-close-it': { says: 'The table was changed and this PC has to close the table that is open on it', me: 'chuck', here: four, flags: ON_THE_WAY, table: { ...PICKED, changing: true }, change: CLOSE_IT, message: CLOSE_IT.detail },
   'table-open-it': { says: 'The table was changed for the fourth time in a few minutes: this PC asks before it changes tables again (Open it)', me: 'dana', here: four, flags: ON_THE_WAY, table: { ...PICKED, changing: true }, change: ASKS_OFTEN, message: ASKS_OFTEN.detail },
   'table-asked-after-away': { says: 'The table was changed while this PC was away from the lobby: it is offered, never opened by itself (Open it)', me: 'dana', here: four, flags: { dana: ['asked'] }, table: { ...PICKED, changing: false }, change: ASKS_AWAY, message: ASKS_AWAY.detail },
-  'table-one-asked': { says: 'Everybody has the new table open but one PC, which was asked: nobody is closing or opening, so the header is the lobby again', me: 'owner', here: four, flags: { dana: ['asked'] }, table: { ...PICKED, changing: false }, message: 'The table is being changed: waiting for Dana. A start waits for them (start a game on your table, or Start match in the menu)' },
+  'table-one-asked': { says: 'Everybody has the new table open but one PC, which was asked: nobody is closing or opening, so the header is the lobby again', me: 'owner', here: four, flags: { dana: ['asked'] }, table: { ...PICKED, changing: false }, message: "Waiting for Dana to open the lobby's table. A start waits for them (start a game on your table, or Start match in the menu)" },
   'other-table': { says: "A member has another table open than the lobby's", me: 'owner', here: four, flags: { chuck: ['other_table'] }, message: 'Everyone in? Start a game on your table (or Start match in the menu) · different table file: Chuck' },
+  'offer-other-table': { says: "A member has another table open than the lobby's: the lobby's table is offered (Open it), and their row says so", me: 'dana', here: four, open: OTHER_TABLE, flags: { dana: ['asked'] }, change: OFFER_OTHER, message: OFFER_OTHER.detail },
+  'offer-nothing-open': { says: "A member joined by the code with no table open: the lobby's table is offered (Open it)", me: 'krobs', here: four, open: null, flags: { krobs: ['asked'] }, change: OFFER_NONE, message: OFFER_NONE.detail },
+  'no-table-yet': { says: 'A lobby opened with "No table: I open it myself": it has no table yet, and anyone can pick the first', me: 'krobs', here: ['owner', 'krobs'], open: null, flags: { owner: ['loading'], krobs: ['loading'] }, table: { name: null, pickedBy: null, pickedByName: null, endsMatch: false, changing: false }, message: 'The lobby has no table yet: pick one on the Match tab (Change table…)' },
 };
 
 // ---- a name of 64 characters without a space (the longest the name field takes), in the states where a name is

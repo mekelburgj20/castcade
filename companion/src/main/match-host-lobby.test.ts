@@ -1128,7 +1128,8 @@ describe('A17 step 10: the table changes in a lobby', () => {
     expect(H.mh.status().lobby?.table).toEqual({ name: 'Test Table', pickedBy: H.id(), pickedByName: 'Owner', off: null, endsMatch: false, changing: false });
 
     // The member picks, with what the Castcade VPX build says of its copy.
-    await A.mh.pickTable({ game: pickOf(AFM, AFM_SHA, 'afm_113b'), objects: OBJECTS });
+    // The step 9 last pass: the press has the answer to this very pick (taken: the lobby's table is the picked one).
+    expect(await A.mh.pickTable({ game: pickOf(AFM, AFM_SHA, 'afm_113b'), objects: OBJECTS })).toMatchObject({ kind: 'taken' });
     await until(() => H.mh.status().lobby?.table.name === AFM && A.mh.status().lobby?.table.name === AFM);
     for (const s of [H, A]) {
       expect(s.mh.status().lobby?.table).toMatchObject({ name: AFM, pickedBy: A.id(), pickedByName: 'Krobs', off: null });
@@ -1154,7 +1155,8 @@ describe('A17 step 10: the table changes in a lobby', () => {
     // The lobby's PC logged the pick with who made it (review of PR 139).
     expect(H.lines.some((l) => l.includes(`the lobby's table was picked by Krobs (${A.id()}): ${AFM}`))).toBe(true);
     // A member who keeps picking the table the lobby has changes nothing, and does not fill that log either.
-    for (let i = 0; i < 6; i++) await A.mh.pickTable({ game: pickOf(AFM, AFM_SHA, 'afm_113b'), objects: OBJECTS });
+    // (Its answer is at once: the lobby's table is the one picked, and the lobby's PC says nothing to such a pick.)
+    for (let i = 0; i < 6; i++) expect(await A.mh.pickTable({ game: pickOf(AFM, AFM_SHA, 'afm_113b'), objects: OBJECTS })).toMatchObject({ kind: 'taken' });
     await sleep(200);
     expect(H.lines.filter((l) => l.includes(`Krobs (${A.id()}) picked the table the lobby already has (${AFM}): nothing changes`))).toHaveLength(1);
     expect(H.mh.status().lobby?.table).toMatchObject({ name: AFM, pickedBy: A.id() });
@@ -1216,12 +1218,12 @@ describe('A17 step 10: the table changes in a lobby', () => {
     await H.mh.start();
     await until(() => A.mh.status().lobby?.start !== null && A.mh.status().lobby?.start !== undefined);
     expect(A.mh.status().lobby?.table.off).toBe('A match is starting: cancel the start to change the table.');
-    await expect(A.mh.pickTable(afm)).rejects.toThrow('A match is starting: cancel the start to change the table.');
-    await expect(H.mh.pickTable(afm)).rejects.toThrow('A match is starting: cancel the start to change the table.');
+    await expect(A.mh.pickTable(afm)).resolves.toEqual({ kind: 'refused', sentence: 'A match is starting: cancel the start to change the table.' });
+    await expect(H.mh.pickTable(afm)).resolves.toEqual({ kind: 'refused', sentence: 'A match is starting: cancel the start to change the table.' });
     // While a game is played.
     await until(() => H.mh.status().phase === 'playing' && A.mh.status().phase === 'playing', 15_000);
-    await expect(A.mh.pickTable(afm)).rejects.toThrow('A game is being played: the table changes after it.');
-    await expect(H.mh.pickTable(afm)).rejects.toThrow('A game is being played: the table changes after it.');
+    await expect(A.mh.pickTable(afm)).resolves.toEqual({ kind: 'refused', sentence: 'A game is being played: the table changes after it.' });
+    await expect(H.mh.pickTable(afm)).resolves.toEqual({ kind: 'refused', sentence: 'A game is being played: the table changes after it.' });
     expect(H.mh.status().lobby?.table.name).toBe('Test Table');
     await playGame([H, A], 3);
     await until(() => H.mh.status().phase === 'over' && A.mh.status().phase === 'over' && A.mh.status().lobby?.match?.state === 'between');
@@ -1229,9 +1231,9 @@ describe('A17 step 10: the table changes in a lobby', () => {
     expect(A.mh.status().lobby?.table).toMatchObject({ off: null, endsMatch: true });
     const about = A.mh.status().lobby!.gameKey;
     // A press about a lobby that has moved on changes nothing.
-    await expect(A.mh.pickTable({ ...afm, about: 'ZZZZZZ-9/1/between' })).rejects.toThrow(/The table was not changed: the lobby is not as it was when you pressed/);
+    await expect(A.mh.pickTable({ ...afm, about: 'ZZZZZZ-9/1/between' })).resolves.toMatchObject({ kind: 'refused', sentence: expect.stringMatching(/^The table was not changed: the lobby is not as it was when you pressed/) });
     expect(A.mh.status().lobby?.match).not.toBeNull();
-    await A.mh.pickTable({ ...afm, about });
+    expect(await A.mh.pickTable({ ...afm, about })).toMatchObject({ kind: 'taken' });
     await until(() => H.mh.status().lobby?.match === null && A.mh.status().lobby?.match === null);
     expect(H.mh.status().lobby?.table).toMatchObject({ name: AFM, pickedByName: 'Krobs', endsMatch: false });
     expect(H.lines.some((l) => /the table changed/.test(l))).toBe(true);
@@ -1241,10 +1243,12 @@ describe('A17 step 10: the table changes in a lobby', () => {
       ['Owner', 'Krobs'],
     ]);
     // Limits on how often the lobby's table can change: the same member again at once is told so (a client hears
-    // it from the lobby's PC a moment later; the lobby's PC itself at once).
-    await A.mh.pickTable({ game: pickOf('Medieval Madness', 'ef'.repeat(32)), objects: null });
-    await until(() => /You changed the lobby's table a moment ago: you can change it again in \d+ s\./.test(A.mh.status().lastError ?? '') || /You changed the lobby's table a moment ago/.test(A.mh.status().panel?.message ?? ''));
-    await expect(H.mh.pickTable({ game: pickOf('Medieval Madness', 'ef'.repeat(32)), objects: null })).rejects.toThrow(/The lobby's table was changed a moment ago: it can be changed again in \d+ s\./);
+    // it from the lobby's PC a moment later; the lobby's PC itself at once). The step 9 last pass: as the answer to
+    // that very pick (the REJECT that names it), and not as the tab's sentence or the panel's line besides.
+    expect(await A.mh.pickTable({ game: pickOf('Medieval Madness', 'ef'.repeat(32)), objects: null })).toMatchObject({ kind: 'refused', sentence: expect.stringMatching(/^You changed the lobby's table a moment ago: you can change it again in \d+ s\.$/) });
+    expect(A.mh.status().lastError ?? '').not.toMatch(/a moment ago/);
+    expect(A.mh.status().panel?.message ?? '').not.toMatch(/a moment ago/);
+    await expect(H.mh.pickTable({ game: pickOf('Medieval Madness', 'ef'.repeat(32)), objects: null })).resolves.toMatchObject({ kind: 'refused', sentence: expect.stringMatching(/^The lobby's table was changed a moment ago: it can be changed again in \d+ s\.$/) });
     expect(H.mh.status().lobby?.table.name).toBe(AFM);
   }, 60_000);
 
@@ -1257,7 +1261,7 @@ describe('A17 step 10: the table changes in a lobby', () => {
     await until(() => names(H).length === 2 && names(A).length === 2);
     expect(H.mh.status().lobby?.table.name).toBeNull();
     // The lobby's PC picks that table from its own list, with the ROM its import read (a PC's own row names none).
-    await H.mh.pickTable({ game: pickOf('Test Table', SHA, 'tt_10'), objects: OBJECTS });
+    expect(await H.mh.pickTable({ game: pickOf('Test Table', SHA, 'tt_10'), objects: OBJECTS })).toMatchObject({ kind: 'taken' });
     await until(() => A.mh.status().lobby?.table.name === 'Test Table');
     await sleep(100);
     for (const s of [H, A]) {

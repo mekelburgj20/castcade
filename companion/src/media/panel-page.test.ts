@@ -1402,13 +1402,15 @@ describe('ICE: the candidate pair and the watchdog (D2.9, 2026-11-02)', () => {
     expect(noPathText('Krobs', 'checking', 3, false)).toBe('No path to Krobs (ICE checking after 3 restarts): both routers blocked the direct connection; a TURN relay is needed.');
     expect(noPathText('Krobs', 'failed', 3, true)).toBe('No path to Krobs (ICE failed after 3 restarts): the TURN relay did not get through either.');
     // D2.12: nothing was tried, so no router is blamed.
-    expect(noPathText('Krobs', 'new', 3, false)).toBe('Voice with Krobs did not start (ICE new after 3 restarts): leave the match and join again.');
+    expect(noPathText('Krobs', 'new', 3, false)).toBe('Voice with Krobs did not start (ICE new after 3 restarts): leave the lobby and join again.');
+    // The step 9 last pass: on the lobby's own PC leaving would close the lobby for everyone: the other one joins again.
+    expect(noPathText('Krobs', 'new', 3, false, false, true, true)).toBe('Voice with Krobs did not start (ICE new after 3 restarts): Krobs can leave the lobby and join again.');
     // I11.12 (2026-11-24): the native video holds a direct pair to the same player: no router is blamed and no relay asked for.
     const direct = noPathText('ChuckRibbits', 'disconnected', 6, false, true);
     expect(direct).toBe('Voice with ChuckRibbits is not connected yet (ICE disconnected after 6 restarts). The picture has a direct path to their PC, so no relay is needed: still trying.');
     expect(direct).not.toMatch(/TURN|blocked|No path/);
     expect(noPathText('ChuckRibbits', 'checking', 8, true, true)).not.toMatch(/TURN|blocked|No path/);
-    expect(noPathText('ChuckRibbits', 'new', 6, false, true)).toBe('Voice with ChuckRibbits did not start (ICE new after 6 restarts): leave the match and join again.');
+    expect(noPathText('ChuckRibbits', 'new', 6, false, true)).toBe('Voice with ChuckRibbits did not start (ICE new after 6 restarts): leave the lobby and join again.');
     // I11.12 (2026-11-24): the restarts go on after these words, and the words without a direct picture say so too.
     expect(noPathText('Krobs', 'checking', 6, false, false, true)).toBe('No path to Krobs (ICE checking after 6 restarts): both routers blocked the direct connection; a TURN relay is needed. Still trying.');
     expect(noPathText('Krobs', 'failed', 6, true, false, true)).toBe('No path to Krobs (ICE failed after 6 restarts): the TURN relay did not get through either. Still trying.');

@@ -89,11 +89,11 @@ function makeSeat(role: HostMatch | ClientMatch, clock: ManualClock, lock: { on:
 }
 
 /** A lobby opened by Owner on Monster Bash, with the members named, every one set to Play. */
-async function lobby(members: string[], tableName: string, graceMs = 0, balls = 3, stillSeen = false) {
+async function lobby(members: string[], tableName: string | GameFingerprint, graceMs = 0, balls = 3, stillSeen = false) {
   const bus = new MemoryBus();
   const clock = new ManualClock();
   const hk = generateKeys();
-  const game = table(tableName);
+  const game = typeof tableName === 'string' ? table(tableName) : tableName;
   const host = new HostMatch({ disconnectGraceMs: graceMs, transport: bus.transport('owner'), keys: hk, matchId: 'JHDFEF', ballsPerGame: balls, hostParticipant: who('owner', hk), hostGame: game, clock, lobby: { stance: 'play', countdownMs: 5000, ...(stillSeen ? { stillSeen: () => true } : {}) } });
   const seats: Record<string, MatchController> = { owner: seat(host, clock) };
   await seats['owner']!.open();
@@ -451,6 +451,25 @@ describe('the story fixtures say what the controller says (A17 step 9)', () => {
       linkSays(r, 'chuck', 4, 16);
       check('host-kept-quit', S['chuck']);
     }
+    // ---- the last pass: the kept quit's line tells the player whose ball it is what is true for them (their table is theirs)
+    {
+      const r = await lobby(['krobs', 'chuck'], TABLE);
+      const S = r.seats as Record<string, MatchController>;
+      expect(S['owner']!.requestStart()).toBeNull();
+      await r.tick(5000);
+      await playBall(r, 'owner', 1, 1_234_560);
+      S['krobs']!.feed(start);
+      S['krobs']!.feed(scores(987_650, 1));
+      await flush();
+      r.host.sayKept(20 * 60_000);
+      await flush();
+      r.bus.disconnect('owner');
+      await r.tick(60_000);
+      linkSays(r, 'krobs', 1, 19);
+      linkSays(r, 'chuck', 1, 19);
+      expect(S['krobs']!.panel().message).toBe('Owner closed Castcade and kept the lobby: it goes on if Owner opens Castcade again within 20 minutes (19 min left). Your ball goes on: play it out, and its end is reported when Owner is back. Leave lobby ends the wait for you.');
+      expect(S['chuck']!.panel().message).toBe('Owner closed Castcade and kept the lobby: it goes on if Owner opens Castcade again within 20 minutes (19 min left). You can wait and keep talking; Leave lobby frees your table now.');
+    }
     // ---- the game somebody gave up, still on their table
     {
       const r = await lobby(['krobs'], TABLE, 0, 1);
@@ -494,6 +513,38 @@ describe('the story fixtures say what the controller says (A17 step 9)', () => {
       await flush();
       check('table-asked-after-away', S['dana']);
       check('table-one-asked', S['owner']);
+    }
+    // ---- the lobby's table is offered to a PC whose open table is not its copy of it (the final fix round's one-step half)
+    {
+      const r = await lobby(['krobs', 'chuck', 'dana'], TABLE);
+      const S = r.seats as Record<string, MatchController>;
+      r.clients['dana']!.updateParticipant({ game: table(fx.OTHER_TABLE, 'cd'.repeat(32)) });
+      await flush();
+      S['dana']!.setTableChange('offered', fx.FIXTURES['offer-other-table'].change.detail);
+      await flush();
+      check('offer-other-table', S['dana']);
+      expect(S['owner']!.status().lobby?.members.find((m) => m.id === 'dana')?.flags).toEqual(['asked']);
+    }
+    {
+      const r = await lobby(['krobs', 'chuck', 'dana'], TABLE);
+      const S = r.seats as Record<string, MatchController>;
+      r.clients['krobs']!.updateParticipant({ game: NO_TABLE });
+      await flush();
+      S['krobs']!.setTableChange('offered', fx.FIXTURES['offer-nothing-open'].change.detail);
+      await flush();
+      check('offer-nothing-open', S['krobs']);
+    }
+    // ---- a lobby that has no table yet; and what its PC answers to a pick that comes too soon after another
+    {
+      const r = await lobby(['krobs'], NO_TABLE);
+      const S = r.seats as Record<string, MatchController>;
+      check('no-table-yet', S['krobs']);
+      const congo = table(fx.OTHER_TABLE, 'cd'.repeat(32));
+      expect(await S['krobs']!.pickTableAnswered(congo, null, 8000)).toEqual({ kind: 'taken' });
+      await flush();
+      const again = S['krobs']!.pickTableAnswered(table(TABLE), null, 8000);
+      await flush();
+      expect(await again).toEqual({ kind: 'refused', sentence: fx.PICK_REFUSED });
     }
     // ---- states that are a lobby as above, with a sentence of the shell's over it (held in main/story-fixtures-shell.test.ts)
     {

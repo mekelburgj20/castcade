@@ -474,8 +474,9 @@ export function Match({ state }: { state: CastcadeState }) {
             {!st.lobby && st.path && <p className="muted">{st.path}</p>}
             {/* A17 step 9: a start that is announced says its own line beside its buttons (below): the same sentence is not said twice.
                 A line that sends the reader to this tab (the headset's "see the Match tab") is not shown on it: what it points at is at the top.
-                Nor is this PC's own table change, which the card at the top of the tab says, with its Open it. */}
-            {panel?.message && !st.advisories.some((line) => panel.message?.includes(line)) && !(st.lobby?.start && panel.message === st.lobby.start.line) && !panel.message.endsWith('see the Match tab') && panel.message !== one?.change?.detail && (
+                Nor is this PC's own table change, which the card at the top of the tab says, with its Open it.
+                Nor "Waiting for Chuck to come back" under the headline WAITING FOR CHUCK (the last pass). */}
+            {panel?.message && !st.advisories.some((line) => panel.message?.includes(line)) && !(st.lobby?.start && panel.message === st.lobby.start.line) && !panel.message.endsWith('see the Match tab') && panel.message !== one?.change?.detail && !(turnLine(st).startsWith('WAITING FOR ') && /^Waiting for .+ to come back$/.test(panel.message)) && (
               <p className={panel.message.startsWith('different') || panel.message.includes('cannot report ball ends') || panel.message.startsWith('The lobby is closed') || panel.message.startsWith('The lobby is over') || st.lobby?.hostAway ? 'warn' : 'muted'}>{awayClock(st, panel.message, now)}</p>
             )}
             {/* B26: the Midnight Madness setting when it is ON on a table, and the balls of this game it ran on (a flag only). */}

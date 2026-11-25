@@ -10,9 +10,9 @@ import type { KnownTable } from '../launch/known-tables.js';
 import type { CloseOutcome } from '../launch/vpx-close.js';
 import type { ForkLaunch, LaunchOptions, LaunchResult, VpxLauncher } from '../launch/vpx-launch.js';
 import { formatJoinLink } from './deep-link.js';
-import type { MatchStatus } from './match-host.js';
+import type { MatchStatus, PickAnswer } from './match-host.js';
 import { NO_TABLE_NAME, ZERO_SHA256 } from './match-setup.js';
-import { createOneStep, linkJoinFailure } from './one-step.js';
+import { createOneStep, linkJoinFailure, noCopyAtJoinWords } from './one-step.js';
 
 const TABLES = 'C:\\vpx\\tables';
 const table = (tableId: string, o: Partial<KnownTable> = {}): KnownTable => ({
@@ -90,7 +90,10 @@ function world(
     /** A17 step 10: this PC's own open table as it says it to the lobby. */
     ownTable?: GameFingerprint;
     autoChangesMax?: number;
-    /** The final review: the lobby's PC does not answer a pick by itself: the test does (`pick()` takes it, `refuse()` refuses it). Default: taken at once. */
+    /**
+     * The final review: the lobby's PC does not answer a pick by itself: the test does (`pick()` of that table takes it,
+     * `refuse()` refuses it; with neither, the match host's wait ends with no answer). Default: taken at once.
+     */
     pickAnswer?: 'wait';
     /** The final review: how long the offer waits for the witness to have read the open file. Default here 0. */
     identityWaitMs?: number;
@@ -142,6 +145,8 @@ function world(
   const objectsRead: string[] = [];
   const objectsSignals: AbortSignal[] = [];
   const learned: Array<[string, ForkIdentity]> = [];
+  /** The step 9 last pass: the picks of `pickAnswer: 'wait'` that wait for their answer. */
+  const pickWaits = new Set<{ name: string; settle: (a: PickAnswer) => void }>();
   let clock = 1_000_000;
   const status = (): MatchStatus =>
     ({ ...m, ...(picker ? { lobby: { table: { name: lobbyPick?.tableName ?? null, pickedBy: picker.id, pickedByName: picker.name }, members: [{ id: 'me', me: true }] } } : {}) }) as unknown as MatchStatus;
@@ -185,14 +190,26 @@ function world(
       setNoCopy: (v) => void noCopy.push(v),
       tableHeld: () => tableHeld,
       lobbyTable: () => (lobbyPick ? { game: lobbyPick, joined: `stay ${stay}` } : null),
+      // The step 9 last pass: as the match host does, each pick has its own answer (taken, refused, none in `waitMs`).
       pickTable: async (p) => {
-        if (o.pickRefusal) throw new Error(o.pickRefusal);
+        if (o.pickRefusal) return { kind: 'refused', sentence: o.pickRefusal };
         picks.push({ game: p.game, objects: p.objects, about: p.about ?? null });
-        // As the match host does: what went wrong before is cleared when a pick goes out.
-        m.lastError = null;
         // The lobby's PC takes it at once; this PC hears of it when the test says so (`pick()`), as with any pick.
-        if (o.pickAnswer !== 'wait') lobbyPick = p.game;
-        return status();
+        if (o.pickAnswer !== 'wait') {
+          lobbyPick = p.game;
+          return { kind: 'taken', status: status() };
+        }
+        return new Promise<PickAnswer>((answer) => {
+          const t = { fn: () => settle({ kind: 'none' }), ms: p.waitMs, dead: false };
+          const settle = (a: PickAnswer): void => {
+            t.dead = true;
+            pickWaits.delete(waiting);
+            answer(a);
+          };
+          const waiting = { name: p.game.tableName, settle };
+          pickWaits.add(waiting);
+          timers.push(t);
+        });
       },
       ownTable: () => o.ownTable ?? null,
       setTableChange: (state, line) => {
@@ -284,8 +301,13 @@ function world(
       witnessCbs.forEach((cb) => cb({ currentTable: open }));
       await flush();
     },
-    /** The final review: the lobby's PC refuses the pick this PC made (its sentence comes as the match host's `lastError`). */
+    /** The final review: the lobby's PC refuses the pick this PC made (the step 9 last pass: as that pick's own answer). */
     async refuse(sentence: string) {
+      for (const w of [...pickWaits]) w.settle({ kind: 'refused', sentence });
+      await flush();
+    },
+    /** The step 9 last pass: a refusal of the lobby's PC of something else this PC asked, said as the tab's sentence. */
+    async otherRefusal(sentence: string) {
       m.lastError = sentence;
       sayMatch();
       await flush();
@@ -313,6 +335,8 @@ function world(
     async pick(g: GameFingerprint) {
       lobbyPick = g;
       hostGame = g;
+      // A pick of this PC's that waits for that very table is taken (the match host's answer).
+      for (const w of [...pickWaits]) if (w.name.trim().toLowerCase() === g.tableName.trim().toLowerCase()) w.settle({ kind: 'taken', status: status() });
       sayMatch();
       await flush();
     },
@@ -2641,8 +2665,21 @@ describe("the final review: in a lobby that has a table, a PC whose open table i
     expect(n.one.status().change).toBeNull();
     expect(n.one.status().launch).toEqual({ state: 'needed', table: 'Monster Bash', detail: "The lobby's table is Monster Bash. Castcade found no copy of it on this PC, and Attack from Mars stays open: you can watch, or pick another table." });
     const e = await byCode({ tables: [AFM] });
-    expect(e.one.status().launch).toEqual({ state: 'needed', table: 'Monster Bash', detail: "The lobby's table is Monster Bash. Castcade found no copy of it on this PC: open it in VPX if you have it under another name. You stay in the lobby and can watch." });
+    expect(e.one.status().launch).toEqual({ state: 'needed', table: 'Monster Bash', detail: noCopyAtJoinWords('Monster Bash') });
+    expect(noCopyAtJoinWords('Monster Bash')).toBe("The lobby's table is Monster Bash. Castcade found no copy of it on this PC. If you have it under another name, open it in VPX: Castcade takes it when it can tell it is the same game. Otherwise you can watch, or pick another table.");
     expect(e.noCopy.at(-1)).toBe(true);
+    // The step 9 last pass: what the sentence says of a file under another name is what happens. Opened by hand, a file
+    // whose own name is the lobby's table's (or whose bytes are its) is taken: the lobby hears it is the copy.
+    await e.table('MB under another name');
+    await e.facts({ tableInfo: { tableName: 'Monster Bash' } });
+    expect(e.one.status().launch).toEqual({ state: 'running', table: 'MB under another name', detail: 'Using the table that is already open: MB under another name' });
+    expect(e.copies.at(-1)).toEqual({ pick: 'Monster Bash', open: 'MB under another name' });
+    expect(e.noCopy.at(-1)).toBe(false);
+    // One that Castcade cannot tell for the same game is not: the lobby's table is offered in its place.
+    const x = await byCode({ tables: [AFM] });
+    await x.table('Some other table');
+    await x.facts({ tableInfo: { tableName: 'Some other table' }, sha256: '12'.repeat(32) });
+    expect(x.copies.at(-1) ?? null).toBeNull();
   });
 
   it('a join by link beside another table: the table is kept and the lobby`s table is offered; beside its own copy it reads "Using the table that is already open", as it always did', async () => {
@@ -2784,11 +2821,16 @@ describe("the final review: in a lobby that has a table, a PC whose open table i
     await r.pick(fingerprint('Attack from Mars'));
     expect(r.one.status().change?.state).toBe('offered');
     const REFUSED = "You changed the lobby's table a moment ago: you can change it again in 30 s.";
+    let answered: string | null = null;
     const q = r.one.pick(MB.vpxPath).then(
-      () => 'taken',
-      (e: unknown) => (e as Error).message,
+      () => (answered = 'taken'),
+      (e: unknown) => (answered = (e as Error).message),
     );
     await flush();
+    // The step 9 last pass: another refusal of the lobby's PC in the same moment (an End match this PC asked for) is
+    // the tab's sentence, not the pick's answer: the pick still waits for its own.
+    await r.otherRefusal('There is no match to end.');
+    expect(answered).toBeNull();
     await r.refuse(REFUSED);
     expect(await q).toBe(REFUSED);
     expect(r.closes).toHaveLength(1);

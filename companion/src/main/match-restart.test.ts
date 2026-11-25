@@ -1343,7 +1343,10 @@ describe('a match through ArcAid, restarted (A15)', () => {
       await closes(m.H);
       crashed(m.H);
       await until(() => m.r.rooms().length === 0);
-      const down = m.r.restart(3000);
+      // (Down for 6 s: the start below waits up to 1.5 s for ArcAid, and the look at the flags 1.5 s after it has to
+      // fall while ArcAid is still down. With 3 s it fell after ArcAid was back on a loaded machine, and the member,
+      // not back yet, was rightly away: the step 9 last pass saw it fail once in a full run.)
+      const down = m.r.restart(6000);
       await sleep(200);
       const H2 = castcade('relay-host', m.hr.w, m.H.dir, m.via('h'));
       m.hr.castcadeStarts();
@@ -1367,6 +1370,40 @@ describe('a match through ArcAid, restarted (A15)', () => {
       expect(JSON.parse(readFileSync(H2.record, 'utf8'))).toMatchObject({ relay: true });
       expect([...H2.logs, ...m.C.logs].filter((l) => l.includes('FORFEIT'))).toEqual([]);
     } finally {
+      for (const h of hosts.splice(0)) await h.stop();
+      await m.r.close();
+    }
+  }, 90_000);
+
+  it("the step 9 last pass (the final review's note): ArcAid takes the room back while the lobby's PC is still opening its own port: that is heard, the lobby says ArcAid carries it, and the member comes back into the match", async () => {
+    const m = await relayed(300, { relayRejoin: { gapsMs: [300, 600, 2000], maxMisses: 60 } });
+    const { WsPeerTransport } = await import('../match/transport-ws.js');
+    const listen = WsPeerTransport.prototype.listen;
+    try {
+      await closes(m.H);
+      crashed(m.H);
+      await until(() => m.r.rooms().length === 0);
+      const down = m.r.restart(1500);
+      await sleep(200);
+      // The listen of the lobby's own port lasts until ArcAid is back and the room is this PC's again (it is asked
+      // for again by itself: ArcAid did not answer at the start).
+      vi.spyOn(WsPeerTransport.prototype, 'listen').mockImplementation(async function (this: InstanceType<typeof WsPeerTransport>, port?: number, host?: string) {
+        await until(() => m.r.rooms().includes(m.code), 20_000);
+        await sleep(300);
+        return listen.call(this, port, host);
+      });
+      const H2 = castcade('relay-host', m.hr.w, m.H.dir, m.via('h'));
+      m.hr.castcadeStarts();
+      await H2.mh.rejoin();
+      vi.restoreAllMocks();
+      await down;
+      // It was: the tab said for good that ArcAid was not carrying the lobby.
+      expect(H2.mh.status()).toMatchObject({ role: 'host', code: m.code, via: 'relay', relayNote: null });
+      expect(H2.mh.status().lastError ?? '').toMatch(/is open again as it was, with the game where it stood\. The others come back by themselves\.$/);
+      await until(() => m.C.mh.status().lobby?.hostAway === null && up(m.C.mh, 1), 30_000);
+      expect(H2.mh.status().relayNote).toBeNull();
+    } finally {
+      vi.restoreAllMocks();
       for (const h of hosts.splice(0)) await h.stop();
       await m.r.close();
     }
