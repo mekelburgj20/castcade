@@ -191,7 +191,7 @@ export function Match({ state }: { state: CastcadeState }) {
   // and score come with a match (they stood there empty before one, and squeezed the names onto two lines).
   const scored = !st.lobby || st.lobby.match !== null;
   const roster = (
-    <table className="match-table">
+    <table className="match-table roster">
       {scored && (
         <thead>
           <tr>
@@ -940,7 +940,7 @@ export function Match({ state }: { state: CastcadeState }) {
                 {st.lobby.lastMatch.abandoned !== null ? `Match ended · game ${st.lobby.lastMatch.abandoned} not finished` : `Match over after ${st.lobby.lastMatch.games} game${st.lobby.lastMatch.games === 1 ? '' : 's'}`}
               </strong>
               {st.lobby.lastMatch.standing.length > 0 ? (
-                <table className="match-table">
+                <table className="match-table roster">
                   <thead>
                     <tr>
                       <th>Final standing</th>

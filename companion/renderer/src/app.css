@@ -259,7 +259,8 @@ details.advanced[open] > summary {
   white-space: nowrap;
   overflow-wrap: normal;
 }
-.match-table td:first-child {
+/* The table of who is here (and the final standing): the first column, the name and its words, takes what is left. */
+.match-table.roster td:first-child {
   width: 100%;
 }
 .card button {
