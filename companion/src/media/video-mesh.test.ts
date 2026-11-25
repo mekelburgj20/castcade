@@ -2,7 +2,7 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { MediaSignal, NativeVideoStatus } from './match-media-types.js';
 import { createVideoHelper, type VideoHelper, type VideoHelperCommand, type VideoHelperEvent, type VideoHelperStatus } from './video-helper.js';
-import { CONNECT_TIMEOUT_MS, clampMaxKbps, clampPin, createVideoMesh, headsetVideoLine, helperIceServers, initiates, ladderFor, pairWords, rungGeometry, rungReadout, type VideoMesh } from './video-mesh.js';
+import { CONNECT_TIMEOUT_MS, clampMaxKbps, clampPin, createVideoMesh, headsetVideoLine, helperIceServers, initiates, ladderFor, pairWords, rungGeometry, rungReadout, videoDirectPeers, type VideoMesh } from './video-mesh.js';
 
 const FAKE = fileURLToPath(new URL('./__fixtures__/fake-video-helper.mjs', import.meta.url));
 
@@ -69,6 +69,25 @@ describe('video mesh rules (D10.3)', () => {
     expect(headsetVideoLine({ helper: 'ready', sending: true, peers: { k: { ice: 'connected', pair: null, send: null, recv: null, rung } } })).toBe('video: rung 3 · 1016x1080@60');
     expect(headsetVideoLine({ helper: 'ready', sending: false, peers: { k: { ice: 'connected', pair: null, send: null, recv, rung: null } } })).toBe('video: in 1016x1080 · 60 fps · 7.7 Mbps');
     expect(headsetVideoLine({ helper: 'ready', sending: false, peers: { k: { ice: 'connected', pair: null, send: null, recv: null, rung: null } } })).toBeNull();
+  });
+
+  it('I11.12 (2026-11-24): the players the native video reaches directly: connected on a pair with no relay in it, and nobody else', () => {
+    const peer = (ice: string, pair: string | null, failed = false) => ({ ice, pair, send: null, recv: null, rung: null, failed });
+    const peers = {
+      chuck: peer('connected', 'srflx↔srflx'),
+      lan: peer('completed', 'host↔host'),
+      learned: peer('connected', 'srflx↔prflx'),
+      relayed: peer('connected', 'relay↔srflx'),
+      relayedThere: peer('connected', 'srflx↔relay'),
+      checking: peer('checking', 'srflx↔srflx'),
+      unknown: peer('connected', null),
+      gaveUp: peer('connected', 'srflx↔srflx', true),
+      dropped: peer('disconnected', 'srflx↔srflx'),
+    };
+    expect(videoDirectPeers({ helper: 'ready', peers })).toEqual(['chuck', 'lan', 'learned']);
+    expect(videoDirectPeers({ helper: 'ready', peers: {} })).toEqual([]);
+    // No helper, no claim.
+    for (const helper of ['starting', 'stopped', 'unavailable'] as const) expect(videoDirectPeers({ helper, peers })).toEqual([]);
   });
 });
 

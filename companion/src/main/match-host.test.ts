@@ -317,8 +317,11 @@ describe('match host (A6)', () => {
       frames: () => null,
       showPanel: () => undefined,
       setNativeVideo: (h: (typeof hooks)[number]) => void hooks.push(h),
+      // I11.12 (2026-11-24): who the native video reaches directly, as the panel page is told it.
+      setVideoDirect: (ids: string[]) => void direct.push(ids),
       detach: async () => undefined,
     };
+    const direct: string[][] = [];
     const hv = stubHelper();
     const cv = stubHelper();
     const hdir = mkdtempSync(join(tmpdir(), 'castcade-video-h-'));
@@ -353,6 +356,9 @@ describe('match host (A6)', () => {
     expect(offeree.of('signal')[0]).toMatchObject({ kind: 'offer', sdp: `v=0 offer to ${offereeId}` });
     await until(() => H.mh.status().media?.nativeVideo?.peers[cid]?.ice === 'connected' && C.mh.status().media === null);
     expect(H.mh.status().media?.nativeVideo?.peers[cid]).toMatchObject({ ice: 'connected', pair: 'host↔host' });
+    // I11.12 (2026-11-24): the helper holds a direct pair to the client, and the panel page is told so: it will not
+    // say a TURN relay is needed for the voice to that player, nor give that connection up.
+    expect(direct.at(-1)).toEqual([cid]);
     // The media layer's camera feeds the ring: the helper is pointed at the box.
     hooks[0]?.onSource({ width: 1440, height: 1440, fps: 60 });
     expect(hv.of('source').at(-1)).toEqual({ cmd: 'source', kind: 'ring', token: 'HOSTsend_ABCDEFG', width: 1440, height: 1440, fps: 60 });
@@ -404,6 +410,8 @@ describe('match host (A6)', () => {
     expect(lines).toContain('match: native video: the Electron video serves the rest of this match');
     expect(hooks).toHaveLength(2);
     expect(hooks.at(-1)).toBeNull();
+    // I11.12: a connection the helper gave up on is no direct path any more.
+    expect(direct.at(-1)).toEqual([]);
     // What the media layer answers with: the source handed back reaches the helper as `source none`.
     hooks[0]?.onSource(null);
     expect(hv.of('source').at(-1)).toEqual({ cmd: 'source', kind: 'none' });
@@ -411,6 +419,8 @@ describe('match host (A6)', () => {
     hv.say({ event: 'peer', id: cid, ice: 'connected', pair: 'host<->host', restarts: 4 });
     expect(H.mh.status().media?.nativeVideo).toMatchObject({ fallback: true, peers: { [cid]: { ice: 'connected', failed: false } } });
     expect(hooks).toHaveLength(2);
+    // I11.12: but it is a direct pair again, which is what the page's wording about a relay goes by.
+    expect(direct.at(-1)).toEqual([cid]);
     // Leaving closes the peer, stops sending and clears the rings; the helper itself is left for the next match.
     await C.mh.leave();
     expect(cv.of('close')).toEqual([{ cmd: 'close', id: hid }]);

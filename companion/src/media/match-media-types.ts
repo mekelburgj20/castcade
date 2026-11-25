@@ -295,6 +295,12 @@ export interface MatchMedia {
    */
   setVideoLine?(line: string | null): void;
   /**
+   * I11.12 (2026-11-24): the players the native video holds a direct candidate pair to (`videoDirectPeers`,
+   * video-mesh.ts), from the match host; an empty list clears it. For such a player the panel never says a TURN relay
+   * is needed and never gives the voice connection up. Kept for the next attach. Absent in fakes before I11.12.
+   */
+  setVideoDirect?(peers: MatchPlayerId[]): void;
+  /**
    * D8.10 (2026-11-14): the in-game menu over the panel (match/match-menu.ts), or null to take it away. Live only: a
    * new page starts without one. Absent in fakes before D8.10.
    */

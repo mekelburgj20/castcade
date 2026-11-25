@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { PanelState } from './match-media-types.js';
-import { bitrateHintsFor, cameraCapture, cameraFrameSize, eyesKey, isCameraCapture, LAYER_CAMERA_SOURCE_ID, stereoSignal, feedSize, headerText, ICE_WATCH, icePairInfo, icePairText, iceUfrag, iceWatchStep, micText, noPathText, PANEL_CHANNELS, paintFrame, panelPageHtml, preferH264, SBS_MIN_ASPECT, scoreText, stageText, stallStep, CAPTURE_STALL_MS, STATS_MS, stereoOf, stripRows, VIDEO_FEED_MAX, videoBitrateFor, videoCropRect, videoPeer, withBitrateHints, volumeGains, VOLUME_NOTE_MS, type Paint2D } from './panel-page.js';
+import { bitrateHintsFor, cameraCapture, cameraFrameSize, eyesKey, isCameraCapture, LAYER_CAMERA_SOURCE_ID, stereoSignal, feedSize, headerText, ICE_ROUND_LOOK, ICE_WATCH, icePairInfo, icePairText, iceUfrag, iceRestartName, iceWatchStep, micText, noPathText, PANEL_CHANNELS, paintFrame, panelPageHtml, preferH264, SBS_MIN_ASPECT, scoreText, stageText, stallStep, CAPTURE_STALL_MS, STATS_MS, stereoOf, stripRows, VIDEO_FEED_MAX, videoBitrateFor, videoCropRect, videoPeer, withBitrateHints, volumeGains, VOLUME_NOTE_MS, type Paint2D } from './panel-page.js';
 
 const state = (o: Partial<PanelState> = {}): PanelState => ({
   playerUp: 'krobs',
@@ -1123,31 +1123,81 @@ describe('ICE: the candidate pair and the watchdog (D2.9, 2026-11-02)', () => {
     expect(iceUfrag(null)).toBeNull();
   });
 
-  it('iceWatchStep: 10 s stuck then restart; 20 s, 40 s backoff; give up 40 s after the third; the other side 5 s later', () => {
+  it('I11.12: the schedule is 3, 3, 6, 6, 12, 12 s, a lag of 3 s, and for the first two restarts a wait an 0.2.50 peer needs', () => {
+    expect(ICE_WATCH).toEqual({ backoffMs: [3_000, 3_000, 6_000, 6_000, 12_000, 12_000], lagMs: 3_000, waitMs: [14_000, 28_000], lateMs: 30_000, tickMs: 1_000 });
+    expect(ICE_ROUND_LOOK).toEqual({ everyMs: 50, forMs: 3_000, keepMs: 1_000 });
+  });
+
+  it('iceWatchStep: the side whose turn it is restarts after 3, 3, 6, 6, 12, 12 s; the turns alternate, the usual lead first; give up 12 s after the sixth', () => {
     const step = (ice: string, s: number, n: number, lead = true) => iceWatchStep(ice, s * 1000, n, lead, ICE_WATCH);
     expect(step('connected', 999, 3)).toBe('ok');
     expect(step('completed', 0, 0)).toBe('ok');
     expect(step('closed', 999, 0)).toBe('wait');
     for (const ice of ['new', 'checking', 'disconnected']) {
-      expect(step(ice, 9.9, 0)).toBe('wait');
-      expect(step(ice, 10, 0)).toBe('restart');
+      expect(step(ice, 2.9, 0)).toBe('wait');
+      expect(step(ice, 3, 0)).toBe('restart');
     }
-    expect(step('checking', 19.9, 1)).toBe('wait');
-    expect(step('checking', 20, 1)).toBe('restart');
-    expect(step('checking', 39.9, 2)).toBe('wait');
-    expect(step('checking', 40, 2)).toBe('restart');
-    expect(step('checking', 39.9, 3)).toBe('wait');
-    expect(step('checking', 40, 3)).toBe('give_up');
-    // failed: the browser gave up on every pair, so the first restart is at once; the backoff holds after it
+    // Restart 1, 3, 5 (0, 2, 4 made so far) is the usual lead's turn; restart 2, 4, 6 the other side's.
+    const delays = [3, 3, 6, 6, 12, 12];
+    for (let k = 0; k < 6; k++) {
+      const turn = k % 2 === 0;
+      expect(step('checking', delays[k]! - 0.1, k, turn), `restart ${k + 1}, its side, too soon`).toBe('wait');
+      expect(step('checking', delays[k]!, k, turn), `restart ${k + 1}, its side`).toBe('restart');
+      // The side whose turn it is not is still waiting then.
+      expect(step('checking', delays[k]!, k, !turn), `restart ${k + 1}, the other side`).toBe('wait');
+    }
+    // The side whose turn it is not steps in: after 14 s and 28 s for the first two (an 0.2.50 lead restarts at 10 s,
+    // an 0.2.50 other side 25 s after the first), 3 s after the turn's time from the third on.
+    const waits = [14, 28, 9, 9, 15, 15];
+    for (let k = 0; k < 6; k++) {
+      const turn = k % 2 === 0;
+      expect(step('checking', waits[k]! - 0.1, k, !turn), `restart ${k + 1}, in the other's place, too soon`).toBe('wait');
+      expect(step('checking', waits[k]!, k, !turn), `restart ${k + 1}, in the other's place`).toBe('restart');
+    }
+    // After the sixth: 12 s more and it gives up (the side whose turn the seventh would not be: 3 s later).
+    expect(step('checking', 11.9, 6)).toBe('wait');
+    expect(step('checking', 12, 6)).toBe('give_up');
+    expect(step('checking', 14.9, 6, false)).toBe('wait');
+    expect(step('checking', 15, 6, false)).toBe('give_up');
+    expect(step('checking', 999, 9)).toBe('give_up');
+    // failed before any restart: the browser gave up on every pair, so the first restart is at once (the other side
+    // 3 s later, not 14); the schedule holds after it
     expect(step('failed', 0, 0)).toBe('restart');
-    expect(step('failed', 5, 1)).toBe('wait');
-    expect(step('failed', 40, 3)).toBe('give_up');
-    // the side that does not lead waits 5 s more each time, so the lead's restart reaches it first
-    expect(step('checking', 14.9, 0, false)).toBe('wait');
-    expect(step('checking', 15, 0, false)).toBe('restart');
-    expect(step('failed', 4.9, 0, false)).toBe('wait');
-    expect(step('checking', 44.9, 3, false)).toBe('wait');
-    expect(step('checking', 45, 3, false)).toBe('give_up');
+    expect(step('failed', 2.9, 0, false)).toBe('wait');
+    expect(step('failed', 3, 0, false)).toBe('restart');
+    expect(step('failed', 2.9, 1, false)).toBe('wait');
+    expect(step('failed', 3, 1, false)).toBe('restart');
+    expect(step('failed', 12, 6)).toBe('give_up');
+    // A schedule without the waits (the rules of 0.2.50, as a caller may still pass them): the lag alone.
+    const old = { backoffMs: [10_000, 20_000, 40_000], lagMs: 5_000 };
+    expect(iceWatchStep('checking', 10_000, 0, true, old)).toBe('restart');
+    expect(iceWatchStep('checking', 14_999, 0, false, old)).toBe('wait');
+    expect(iceWatchStep('checking', 15_000, 0, false, old)).toBe('restart');
+  });
+
+  it('iceWatchStep, persist (the picture has a direct pair to the peer): never give_up; after the sixth one restart every 30 s, the turns going on', () => {
+    const step = (s: number, n: number, lead: boolean, persist: boolean) => iceWatchStep('disconnected', s * 1000, n, lead, ICE_WATCH, persist);
+    // The scheduled restarts are the same with it.
+    expect(step(3, 0, true, true)).toBe('restart');
+    expect(step(13.9, 0, false, true)).toBe('wait');
+    // Past the schedule: where it would give up at 12 s, it waits for 30 s and restarts (restart 7 is the usual lead's).
+    expect(step(12, 6, true, false)).toBe('give_up');
+    expect(step(12, 6, true, true)).toBe('wait');
+    expect(step(29.9, 6, true, true)).toBe('wait');
+    expect(step(30, 6, true, true)).toBe('restart');
+    expect(step(30, 6, false, true)).toBe('wait');
+    expect(step(33, 6, false, true)).toBe('restart');
+    // Restart 8 is the other side's.
+    expect(step(30, 7, false, true)).toBe('restart');
+    expect(step(30, 7, true, true)).toBe('wait');
+    expect(step(33, 7, true, true)).toBe('restart');
+    expect(step(9_999, 40, true, true)).toBe('restart');
+  });
+
+  it('iceRestartName: within the schedule and past it', () => {
+    expect(iceRestartName(1, 6)).toBe('restart 1 of 6');
+    expect(iceRestartName(6, 6)).toBe('restart 6 of 6');
+    expect(iceRestartName(7, 6)).toBe('late restart 7');
   });
 
   it('noPathText: names the player and the state; says what is missing', () => {
@@ -1155,6 +1205,12 @@ describe('ICE: the candidate pair and the watchdog (D2.9, 2026-11-02)', () => {
     expect(noPathText('Krobs', 'failed', 3, true)).toBe('No path to Krobs (ICE failed after 3 restarts): the TURN relay did not get through either.');
     // D2.12: nothing was tried, so no router is blamed.
     expect(noPathText('Krobs', 'new', 3, false)).toBe('Voice with Krobs did not start (ICE new after 3 restarts): leave the match and join again.');
+    // I11.12 (2026-11-24): the native video holds a direct pair to the same player: no router is blamed and no relay asked for.
+    const direct = noPathText('ChuckRibbits', 'disconnected', 6, false, true);
+    expect(direct).toBe('Voice with ChuckRibbits is not connected yet (ICE disconnected after 6 restarts). The picture has a direct path to their PC, so no relay is needed: still trying.');
+    expect(direct).not.toMatch(/TURN|blocked|No path/);
+    expect(noPathText('ChuckRibbits', 'checking', 8, true, true)).not.toMatch(/TURN|blocked|No path/);
+    expect(noPathText('ChuckRibbits', 'new', 6, false, true)).toBe('Voice with ChuckRibbits did not start (ICE new after 6 restarts): leave the match and join again.');
   });
 
   it('the page: a connection stuck in checking restarts ICE on the backoff, then says there is no path; connected clears it', async () => {
@@ -1178,33 +1234,117 @@ describe('ICE: the candidate pair and the watchdog (D2.9, 2026-11-02)', () => {
       expect(restart).not.toHaveBeenCalled();
       pc.iceConnectionState = 'checking';
       tick.cb();
-      vi.advanceTimersByTime(9_900);
+      vi.advanceTimersByTime(2_900);
       tick.cb();
       expect(restart).not.toHaveBeenCalled();
       vi.advanceTimersByTime(100);
       tick.cb();
       expect(restart).toHaveBeenCalledTimes(1);
-      expect(logs().at(-1)).toBe('peer krobs: ICE restart 1 of 3 (checking for 10 s, we lead; no pair yet)');
-      vi.advanceTimersByTime(20_000);
+      expect(logs().at(-1)).toBe('peer krobs: ICE restart 1 of 6 (checking for 3 s, our turn; no pair yet)');
+      // I11.12: restart 2 is the peer's turn. It does not take it (this fake never restarts), so this side steps in:
+      // after 28 s (a peer on 0.2.50 would make its own 25 s after the first), not before.
+      vi.advanceTimersByTime(27_000);
       tick.cb();
-      vi.advanceTimersByTime(40_000);
+      expect(restart).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(1_000);
       tick.cb();
-      expect(restart).toHaveBeenCalledTimes(3);
-      vi.advanceTimersByTime(39_000);
+      expect(restart).toHaveBeenCalledTimes(2);
+      expect(logs().at(-1)).toBe('peer krobs: ICE restart 2 of 6 (checking for 28 s, the peer did not take its turn; no pair yet)');
+      // Restart 3 (ours) 6 s on; 4 (the peer's, taken over 3 s late) 9 s; 5 (ours) 12 s; 6 (the peer's) 15 s.
+      for (const [s, n] of [[6, 3], [9, 4], [12, 5], [15, 6]] as const) {
+        vi.advanceTimersByTime(s * 1000 - 1_000);
+        tick.cb();
+        expect(restart).toHaveBeenCalledTimes(n - 1);
+        vi.advanceTimersByTime(1_000);
+        tick.cb();
+        expect(restart).toHaveBeenCalledTimes(n);
+      }
+      expect(logs().at(-1)).toBe('peer krobs: ICE restart 6 of 6 (checking for 15 s, the peer did not take its turn; no pair yet)');
+      vi.advanceTimersByTime(11_000);
       tick.cb();
       expect(status().error).toBeNull();
       vi.advanceTimersByTime(1_000);
       tick.cb();
-      expect(restart).toHaveBeenCalledTimes(3);
-      expect(logs().at(-1)).toBe('peer krobs: no path after 3 ICE restart(s), checking for 110 s; no pair yet; no TURN relay is set');
-      const msg = 'No path to Krobs (ICE checking after 3 restarts): both routers blocked the direct connection; a TURN relay is needed.';
+      expect(restart).toHaveBeenCalledTimes(6);
+      expect(logs().at(-1)).toBe('peer krobs: no path after 6 ICE restart(s), checking for 85 s; no pair yet; no TURN relay is set');
+      const msg = 'No path to Krobs (ICE checking after 6 restarts): both routers blocked the direct connection; a TURN relay is needed.';
       expect(status().error).toBe(msg);
       expect(p.el('msg').textContent).toBe(msg);
       // a path after all: the message goes, the outcome is logged
       pc.iceConnectionState = 'connected';
       vi.advanceTimersByTime(5_000);
       tick.cb();
-      expect(logs().at(-1)).toBe('peer krobs: ICE connected after 3 restart(s), 115 s stuck');
+      expect(logs().at(-1)).toBe('peer krobs: ICE connected after 6 restart(s), 90 s stuck');
+      expect(status().error).toBeNull();
+    } finally {
+      restart.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('I11.12 (2026-11-24): while the native video holds a direct pair to the peer the page never asks for a TURN relay and never gives up: it says the voice is still being tried, and restarts every 30 s', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const restart = vi.spyOn(FakePeerConnection.prototype, 'restartIce');
+    try {
+      const p = loadPage({ mic: true, capture: false });
+      p.emit(PANEL_CHANNELS.attach, { localId: 'owner', peers: ['krobs'], ice: [{ urls: ['stun:x'] }], capture: null, micDeviceId: null, muted: false, sending: false });
+      p.emit(PANEL_CHANNELS.state, state());
+      await settle();
+      const pc = FakePeerConnection.all[0]!;
+      pc.onnegotiationneeded?.();
+      await settle();
+      p.emit(PANEL_CHANNELS.signal, { from: 'krobs', signal: { kind: 'answer', sdp: 'answer session:k1' } });
+      await settle();
+      const tick = p.intervals.find((i) => i.ms === ICE_WATCH.tickMs)!;
+      const logs = () => p.sent.filter((s) => s.channel === PANEL_CHANNELS.log).map((s) => s.arg as string);
+      const status = () => p.sent.filter((s) => s.channel === PANEL_CHANNELS.status).pop()?.arg as { error: string | null };
+      const seconds = (n: number): void => {
+        for (let i = 0; i < n; i++) {
+          vi.advanceTimersByTime(1_000);
+          tick.cb();
+        }
+      };
+      pc.iceConnectionState = 'checking';
+      tick.cb();
+      // The picture connects straight between the two PCs half a second in (2026-11-24: 0.3 s, in all eight matches).
+      p.emit(PANEL_CHANNELS.videoDirect, ['krobs']);
+      // The six scheduled restarts: 3 + 28 + 6 + 9 + 12 + 15 s, nothing said meanwhile.
+      seconds(72);
+      expect(restart).toHaveBeenCalledTimes(5);
+      expect(status().error).toBeNull();
+      seconds(1);
+      expect(restart).toHaveBeenCalledTimes(6);
+      // The schedule is used up: where it gave up, it says what is true and goes on.
+      const msg = 'Voice with Krobs is not connected yet (ICE checking after 6 restarts). The picture has a direct path to their PC, so no relay is needed: still trying.';
+      expect(status().error).toBe(msg);
+      expect(p.el('msg').textContent).toBe(msg);
+      expect(logs()).toContain('peer krobs: not connected after 6 ICE restart(s), checking for 73 s; the native video holds a direct pair to this peer, so nothing is given up: an ICE restart every 30 s');
+      seconds(29);
+      expect(restart).toHaveBeenCalledTimes(6);
+      seconds(1);
+      expect(restart).toHaveBeenCalledTimes(7);
+      expect(logs().at(-1)).toBe('peer krobs: ICE late restart 7 (checking for 30 s, our turn; no pair yet)');
+      // Restart 8 is the peer's turn: 3 s after its time this side makes it.
+      seconds(33);
+      expect(restart).toHaveBeenCalledTimes(8);
+      expect(logs().at(-1)).toBe('peer krobs: ICE late restart 8 (checking for 33 s, the peer did not take its turn; no pair yet)');
+      expect(logs().some((l) => l.includes('no path after'))).toBe(false);
+      expect(p.sent.filter((s) => s.channel === PANEL_CHANNELS.status).some((s) => /TURN|blocked/.test(String((s.arg as { error: string | null }).error)))).toBe(false);
+      // The picture loses its direct pair: the voice connection is given up the usual way, 12 s after its last restart.
+      p.emit(PANEL_CHANNELS.videoDirect, []);
+      seconds(12);
+      expect(logs().at(-1)).toBe('peer krobs: no path after 8 ICE restart(s), checking for 148 s; no pair yet; no TURN relay is set');
+      expect(status().error).toBe('No path to Krobs (ICE checking after 8 restarts): both routers blocked the direct connection; a TURN relay is needed.');
+      // And it is back: tried again at once, the relay no longer asked for.
+      p.emit(PANEL_CHANNELS.videoDirect, ['krobs']);
+      expect(logs().at(-1)).toBe('peer krobs: not connected after 8 ICE restart(s), checking for 148 s; the native video holds a direct pair to this peer, so nothing is given up: an ICE restart every 30 s');
+      expect(logs()).toContain('peer krobs: the native video holds a direct pair to this peer: trying again, an ICE restart every 30 s');
+      expect(status().error).toBe('Voice with Krobs is not connected yet (ICE checking after 8 restarts). The picture has a direct path to their PC, so no relay is needed: still trying.');
+      seconds(30);
+      expect(restart).toHaveBeenCalledTimes(9);
+      // Connected at last: the message goes.
+      pc.iceConnectionState = 'connected';
+      seconds(1);
       expect(status().error).toBeNull();
     } finally {
       restart.mockRestore();
@@ -1231,18 +1371,34 @@ describe('ICE: the candidate pair and the watchdog (D2.9, 2026-11-02)', () => {
         ['P', { id: 'P', type: 'candidate-pair', localCandidateId: 'L', remoteCandidateId: 'R', state: 'in-progress', requestsSent: 21, responsesReceived: 0, requestsReceived: 0, responsesSent: 0 }],
       ]);
       const tick = p.intervals.find((i) => i.ms === ICE_WATCH.tickMs)!;
+      const look = p.intervals.find((i) => i.ms === ICE_ROUND_LOOK.everyMs)!;
       const logs = () => p.sent.filter((s) => s.channel === PANEL_CHANNELS.log).map((s) => s.arg as string);
       pc.iceConnectionState = 'checking';
       tick.cb();
-      vi.advanceTimersByTime(10_000);
+      // I11.12 (2026-11-24): this side's server-reflexive candidate goes out, the peer's comes in, and the page's 50 ms
+      // look at the stats sees the first check go out on that pair: the three times the line gives.
+      vi.advanceTimersByTime(40);
+      (pc.onicecandidate as (ev: { candidate: unknown }) => void)({ candidate: { candidate: 'candidate:1 1 udp 1677729535 192.0.2.10 50000 typ srflx raddr 0.0.0.0 rport 0 generation 0 ufrag LoCa network-id 1', sdpMid: '0', sdpMLineIndex: 0 } });
+      vi.advanceTimersByTime(60);
+      p.emit(PANEL_CHANNELS.signal, { from: 'krobs', signal: { kind: 'ice', candidate: { candidate: 'candidate:2 1 udp 1677729535 198.51.100.7 61000 typ srflx raddr 0.0.0.0 rport 0 generation 0 ufrag ReMo network-id 1', sdpMid: '0', sdpMLineIndex: 0 } } });
+      vi.advanceTimersByTime(50);
+      look.cb();
+      await settle();
+      vi.advanceTimersByTime(2_850);
       tick.cb();
       await settle();
       const round = logs().filter((l) => l.includes('ICE round'));
       expect(round).toHaveLength(1);
-      expect(round[0]).toMatch(/^peer krobs: ICE round 1: restart 1 of 3 decided here after 1\d\.\d\d s \(ice checking\); remote description (not seen|at \d+\.\d\d s), checking (not seen|at \d+\.\d\d s), not connected; 1 pair: srflx>srflx udp in-progress sent 21 answered 0, received 0 answered 0; this side leads restarts$/);
-      expect(round[0]).not.toMatch(/192\.0\.2|198\.51|50000|61000/);
+      expect(round[0]).toMatch(
+        /^peer krobs: ICE round 1: restart 1 of 6 decided here after \d\.\d\d s \(ice checking\); remote description (not seen|at \d+\.\d\d s), checking (not seen|at \d+\.\d\d s), not connected; srflx candidate sent at \d\.\d\d s, received at \d\.\d\d s; first check on a srflx pair sent at \d\.\d\d s, received not seen; 1 pair: srflx>srflx udp in-progress sent 21 answered 0, received 0 answered 0; this side leads restarts 1, 3, 5$/,
+      );
+      // The candidate sent 60 ms before the one received, the first check seen 50 ms after that.
+      const at = (re: RegExp): number => Number(re.exec(round[0]!)?.[1]);
+      expect(at(/received at (\d\.\d\d) s; first/) - at(/srflx candidate sent at (\d\.\d\d) s/)).toBeCloseTo(0.06, 2);
+      expect(at(/pair sent at (\d\.\d\d) s/) - at(/received at (\d\.\d\d) s; first/)).toBeCloseTo(0.05, 2);
+      expect(round[0]).not.toMatch(/192\.0\.2|198\.51|50000|61000|LoCa|ReMo|ufrag/);
       // The watchdog's own line is still there, as before.
-      expect(logs()).toContain('peer krobs: ICE restart 1 of 3 (checking for 10 s, we lead; no pair yet)');
+      expect(logs()).toContain('peer krobs: ICE restart 1 of 6 (checking for 3 s, our turn; no pair yet)');
     } finally {
       vi.useRealTimers();
     }

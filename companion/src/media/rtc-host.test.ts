@@ -296,6 +296,25 @@ describe('createRtcHost (D2)', () => {
     await host.detach();
   });
 
+  it('I11.12 (2026-11-24): who the native video reaches directly goes to the page: what was said before the attach, then every change, and nothing when nothing changed', async () => {
+    const host = createRtcHost({ userData: dir, log, probe: async () => ({ outputs: [], windows: [PLAYER] }), settings: store() });
+    await host.setVr(VR_STEAM);
+    // Said before the panel is up (the helper connects in the lobby): kept for the attach.
+    host.setVideoDirect?.(['krobs']);
+    await host.attach(signalling('owner').sig, ['owner', 'krobs']);
+    const w = fake.FakeWindow.all[0]!;
+    fromPage(w, PANEL_CHANNELS.ready);
+    const direct = (): unknown[] => w.webContents.sent.filter(([ch]) => ch === PANEL_CHANNELS.videoDirect).map(([, arg]) => arg);
+    expect(direct()).toEqual([['krobs']]);
+    host.setVideoDirect?.(['krobs']);
+    expect(direct()).toHaveLength(1);
+    host.setVideoDirect?.(['zed', 'krobs', 'krobs']);
+    expect(direct()).toEqual([['krobs'], ['krobs', 'zed']]);
+    host.setVideoDirect?.([]);
+    expect(direct().at(-1)).toEqual([]);
+    await host.detach();
+  });
+
   it('VR: an offscreen window at 20 fps; attach first, then what was said before the page was ready; signals both ways', async () => {
     let windows: VpxWindow[] = [win('Visual Pinball - [MB]', 800, 600), PLAYER];
     const probe = async (): Promise<WindowProbe> => ({ outputs: [], windows });

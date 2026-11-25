@@ -530,6 +530,87 @@ describe('perfect negotiation (D2)', () => {
     expect(net.errors).toEqual([]);
   });
 
+  it('I11.12 (2026-11-24): a restart led by the polite side is an ordinary offer the impolite side answers, on the same connections', async () => {
+    const net = network(['a', 'b']);
+    net.meshes['a']?.add('b');
+    net.meshes['b']?.add('a');
+    net.pc('b', 'a').onnegotiationneeded?.();
+    await net.run();
+    const pa = net.pc('a', 'b');
+    const pb = net.pc('b', 'a');
+    expect(paired(pa, pb)).toBe(true);
+    expect(pb.localDescription?.type).toBe('offer');
+    // a is the polite side (it did not make the first offer): the restart is its turn now, and its offer is taken.
+    expect(isPolite('a', 'b')).toBe(true);
+    expect(net.meshes['a']?.get('b')?.restartIce()).toBe(true);
+    await net.run();
+    expect(pa.restarts).toBe(1);
+    expect(paired(pa, pb)).toBe(true);
+    expect(pa.localDescription?.type).toBe('offer');
+    expect(pb.localDescription?.type).toBe('answer');
+    expect(net.pc('a', 'b')).toBe(pa);
+    expect(net.pc('b', 'a')).toBe(pb);
+    expect(net.reopens).toEqual([]);
+    expect([...pa.errors, ...pb.errors, ...net.errors]).toEqual([]);
+    expect(net.queue).toEqual([]);
+  });
+
+  it('I11.12 (2026-11-24): a restart led by the polite side while the impolite side waits for the answer to an offer of its own: that offer is answered first, the restart goes out again, and it ends there (no loop)', async () => {
+    const net = network(['a', 'b']);
+    net.meshes['a']?.add('b');
+    net.meshes['b']?.add('a');
+    net.pc('b', 'a').onnegotiationneeded?.();
+    await net.run();
+    const pa = net.pc('a', 'b');
+    const pb = net.pc('b', 'a');
+    // b (impolite) offers again (a track was added) and the offer is lost on the way: b sits in have-local-offer.
+    pb.onnegotiationneeded?.();
+    await settle();
+    expect(net.queue.map((w) => `${w.from}:${w.signal.kind}`)).toEqual(['b:offer']);
+    net.queue.length = 0;
+    expect(pb.signalingState).toBe('have-local-offer');
+    // a's turn to restart: its offer reaches b, which is mid-offer and impolite: b ignores it.
+    net.meshes['a']?.get('b')?.restartIce();
+    await net.run();
+    expect(pa.signalingState).toBe('have-local-offer');
+    expect(pb.signalingState).toBe('have-local-offer');
+    expect(net.queue).toEqual([]);
+    // b's page sends its unanswered offer again (the 5 s retry): a rolls its own back and answers.
+    expect(net.meshes['b']?.get('a')?.resendOffer()).toBe(true);
+    await net.run();
+    expect(paired(pa, pb)).toBe(true);
+    expect(pa.localDescription?.type).toBe('answer');
+    // The browser still has a's restart to negotiate and asks again once the answer is set: now b takes it.
+    pa.onnegotiationneeded?.();
+    await net.run();
+    expect(paired(pa, pb)).toBe(true);
+    expect(pa.localDescription?.type).toBe('offer');
+    expect(pb.localDescription?.type).toBe('answer');
+    expect(net.queue).toEqual([]);
+    expect(net.reopens).toEqual([]);
+    expect([...pa.errors, ...pb.errors, ...net.errors]).toEqual([]);
+  });
+
+  it('I11.12 (2026-11-24): both sides restart at the same moment: the impolite offer stands, the polite side answers it, one exchange and nothing after it', async () => {
+    const net = network(['a', 'b']);
+    net.meshes['a']?.add('b');
+    net.meshes['b']?.add('a');
+    net.pc('b', 'a').onnegotiationneeded?.();
+    await net.run();
+    const pa = net.pc('a', 'b');
+    const pb = net.pc('b', 'a');
+    net.meshes['a']?.get('b')?.restartIce();
+    net.meshes['b']?.get('a')?.restartIce();
+    await net.run();
+    expect(paired(pa, pb)).toBe(true);
+    // b's offer won: a answered it (which is what the pages' watchdog reads as "the peer's restart crossed ours").
+    expect(pb.localDescription?.type).toBe('offer');
+    expect(pa.localDescription?.type).toBe('answer');
+    expect(net.queue).toEqual([]);
+    expect(net.reopens).toEqual([]);
+    expect(net.errors).toEqual([]);
+  });
+
   it('D2.9: restartIce on a closed negotiator, or a connection without restartIce, does nothing', () => {
     const plain: NegotiablePc = {
       signalingState: 'stable',

@@ -631,6 +631,8 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
   let volume: { voice: number; table: number } | null = null;
   /** D10.5: the native video's footer line (`setVideoLine`); null = none shown. */
   let videoLine: string | null = null;
+  /** I11.12 (2026-11-24): the players the native video reaches directly (`setVideoDirect`); the page is told on every change and at each attach. */
+  let videoDirect: string[] = [];
 
   /** D2.6: where the desktop panel went at its last `showPanel` (the Match tab says so). */
   let panelSide: PanelSide = 'edge';
@@ -1648,6 +1650,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     if (tableFlags) toPage(PANEL_CHANNELS.tableAudio, tableFlags);
     if (volume) toPage(PANEL_CHANNELS.volume, { ...volume, note: null } satisfies PanelVolume);
     if (videoLine !== null) toPage(PANEL_CHANNELS.videoLine, videoLine);
+    if (videoDirect.length > 0) toPage(PANEL_CHANNELS.videoDirect, videoDirect);
     try {
       const file = join(opts.userData, PAGE_FILE);
       mkdirSync(opts.userData, { recursive: true });
@@ -1825,6 +1828,13 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
       if (line === videoLine) return;
       videoLine = line;
       if (attached) toPage(PANEL_CHANNELS.videoLine, line);
+    },
+    // I11.12 (2026-11-24): who the native video reaches directly (kept for the next attach; an empty list clears it).
+    setVideoDirect(peers) {
+      const next = [...new Set(peers)].sort();
+      if (next.join('\n') === videoDirect.join('\n')) return;
+      videoDirect = next;
+      if (attached) toPage(PANEL_CHANNELS.videoDirect, next);
     },
     startBench,
     async stopBench() {
