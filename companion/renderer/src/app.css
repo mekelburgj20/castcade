@@ -1,41 +1,47 @@
+/* The Arcaid look (2026-11-25): the kit (verbatim), then Castcade's layer. Every page of the renderer and every
+   story page imports this one file. */
+@import './aw-theme/aw-theme.css';
+@import './aw-theme/aw-theme-ext.css';
+@import './aw-castcade.css';
+
+/* ==========================================================================
+   The classes from before the Arcaid look, kept working on its tokens.
+   Match.tsx, OneStep.tsx and TestBench.tsx (the Match tab) still draw with
+   them; they move onto the parts (parts/, aw-castcade.css) with the Match tab,
+   and these go then. Restated on the kit: --ok was green and is cyan (fine),
+   --warn was amber and is pink (attention), --err is the kit's red (problem);
+   no text under 12 px; the focus ring is visible.
+   ========================================================================== */
 :root {
-  color-scheme: dark;
-  font-family: system-ui, sans-serif;
-  font-size: 14px;
-  background: #14161a;
-  color: #e6e6e6;
-  --muted: #9aa0a6;
-  --line: #262a31;
-  --card: #1b1e25;
-  --accent: #4cc3ff;
-  --ok: #6fcf97;
-  --err: #ff7b72;
-  --warn: #ffb84d;
-}
-* {
-  box-sizing: border-box;
-}
-body {
-  margin: 0;
-  overflow-x: hidden;
+  --muted: var(--aw-chrome);
+  --line: var(--cc-line);
+  --card: var(--aw-panel);
+  --accent: var(--aw-cyan);
+  --ok: var(--cc-ok);
+  --err: var(--cc-problem);
+  --warn: var(--cc-attention);
 }
 .shell {
   display: flex;
   flex-direction: column;
   min-height: 100vh;
 }
+/* The header the story pages of the lobby draw by hand (match-story.tsx, watch-story.tsx). */
 .top {
   position: sticky;
   top: 0;
-  background: #14161a;
+  z-index: 3;
+  background: color-mix(in srgb, var(--aw-canvas) 86%, transparent);
   border-bottom: 1px solid var(--line);
   padding: 0.9rem 1rem 0;
-  -webkit-app-region: no-drag;
 }
 .top h1 {
   margin: 0 0 0.6rem;
-  font-size: 1.15rem;
-  letter-spacing: 0.04em;
+  font-family: var(--aw-font-brand);
+  font-weight: 400;
+  font-size: calc(70 * var(--u));
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
   display: flex;
   align-items: center;
   gap: 0.5rem;
@@ -52,7 +58,7 @@ body {
   box-shadow: 0 0 6px var(--ok);
 }
 .dot.off {
-  background: var(--warn);
+  background: var(--err);
 }
 .tabs {
   display: flex;
@@ -65,39 +71,83 @@ body {
   color: var(--muted);
   padding: 0.4rem 0.6rem;
   cursor: pointer;
-  font: inherit;
+  font-family: var(--aw-font-ui);
+  font-weight: 600;
+  font-size: calc(42 * var(--u));
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
 }
 .tab.active {
-  color: #fff;
-  border-bottom-color: var(--accent);
+  color: var(--cc-lead-ink);
+  border-bottom-color: var(--cc-lead);
 }
 .tab:hover {
-  color: #fff;
+  color: var(--aw-ice);
 }
 .view {
-  padding: 1rem;
+  padding: 1rem var(--cc-gutter);
   flex: 1;
+  font-size: var(--cc-fs-text);
 }
+/* The Match tab inside the window's main area, which has its own gutter. */
+.cc-main > .view {
+  padding: 0;
+}
+/* A tab's own name, as a group's title. */
 .view h2 {
-  margin: 0 0 0.5rem;
-  font-size: 1rem;
-  text-transform: uppercase;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 0.75rem;
+  font-family: var(--aw-font-display);
+  font-weight: 700;
+  font-size: var(--cc-fs-group);
   letter-spacing: 0.08em;
-  color: var(--muted);
-}
-.view h3 {
-  margin: 1.25rem 0 0.5rem;
-  font-size: 0.85rem;
   text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--muted);
+  color: var(--aw-cyan);
 }
+.view h2::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, var(--aw-cyan), transparent);
+  opacity: 0.6;
+}
+/* `:not(.aw-label)`: a panel's own label (parts/Panel) inside the Match tab keeps the kit's look. */
+.view h3:not(.aw-label) {
+  margin: 1.5rem 0 0.5rem;
+  font-family: var(--aw-font-display);
+  font-weight: 700;
+  font-size: calc(52 * var(--u));
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--cc-violet);
+}
+/* The kit's panel (.aw-panel), restated: a class cannot be both. */
 .card {
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 0.8rem;
-  margin: 0.75rem 0;
+  position: relative;
+  background: var(--aw-panel);
+  border: 1px solid var(--aw-panel-border);
+  border-radius: var(--aw-radius);
+  padding: 0.9rem 1rem;
+  margin: 0.85rem 0;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--aw-ice) 6%, transparent);
+}
+.card::before {
+  content: '';
+  position: absolute;
+  left: 20px;
+  right: 20px;
+  top: -1px;
+  height: 2px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, var(--aw-cyan), color-mix(in srgb, var(--aw-cyan) 10%, transparent));
+  box-shadow: 0 0 12px color-mix(in srgb, var(--aw-cyan) 55%, transparent);
+}
+.card strong:first-child {
+  font-family: var(--aw-font-ui);
+  font-weight: 600;
+  letter-spacing: 0.02em;
 }
 .row {
   display: flex;
@@ -114,62 +164,103 @@ body {
 }
 .field > span {
   display: block;
-  color: var(--muted);
-  font-size: 0.8rem;
+  color: var(--aw-ice);
+  font-weight: 500;
+  font-size: var(--cc-fs-text);
   margin-bottom: 0.3rem;
+}
+/* A bare <small> (the Match tab, the VR test bench) was the browser's "smaller", under 12 px. */
+:where(small) {
+  font-size: var(--cc-fs-help);
 }
 .field small,
 .check + small {
   display: block;
   color: var(--muted);
-  font-size: 0.75rem;
+  font-size: var(--cc-fs-help);
   margin-top: 0.3rem;
 }
-input[type='text'],
-input[type='url'] {
-  width: 100%;
-  background: #0f1114;
-  color: #fff;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 0.5rem 0.6rem;
-  font: inherit;
+/* Fields: the layer's field (.cc-input), restated for the bare elements of the Match tab. */
+:where(input[type='text'], input[type='url'], input[type='password'], input[type='number'], select) {
+  min-height: 34px;
+  background-color: var(--cc-field);
+  color: var(--aw-ice);
+  border: 1px solid var(--cc-line-strong);
+  border-radius: 4px;
+  padding: 0.45rem 0.6rem;
+  font-family: var(--aw-font-ui);
+  font-weight: 500;
+  font-size: var(--cc-fs-text);
 }
-input:focus {
+:where(input[type='text'], input[type='url']) {
+  width: 100%;
+}
+:where(input[type='text'], input[type='url'], input[type='password'], input[type='number'], select):focus {
   outline: none;
   border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--aw-cyan) 30%, transparent);
+}
+:where(select) option {
+  background: var(--aw-canvas);
+  color: var(--aw-ice);
+}
+:where(input[type='checkbox'], input[type='radio'], input[type='range']) {
+  accent-color: var(--aw-cyan);
 }
 input.code {
-  font-family: ui-monospace, Consolas, monospace;
-  font-size: 1.4rem;
+  font-family: var(--aw-font-display);
+  font-weight: 700;
+  font-size: calc(76 * var(--u));
   letter-spacing: 0.35em;
   text-transform: uppercase;
   text-align: center;
 }
-button {
-  background: var(--accent);
-  color: #0b1a24;
-  border: 0;
-  border-radius: 6px;
-  padding: 0.5rem 0.9rem;
-  font: inherit;
+/* A bare button is the primary one, a .quiet one the secondary (the layer's .cc-btn--primary / --secondary). */
+:where(button) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  background: color-mix(in srgb, var(--cc-lead) 14%, transparent);
+  color: var(--cc-lead-ink);
+  border: 1px solid color-mix(in srgb, var(--cc-lead) 55%, transparent);
+  border-radius: 4px;
+  padding: 0.4rem 0.95rem;
+  font-family: var(--aw-font-ui);
+  font-size: var(--cc-fs-text);
   font-weight: 600;
+  line-height: 1.25;
   cursor: pointer;
+  transition: background-color 0.15s, border-color 0.15s, color 0.15s;
 }
-button:disabled {
-  opacity: 0.45;
-  cursor: default;
+:where(button):hover:not(:disabled) {
+  background: color-mix(in srgb, var(--cc-lead) 24%, transparent);
+  border-color: var(--cc-lead);
+}
+:where(button):focus-visible {
+  outline: 2px solid var(--aw-cyan);
+  outline-offset: 2px;
+}
+:where(button):disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 button.small {
-  padding: 0.3rem 0.7rem;
-  font-size: 0.8rem;
+  min-height: 30px;
+  padding: 0.3rem 0.75rem;
+  font-size: var(--cc-fs-small);
 }
 /* A17 step 9 (2026-11-27): a button that is not the next thing to press (Copy, Cancel, Leave lobby, the choice that
-   does not hold): outlined, so the one filled button of a card is the one to look for. */
+   does not hold): outlined, so the one lit button of a card is the one to look for. */
 button.quiet {
-  background: none;
-  color: var(--accent);
-  box-shadow: inset 0 0 0 1px var(--line);
+  background: color-mix(in srgb, var(--aw-canvas) 35%, transparent);
+  color: var(--aw-chrome);
+  border-color: var(--cc-line-strong);
+}
+button.quiet:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--aw-canvas) 35%, transparent);
+  color: var(--aw-ice);
+  border-color: var(--aw-chrome);
 }
 /* A17 step 9: buttons that belong together stay together at the right of their row (each `.small` alone is pushed
    to the right by `.row .small`, which tears two of them apart). */
@@ -216,8 +307,12 @@ button.quiet {
   border: 0;
   border-top: 1px solid var(--line);
   border-radius: 0;
+  box-shadow: none;
   padding: 0.6rem 0 0;
   margin: 0.6rem 0 0;
+}
+.card.lobby .card::before {
+  display: none;
 }
 /* The final review (finding 9): what few people need, under a line that says when (the TCP port of Open a lobby). */
 details.advanced {
@@ -226,7 +321,12 @@ details.advanced {
 details.advanced > summary {
   cursor: pointer;
   color: var(--muted);
-  font-size: 0.85rem;
+  font-size: var(--cc-fs-help);
+}
+details.advanced > summary:focus-visible,
+summary:focus-visible {
+  outline: 2px solid var(--aw-cyan);
+  outline-offset: 2px;
 }
 details.advanced[open] > summary {
   margin-bottom: 0.5rem;
@@ -270,12 +370,20 @@ details.advanced[open] > summary {
   white-space: nowrap;
 }
 button.link {
+  display: inline;
+  min-height: 0;
   background: none;
+  border: 0;
   color: var(--accent);
   padding: 0;
-  font-weight: 400;
+  font-weight: 500;
   text-decoration: underline;
+  text-underline-offset: 3px;
   margin: 0 0.15rem;
+}
+button.link:hover:not(:disabled) {
+  background: none;
+  color: var(--aw-ice);
 }
 .check {
   display: flex;
@@ -284,10 +392,12 @@ button.link {
   cursor: pointer;
 }
 .pill {
-  border-radius: 999px;
+  border-radius: 4px;
   padding: 0.15rem 0.6rem;
-  font-size: 0.75rem;
-  font-weight: 600;
+  font-size: var(--cc-fs-small);
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
   border: 1px solid var(--line);
   color: var(--muted);
 }
@@ -296,8 +406,8 @@ button.link {
   border-color: var(--ok);
 }
 .pill.off {
-  color: var(--warn);
-  border-color: var(--warn);
+  color: var(--cc-danger-ink);
+  border-color: var(--err);
 }
 .facts {
   display: grid;
@@ -314,26 +424,6 @@ button.link {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.facts.identity,
-.facts.attestation {
-  margin: 0;
-  padding: 0;
-  font-size: 0.95em;
-}
-.facts.identity dd,
-.facts.attestation dd,
-.facts dd:has(.identity),
-.facts dd:has(.attestation) {
-  white-space: normal;
-  overflow: visible;
-}
-.facts.identity.compact dt,
-.facts.attestation.compact dt {
-  min-width: 6rem;
-}
-.facts.attestation .warn {
-  color: var(--warn, #c77700);
-}
 .picker {
   display: flex;
   flex-wrap: wrap;
@@ -343,95 +433,39 @@ button.link {
 }
 .picker select {
   max-width: 100%;
-  font: inherit;
-  padding: 0.2rem 0.3rem;
-}
-.facts dd.score {
-  font-size: 1.2rem;
-  font-weight: 700;
-  white-space: normal;
 }
 .mono {
-  font-family: ui-monospace, Consolas, monospace;
-  font-size: 0.8rem;
-}
-a {
-  color: var(--accent);
+  font-family: var(--cc-mono);
+  font-size: calc(42 * var(--u));
 }
 .muted {
   color: var(--muted);
-  font-size: 0.9rem;
+  font-size: var(--cc-fs-help);
 }
 .ok {
   color: var(--ok);
 }
-/* D1.5: the Stream page disables a card's settings with a fieldset while a capture runs; it is not a visible box. */
+/* D1.5: a number worth a look. */
+.warn {
+  color: var(--cc-lead-ink);
+}
+.error {
+  color: var(--cc-danger-ink);
+  white-space: pre-wrap;
+}
 .card fieldset {
   border: 0;
   margin: 0;
   padding: 0;
   min-width: 0;
 }
-/* D1.5: a number worth a look (Stream health: speed under 0.95x, frame rate under 80 % of the preset's; the preview
-   sitting inside the captured area; the VR note). */
-.warn {
-  color: var(--warn);
-}
-.error {
-  color: var(--err);
-  white-space: pre-wrap;
-}
-.attribution {
-  color: var(--muted);
-  font-size: 0.75rem;
-  border-top: 1px solid var(--line);
-  padding-top: 0.75rem;
-  margin-top: 1rem;
-}
-
-/* Import tables (Settings) */
-.import-result {
-  margin-top: 0.75rem;
-  font-size: 0.9rem;
-}
-.import-result p {
-  margin: 0 0 0.5rem;
-}
-.import-list {
-  list-style: none;
-  margin: 0.25rem 0 0.5rem;
-  padding: 0;
-  max-height: 18rem;
-  overflow: auto;
-  border-top: 1px solid var(--line);
-}
-.import-list li {
-  padding: 0.25rem 0;
-  border-bottom: 1px solid var(--line);
-  overflow-wrap: anywhere;
-}
-.import-list li.act-patch .mono,
-.import-list li.act-repatch .mono {
-  font-weight: 600;
-}
-.field button.small {
-  margin-top: 0.35rem;
-}
-
-/* 0.2.12 import card: the outcome and errors are banners at the top, the one-click button is primary */
-.banner { padding: 0.6rem 0.8rem; border-radius: 6px; border: 1px solid currentColor; margin: 0.4rem 0; }
-.banner.ok { color: var(--ok, #2f9e44); }
-p.error.banner { color: var(--error, #d9480f); }
-button.primary { font-weight: 600; }
-/* E9: a downloaded update, above every tab. */
-.update-banner { margin: 0.75rem 1rem 0; color: var(--accent); }
-.update-banner p { margin: 0.4rem 0 0; }
 
 /* A6: the Match page. The turn line is the one thing a player glances at between balls. */
 .turn-line {
-  font-size: 1.5rem;
+  font-family: var(--aw-font-display);
+  font-size: calc(72 * var(--u));
   font-weight: 700;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.04em;
   margin: 0.2rem 0 0.5rem;
 }
 .turn-line.mine {
@@ -450,8 +484,10 @@ button.primary { font-weight: 600; }
 }
 .match-table th {
   color: var(--muted);
-  font-weight: 400;
-  font-size: 0.8rem;
+  font-weight: 600;
+  font-size: var(--cc-fs-small);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
 }
 .match-table .num {
   text-align: right;
@@ -468,8 +504,9 @@ code.invite {
 }
 /* I11.4.1: a 3D watch session's code is six letters read out over voice chat: large enough to read. */
 code.watch-code {
-  font-size: 1.3rem;
-  font-weight: 600;
+  font-family: var(--aw-font-display);
+  font-size: calc(72 * var(--u));
+  font-weight: 700;
   letter-spacing: 0.15em;
 }
 .field.watch-join {

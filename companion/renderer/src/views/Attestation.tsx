@@ -42,13 +42,13 @@ export function AttestationView({ a, compact = false }: { a: Attestation; compac
   const engLast = eng && eng.changes.length > 0 ? eng.changes[eng.changes.length - 1]! : null;
 
   return (
-    <dl className={compact ? 'facts attestation compact' : 'facts attestation'}>
+    <dl className="cc-facts cc-facts--sub">
       <dt>Physics</dt>
-      <dd className={physics?.warn ? 'warn' : ''}>{physics ? physics.text : 'settings not read'}</dd>
+      <dd className={physics?.warn ? 'cc-attention' : ''}>{physics ? physics.text : 'settings not read'}</dd>
       {engStart && (
         <>
           <dt>In the game</dt>
-          <dd className={engLast ? 'warn' : ''} title="Read inside the table by the Castcade patch at game start and at every key press (hook 0.4.0)">
+          <dd className={engLast ? 'cc-attention' : ''} title="Read inside the table by the Castcade patch at game start and at every key press (hook 0.4.0)">
             difficulty {engStart.difficulty === null ? '?' : `${Math.round(engStart.difficulty * 100)}%`}
             {engSlope !== null ? ` · slope ${engSlope.toFixed(2)}°` : ''}
             {engStart.physicsSet !== null ? ` · physics set ${engStart.physicsSet}` : ''}
@@ -67,25 +67,25 @@ export function AttestationView({ a, compact = false }: { a: Attestation; compac
       {ini && (
         <>
           <dt>Difficulty</dt>
-          <dd className={ini.difficultyOverride !== null ? 'warn' : ''}>
+          <dd className={ini.difficultyOverride !== null ? 'cc-attention' : ''}>
             {pct(ini.effectiveDifficulty)}
-            {ini.difficultyOverride !== null && <span className="muted"> (table {pct(ini.tableDifficulty)}, overridden in the tweak menu)</span>}
-            {ini.slope && <span className="muted"> · slope {deg(ini.slope.effective)}{ini.slope.min !== ini.slope.max ? ` (${deg(ini.slope.min)}–${deg(ini.slope.max)})` : ''}</span>}
+            {ini.difficultyOverride !== null && <span className="cc-quiet"> (table {pct(ini.tableDifficulty)}, overridden in the tweak menu)</span>}
+            {ini.slope && <span className="cc-quiet"> · slope {deg(ini.slope.effective)}{ini.slope.min !== ini.slope.max ? ` (${deg(ini.slope.min)}–${deg(ini.slope.max)})` : ''}</span>}
           </dd>
           {!compact && (
             <>
               <dt>Nudge</dt>
               <dd>
                 {ini.nudge.strength === null ? 'VPX default' : `strength ${ini.nudge.strength}`}
-                {ini.nudge.legacy && <span className="muted"> · legacy nudge{ini.nudge.legacyStrength !== null ? ` ${ini.nudge.legacyStrength}` : ''}</span>}
+                {ini.nudge.legacy && <span className="cc-quiet"> · legacy nudge{ini.nudge.legacyStrength !== null ? ` ${ini.nudge.legacyStrength}` : ''}</span>}
                 {ini.nudge.accelEnabled !== false && (ini.nudge.accelGainX !== null || ini.nudge.accelGainY !== null) && (
-                  <span className="muted"> · accelerometer gain {ini.nudge.accelGainX ?? '—'}/{ini.nudge.accelGainY ?? '—'}%</span>
+                  <span className="cc-quiet"> · accelerometer gain {ini.nudge.accelGainX ?? '—'}/{ini.nudge.accelGainY ?? '—'}%</span>
                 )}
                 {ini.nudge.accelEnabled !== false && (ini.nudge.analogGainX !== null || ini.nudge.analogGainY !== null) && (
-                  <span className="muted"> · analog nudge gain {ini.nudge.analogGainX ?? '—'}/{ini.nudge.analogGainY ?? '—'} (community build key)</span>
+                  <span className="cc-quiet"> · analog nudge gain {ini.nudge.analogGainX ?? '—'}/{ini.nudge.analogGainY ?? '—'} (community build key)</span>
                 )}
                 {ini.nudge.accelEnabled !== false && (
-                  <span className={ini.nudge.tiltSensitivityEffective === 0 ? 'warn' : 'muted'}>
+                  <span className={ini.nudge.tiltSensitivityEffective === 0 ? 'cc-attention' : 'cc-quiet'}>
                     {' · '}
                     {ini.nudge.tiltSensitivityEffective === 0 ? 'analog tilt off' : `tilt sensitivity ${ini.nudge.tiltSensitivityEffective}${ini.nudge.tiltSensitivity === null ? ' (VPX default)' : ''}`}
                   </span>
@@ -94,14 +94,14 @@ export function AttestationView({ a, compact = false }: { a: Attestation; compac
               <dt>Table options</dt>
               <dd title={options.map(([k, v]) => `${k} = ${v}`).join('\n')}>
                 {options.length === 0 ? 'none set' : `${options.length} set${ini.tableIni ? '' : ' (no table ini)'}`}
-                {options.length > 0 && <span className="muted"> · {options.slice(0, 4).map(([k, v]) => `${k} ${v}`).join(', ')}{options.length > 4 ? ', …' : ''}</span>}
+                {options.length > 0 && <span className="cc-quiet"> · {options.slice(0, 4).map(([k, v]) => `${k} ${v}`).join(', ')}{options.length > 4 ? ', …' : ''}</span>}
               </dd>
             </>
           )}
         </>
       )}
       <dt>Adjustments</dt>
-      <dd className={adj && adj.nonFactory.length > 0 ? 'warn' : ''} title={adj ? adj.checked.map((c) => `${c.label}: ${c.text ?? c.shown ?? c.value}${c.factory !== null ? ` (factory ${c.factory})` : ''}`).join('\n') : ''}>
+      <dd className={adj && adj.nonFactory.length > 0 ? 'cc-attention' : ''} title={adj ? adj.checked.map((c) => `${c.label}: ${c.text ?? c.shown ?? c.value}${c.factory !== null ? ` (factory ${c.factory})` : ''}`).join('\n') : ''}>
         {!adj
           ? a.vpmCheat === null && !a.adjustments
             ? 'measured at capture'
@@ -113,20 +113,20 @@ export function AttestationView({ a, compact = false }: { a: Attestation; compac
       <dt>VPX build</dt>
       <dd title={a.build?.vpx?.sha256 ?? ''}>
         {vpx}
-        {a.vr && <span className="muted"> · {a.vr.inVr ? 'played in a VR headset' : 'played on the monitor'}</span>}
+        {a.vr && <span className="cc-quiet"> · {a.vr.inVr ? 'played in a VR headset' : 'played on the monitor'}</span>}
       </dd>
       <dt>VPinMAME</dt>
       <dd title={a.build?.vpinmame?.sha256 ?? ''}>{vpm}</dd>
       {a.iniChanged && (
         <>
           <dt />
-          <dd className="warn">settings changed during the session</dd>
+          <dd className="cc-attention">settings changed during the session</dd>
         </>
       )}
       {!compact && (a.notes.length > 0 || (ini && ini.notes.length > 0) || (a.build && a.build.notes.length > 0)) && (
         <>
           <dt>Notes</dt>
-          <dd className="muted">{[...a.notes, ...(ini?.notes ?? []), ...(a.build?.notes ?? [])].join('; ')}</dd>
+          <dd className="cc-quiet">{[...a.notes, ...(ini?.notes ?? []), ...(a.build?.notes ?? [])].join('; ')}</dd>
         </>
       )}
     </dl>

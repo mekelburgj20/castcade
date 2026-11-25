@@ -1,4 +1,7 @@
 import { useEffect, useState } from 'react';
+import { Field, Note, Skeleton } from '../parts/Bits.js';
+import { Button } from '../parts/Button.js';
+import { Panel, PanelGroup } from '../parts/Panel.js';
 import { describe, type CastcadeState } from '../useCastcade.js';
 
 /**
@@ -44,7 +47,16 @@ export function Stream({ state }: { state: CastcadeState }) {
     };
   }, [bridge]);
 
-  if (!bridge || !cfg) return null;
+  // The Arcaid look: no blank tab while the settings are on their way (a skeleton in the tab's shape), and a tab
+  // outside Castcade says why it is empty (the sentence Pairing says).
+  if (!bridge) {
+    return (
+      <PanelGroup id="stream" tone="pink" title="Stream">
+        <Note state="problem">Bridge unavailable: this page is not running inside Castcade.</Note>
+      </PanelGroup>
+    );
+  }
+  if (!cfg) return <StreamLoading />;
   const running = !!st && st.state !== 'idle';
   const preset = QUALITY.find((q) => q.id === cfg.preset) ?? QUALITY[0];
   const inVr = state.status?.currentAttestation?.vr?.inVr === true;
@@ -81,81 +93,79 @@ export function Stream({ state }: { state: CastcadeState }) {
   const folder = cfg.recordingsDir ?? cfg.defaultRecordingsDir;
 
   return (
-    <section className="view">
-      <h2>Stream</h2>
-
-      <div className="card">
-        <strong>Stream and record</strong>
-        <p>{describeStream(st)}</p>
-        {inVr && (
-          <p className="warn">
-            VR: turn on VRPreview in VPX (Preferences → VR) so there is a window to capture; the stream is only as sharp as that window.
-          </p>
-        )}
-        <div className="row">
+    <PanelGroup id="stream" tone="pink" title="Stream">
+      <Panel wide title="Stream and record">
+        <p className="cc-text">{describeStream(st)}</p>
+        {inVr && <Note state="attention">VR: turn on VRPreview in VPX (Preferences → VR) so there is a window to capture; the stream is only as sharp as that window.</Note>}
+        <div className="cc-row">
           {running ? (
-            <button type="button" disabled={busy} onClick={() => void run(() => bridge.stream.stop())}>
+            <Button disabled={busy} onClick={() => void run(() => bridge.stream.stop())}>
               {st?.wantsLive ? 'Stop streaming' : 'Stop recording'}
-            </button>
+            </Button>
           ) : (
             <>
-              <button type="button" className="primary" disabled={busy || !cfg.hasKey} onClick={() => void run(() => bridge.stream.start({ record: true, live: true }))}>
+              <Button disabled={busy || !cfg.hasKey} onClick={() => void run(() => bridge.stream.start({ record: true, live: true }))}>
                 Go live and record
-              </button>
-              <button type="button" disabled={busy} onClick={() => void run(() => bridge.stream.start({ record: true, live: false }))}>
+              </Button>
+              <Button variant="secondary" disabled={busy} onClick={() => void run(() => bridge.stream.start({ record: true, live: false }))}>
                 Record only
-              </button>
-              <button type="button" disabled={busy || !cfg.hasKey} onClick={() => void run(() => bridge.stream.start({ record: false, live: true }))}>
+              </Button>
+              <Button variant="secondary" disabled={busy || !cfg.hasKey} onClick={() => void run(() => bridge.stream.start({ record: false, live: true }))}>
                 Go live only
-              </button>
+              </Button>
             </>
           )}
-          <button type="button" disabled={pvBusy} onClick={togglePreview}>
+          <Button variant="secondary" disabled={pvBusy} onClick={togglePreview}>
             {pvBusy && !pv?.previewing ? 'Opening…' : pv?.previewing ? 'Close preview' : 'Preview'}
-          </button>
-          <button type="button" className="small" onClick={() => void bridge.stream.openRecordings()}>
+          </Button>
+          <Button variant="secondary" size="sm" onClick={() => void bridge.stream.openRecordings()}>
             Open recordings
-          </button>
+          </Button>
         </div>
-        {error && <p className="error">{error}</p>}
-        {st?.lastError && running && st.state !== 'capturing' && <p className="muted">Last problem: {st.lastError}</p>}
+        {error && (
+          <Note state="problem" role="alert">
+            {error}
+          </Note>
+        )}
+        {st?.lastError && running && st.state !== 'capturing' && <p className="cc-help">Last problem: {st.lastError}</p>}
         {pv?.previewing && pv.picture && (
-          <p className="muted">
+          <p className="cc-help">
             Preview: {pv.picture.width}x{pv.picture.height}. Close it with Q or its window's X.
           </p>
         )}
-        {pv?.warning && <p className="warn">{pv.warning}</p>}
-        {pv?.error && <p className="error">{pv.error}</p>}
-        <small className="muted">The preview shows exactly what viewers will see, and a change to the settings below updates it live.</small>
+        {pv?.warning && <Note state="attention">{pv.warning}</Note>}
+        {pv?.error && <Note state="problem">{pv.error}</Note>}
+        <small className="cc-help">The preview shows exactly what viewers will see, and a change to the settings below updates it live.</small>
 
         {st?.state === 'capturing' && <Health st={st} fps={preset.fps} folder={folder} />}
-        {st?.state === 'slate' && <p className="muted">The "back in a moment" slate is up: viewers see it until a table opens, and nothing is recorded meanwhile.</p>}
-      </div>
+        {st?.state === 'slate' && <p className="cc-help">The "back in a moment" slate is up: viewers see it until a table opens, and nothing is recorded meanwhile.</p>}
+      </Panel>
 
-      <div className="card">
+      <Panel title={<label htmlFor="stream-service">Service</label>}>
         <fieldset disabled={running || busy}>
-          <label className="field">
-            <span>Service</span>
-            <select value={cfg.service} onChange={(e) => patch({ service: e.target.value as StreamSettings['service'] })}>
-              <option value="twitch">Twitch</option>
-              <option value="youtube">YouTube</option>
-              <option value="custom">Other (RTMP URL)</option>
-            </select>
-          </label>
+          <select id="stream-service" className="cc-input" value={cfg.service} onChange={(e) => patch({ service: e.target.value as StreamSettings['service'] })}>
+            <option value="twitch">Twitch</option>
+            <option value="youtube">YouTube</option>
+            <option value="custom">Other (RTMP URL)</option>
+          </select>
           {cfg.service === 'custom' && (
-            <label className="field">
-              <span>Ingest URL (without the key)</span>
-              <input type="text" defaultValue={cfg.customIngest ?? ''} placeholder="rtmp://example.com/live/" onBlur={(e) => patch({ customIngest: e.target.value.trim() || null })} />
-            </label>
+            <Field label="Ingest URL (without the key)" htmlFor="stream-ingest">
+              <input id="stream-ingest" type="text" className="cc-input cc-input--mono" defaultValue={cfg.customIngest ?? ''} placeholder="rtmp://example.com/live/" onBlur={(e) => patch({ customIngest: e.target.value.trim() || null })} />
+            </Field>
           )}
-          <label className="field">
-            <span>Stream key {cfg.hasKey ? '(saved)' : '(not set)'}</span>
-            <input type="password" value={key} autoComplete="off" placeholder={cfg.hasKey ? '••••••••  (enter a new one to replace it)' : 'From your Twitch or YouTube dashboard'} onChange={(e) => setKey(e.target.value)} />
-            <small>Stored encrypted on this PC. Castcade never shows it again and never sends it to ArcAid.</small>
-          </label>
-          <div className="row">
-            <button
-              type="button"
+          <Field label={`Stream key ${cfg.hasKey ? '(saved)' : '(not set)'}`} htmlFor="stream-key" help="Stored encrypted on this PC. Castcade never shows it again and never sends it to ArcAid.">
+            <input
+              id="stream-key"
+              type="password"
+              className="cc-input"
+              value={key}
+              autoComplete="off"
+              placeholder={cfg.hasKey ? '••••••••  (enter a new one to replace it)' : 'From your Twitch or YouTube dashboard'}
+              onChange={(e) => setKey(e.target.value)}
+            />
+          </Field>
+          <div className="cc-row">
+            <Button
               disabled={!key.trim()}
               onClick={() =>
                 void run(async () => {
@@ -165,57 +175,54 @@ export function Stream({ state }: { state: CastcadeState }) {
               }
             >
               Save key
-            </button>
+            </Button>
             {cfg.hasKey && (
-              <button type="button" onClick={() => void run(async () => setCfg(await bridge.stream.setKey(null)))}>
+              <Button variant="danger" onClick={() => void run(async () => setCfg(await bridge.stream.setKey(null)))}>
                 Clear key
-              </button>
+              </Button>
             )}
           </div>
         </fieldset>
-      </div>
+      </Panel>
 
-      <div className="card">
-        <strong>Picture</strong>
+      <Panel title="Picture">
         <fieldset disabled={running || busy}>
-          <div className="row">
-            <label className="field">
-              <span>Shape</span>
-              <select value={cfg.orientation} onChange={(e) => patch({ orientation: e.target.value as StreamSettings['orientation'] })}>
+          <div className="cc-fields">
+            <Field label="Shape" htmlFor="stream-shape">
+              <select id="stream-shape" className="cc-input" value={cfg.orientation} onChange={(e) => patch({ orientation: e.target.value as StreamSettings['orientation'] })}>
                 <option value="portrait">Vertical (9:16)</option>
                 <option value="landscape">Horizontal (the whole window)</option>
               </select>
-            </label>
-            <label className="field">
-              <span>Rotate</span>
-              <select value={cfg.rotate} onChange={(e) => patch({ rotate: Number(e.target.value) as StreamSettings['rotate'] })}>
+            </Field>
+            <Field label="Rotate" htmlFor="stream-rotate">
+              <select id="stream-rotate" className="cc-input" value={cfg.rotate} onChange={(e) => patch({ rotate: Number(e.target.value) as StreamSettings['rotate'] })}>
                 <option value={0}>None</option>
                 <option value={90}>90° clockwise</option>
                 <option value={180}>180°</option>
                 <option value={270}>90° counter-clockwise</option>
               </select>
-            </label>
-            <label className="field">
-              <span>Quality</span>
-              <select value={cfg.preset} onChange={(e) => patch({ preset: e.target.value })}>
+            </Field>
+            <Field label="Quality" htmlFor="stream-quality">
+              <select id="stream-quality" className="cc-input" value={cfg.preset} onChange={(e) => patch({ preset: e.target.value })}>
                 {QUALITY.map((q) => (
                   <option key={q.id} value={q.id}>
                     {q.label}
                   </option>
                 ))}
               </select>
-            </label>
+            </Field>
           </div>
-          <small className="muted">
+          <small className="cc-help">
             Rotate is for VPX in cabinet mode on a monitor that stands upright: VPX draws the table on its side and the stream turns it back (usually 90°
             clockwise). Check it with the preview.
             {cfg.orientation === 'portrait' && ' A vertical stream is a 9:16 slice of the game window; the slice shift moves it sideways.'}
           </small>
           {cfg.orientation === 'portrait' && (
-            <label className="field">
-              <span>Slice shift (% of the window width, + = right)</span>
+            <Field label="Slice shift (% of the window width, + = right)" htmlFor="stream-shift">
               <input
+                id="stream-shift"
                 type="number"
+                className="cc-input cc-input--number"
                 min={-50}
                 max={50}
                 defaultValue={cfg.shiftPercent}
@@ -225,23 +232,25 @@ export function Stream({ state }: { state: CastcadeState }) {
                   if (v !== '' && Number.isFinite(Number(v))) patch({ shiftPercent: Number(v) });
                 }}
               />
-            </label>
+            </Field>
           )}
-          <label className="check">
-            <input type="checkbox" checked={cfg.overlay} onChange={(e) => patch({ overlay: e.target.checked })} />
-            Overlay in the stream and recording
-          </label>
-          <small>Table, score, ball and the Witness badge, drawn on the picture. Turn it off if OBS shows the overlay page instead.</small>
+          <div className="cc-field">
+            <label className="cc-check">
+              <input type="checkbox" checked={cfg.overlay} onChange={(e) => patch({ overlay: e.target.checked })} />
+              <span>Overlay in the stream and recording</span>
+            </label>
+            <small className="cc-help cc-check__help">Table, score, ball and the Witness badge, drawn on the picture. Turn it off if OBS shows the overlay page instead.</small>
+          </div>
         </fieldset>
-      </div>
+      </Panel>
 
-      <div className="card">
-        <strong>Sound</strong>
+      <Panel title="Sound">
         <fieldset disabled={running || busy}>
-          <label className="field">
-            <span>Game volume: {volume ?? cfg.gameVolume} %</span>
+          <Field label={`Game volume: ${volume ?? cfg.gameVolume} %`} htmlFor="stream-volume" help="The sound is everything Windows plays (game, voice chat, music), turned down or up by this much.">
             <input
+              id="stream-volume"
               type="range"
+              className="cc-range"
               min={0}
               max={200}
               step={5}
@@ -251,49 +260,43 @@ export function Stream({ state }: { state: CastcadeState }) {
               onKeyUp={commitVolume}
               onBlur={commitVolume}
             />
-            <small>The sound is everything Windows plays (game, voice chat, music), turned down or up by this much.</small>
-          </label>
-          <p className="muted">Microphone: not yet; the sound is everything Windows plays.</p>
-          <details>
-            <summary className="muted">Advanced</summary>
-            <label className="field">
-              <span>Audio delay correction (ms)</span>
-              <input type="number" min={-1000} max={2000} defaultValue={cfg.audioLateMs} onBlur={(e) => patch({ audioLateMs: Number(e.target.value) })} />
-              <small>How far the captured audio trails the picture: a positive value is cut from the audio's start, a negative one delays it.</small>
-            </label>
+          </Field>
+          <p className="cc-help">Microphone: not yet; the sound is everything Windows plays.</p>
+          <details className="cc-more">
+            <summary>Advanced</summary>
+            <Field label="Audio delay correction (ms)" htmlFor="stream-audio-late" help="How far the captured audio trails the picture: a positive value is cut from the audio's start, a negative one delays it.">
+              <input id="stream-audio-late" type="number" className="cc-input cc-input--number" min={-1000} max={2000} defaultValue={cfg.audioLateMs} onBlur={(e) => patch({ audioLateMs: Number(e.target.value) })} />
+            </Field>
           </details>
         </fieldset>
-      </div>
+      </Panel>
 
-      <div className="card">
-        <strong>Recordings</strong>
+      <Panel title="Recordings">
         <fieldset disabled={running || busy}>
-          <div className="field">
-            <span>Folder</span>
-            <div className="mono" title={folder}>
+          <Field label="Folder" help="One folder per session, with a manifest tying each posted score to its video.">
+            <div className="cc-mono" title={folder}>
               {folder}
               {cfg.recordingsDir === null && ' (default)'}
             </div>
-            <div className="row">
-              <button type="button" className="small" onClick={() => void bridge.app.pickFolder(folder).then((p) => p && patch({ recordingsDir: p }))}>
+            <div className="cc-row">
+              <Button variant="secondary" size="sm" onClick={() => void bridge.app.pickFolder(folder).then((p) => p && patch({ recordingsDir: p }))}>
                 Choose…
-              </button>
+              </Button>
               {cfg.recordingsDir !== null && (
-                <button type="button" className="small" onClick={() => patch({ recordingsDir: null })}>
+                <Button variant="secondary" size="sm" onClick={() => patch({ recordingsDir: null })}>
                   Use default
-                </button>
+                </Button>
               )}
             </div>
-            <small>One folder per session, with a manifest tying each posted score to its video.</small>
-          </div>
-          <label className="field">
-            <span>Keep the last N sessions</span>
-            <input type="number" min={0} max={1000} defaultValue={cfg.keepSessions} onBlur={(e) => patch({ keepSessions: Number(e.target.value) })} />
-          </label>
-          <label className="field">
-            <span>At most N recordings in all (blank = no cap)</span>
+          </Field>
+          <Field label="Keep the last N sessions" htmlFor="stream-keep">
+            <input id="stream-keep" type="number" className="cc-input cc-input--number" min={0} max={1000} defaultValue={cfg.keepSessions} onBlur={(e) => patch({ keepSessions: Number(e.target.value) })} />
+          </Field>
+          <Field label="At most N recordings in all (blank = no cap)" htmlFor="stream-max" help="Each video counts; the oldest sessions go first. Recordings of Sanctioned scores count toward neither limit.">
             <input
+              id="stream-max"
               type="number"
+              className="cc-input cc-input--number"
               min={1}
               placeholder="no cap"
               defaultValue={cfg.maxRecordings ?? ''}
@@ -302,13 +305,40 @@ export function Stream({ state }: { state: CastcadeState }) {
                 patch({ maxRecordings: v === '' ? null : Number(v) });
               }}
             />
-            <small>Each video counts; the oldest sessions go first. Recordings of Sanctioned scores count toward neither limit.</small>
-          </label>
+          </Field>
         </fieldset>
-      </div>
+      </Panel>
 
       <OverlayCard state={state} />
-    </section>
+    </PanelGroup>
+  );
+}
+
+/** The tab before its settings have arrived: its first panels, in their shape. */
+function StreamLoading() {
+  return (
+    <PanelGroup id="stream" tone="pink" title="Stream">
+      <Panel wide title="Stream and record">
+        <div className="cc-stack" aria-busy="true">
+          <Skeleton width="70%" />
+          <div className="cc-row">
+            <Skeleton kind="button" width="150px" />
+            <Skeleton kind="button" width="110px" />
+            <Skeleton kind="button" width="110px" />
+          </div>
+          <Skeleton width="90%" />
+        </div>
+      </Panel>
+      {['Service', 'Picture'].map((t) => (
+        <Panel key={t} title={t}>
+          <div className="cc-stack" aria-hidden="true">
+            <Skeleton kind="field" />
+            <Skeleton kind="label" />
+            <Skeleton kind="field" />
+          </div>
+        </Panel>
+      ))}
+    </PanelGroup>
   );
 }
 
@@ -318,25 +348,25 @@ function Health({ st, fps, folder }: { st: StreamStatus; fps: number; folder: st
   const lowFps = !!h && h.fps < LOW_FPS_SHARE * fps;
   const slow = !!h && h.speed < SLOW_SPEED;
   return (
-    <dl className="facts">
+    <dl className="cc-facts cc-facts--sub">
       <dt>Picture</dt>
       <dd>{st.picture ? `${st.picture.width}x${st.picture.height}` : '—'}</dd>
       <dt>Frame rate</dt>
-      <dd className={lowFps ? 'warn' : undefined}>{h ? `${Math.round(h.fps)} of ${fps} fps` : '—'}</dd>
+      <dd className={lowFps ? 'cc-attention' : undefined}>{h ? `${Math.round(h.fps)} of ${fps} fps` : '—'}</dd>
       <dt>Speed</dt>
-      <dd className={slow ? 'warn' : undefined}>{h ? `${h.speed.toFixed(2)}x` : '—'}</dd>
+      <dd className={slow ? 'cc-attention' : undefined}>{h ? `${h.speed.toFixed(2)}x` : '—'}</dd>
       <dt>Frames</dt>
       <dd>{h ? h.frames : '—'}</dd>
       <dt>Restarts</dt>
       <dd>{st.restarts}</dd>
       <dt>Segment</dt>
-      <dd className="mono">{st.segment ?? 'not recording'}</dd>
+      <dd className={st.segment ? 'cc-mono' : undefined}>{st.segment ?? 'not recording'}</dd>
       <dt>Session folder</dt>
-      <dd className="mono" title={st.session ? `${folder}\\${st.session}` : ''}>
+      <dd className={st.session ? 'cc-mono' : undefined} title={st.session ? `${folder}\\${st.session}` : ''}>
         {st.session ? `${folder}\\${st.session}` : '—'}
       </dd>
       <dt>Covered</dt>
-      <dd className={st.covered ? 'warn' : undefined}>{st.covered ? 'yes: VPX is not the window in front' : 'no'}</dd>
+      <dd className={st.covered ? 'cc-attention' : undefined}>{st.covered ? 'yes: VPX is not the window in front' : 'no'}</dd>
       <dt>Last problem</dt>
       <dd>{st.lastError ?? 'none'}</dd>
     </dl>
@@ -387,24 +417,34 @@ function OverlayCard({ state }: { state: CastcadeState }) {
     );
   };
   return (
-    <div className="card">
-      <strong>OBS overlay</strong>
+    <Panel title="OBS overlay">
       {url ? (
         <>
-          <p>
-            <span className="mono">{url}</span>{' '}
-            <button type="button" onClick={copy}>
+          <div className="cc-field__line">
+            <span className="cc-mono cc-grow">{url}</span>
+            <Button variant="secondary" size="sm" onClick={copy}>
               {copied ? 'Copied' : 'Copy'}
-            </button>
-          </p>
-          <small className="muted">
+            </Button>
+          </div>
+          <small className="cc-help">
             In OBS: Sources → + → Browser, paste the address, width 1920, height 1080. It shows the live score, ball, player and the Witness badge
-            while a patched table is open. Add <span className="mono">?scale=1.5</span> to make it bigger or <span className="mono">?side=right</span> to move it.
+            while a patched table is open. Add <span className="cc-mono">?scale=1.5</span> to make it bigger or <span className="cc-mono">?side=right</span> to move it.
           </small>
         </>
+      ) : url === undefined ? (
+        // Loading: the address's line and the help under it, in their shape.
+        <div className="cc-stack" aria-busy="true">
+          <p className="cc-help">Checking…</p>
+          <div className="cc-field__line">
+            <Skeleton width="70%" />
+            <Skeleton kind="button" width="64px" />
+          </div>
+          <Skeleton width="95%" />
+          <Skeleton width="80%" />
+        </div>
       ) : (
-        <small className="muted">{url === undefined ? 'Checking…' : 'Not running: its port was taken when Castcade started (see the log).'}</small>
+        <p className="cc-help">Not running: its port was taken when Castcade started (see the log).</p>
       )}
-    </div>
+    </Panel>
   );
 }

@@ -16,6 +16,8 @@ files:
   - package.json
   - build/icon.png
   - build/tray.ico
+  # The Arcaid look: the three fonts the window draws with are SIL OFL 1.1, whose licence travels with them.
+  - renderer/src/aw-theme/fonts/LICENSE-*.txt
   - "!dist/.tsbuildinfo"
   - "!dist/**/*.map"
   - "!dist/**/*.d.ts"

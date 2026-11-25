@@ -1,4 +1,7 @@
 import { useState, type FormEvent } from 'react';
+import { Field, Note } from '../parts/Bits.js';
+import { Button } from '../parts/Button.js';
+import { Panel, PanelGroup } from '../parts/Panel.js';
 import { describe, type CastcadeState } from '../useCastcade.js';
 
 export function Pairing({ state }: { state: CastcadeState }) {
@@ -67,41 +70,48 @@ export function Pairing({ state }: { state: CastcadeState }) {
   }
 
   return (
-    <section className="view">
-      <h2>Pairing</h2>
-      <p className="muted">
-        Castcade reports your last-game VPX scores to ArcAid as a <em>witness device</em>. Pair it once with a code
-        from your ArcAid account.
-      </p>
-
-      <label className="field">
-        <span>Device label</span>
-        <input
-          type="text"
-          value={shownLabel}
-          maxLength={64}
-          placeholder="This PC"
-          onChange={(e) => setLabel(e.target.value)}
-          onBlur={() => void onLabelBlur()}
-          disabled={!bridge || busy}
-        />
-        <small>Shown in ArcAid's device list. Defaults to the machine name.</small>
-      </label>
+    <PanelGroup
+      id="pairing"
+      title="Pairing"
+      sub={
+        <>
+          Castcade reports your last-game VPX scores to ArcAid as a <em>witness device</em>. Pair it once with a code
+          from your ArcAid account.
+        </>
+      }
+    >
+      <Panel title={<label htmlFor="pair-label">Device label</label>}>
+        <Field help="Shown in ArcAid's device list. Defaults to the machine name.">
+          <input
+            id="pair-label"
+            type="text"
+            className="cc-input"
+            value={shownLabel}
+            maxLength={64}
+            placeholder="This PC"
+            onChange={(e) => setLabel(e.target.value)}
+            onBlur={() => void onLabelBlur()}
+            disabled={!bridge || busy}
+          />
+        </Field>
+      </Panel>
 
       {paired ? (
-        <div className="card">
-          <p className="ok">Paired with {settings?.arcaidBaseUrl ?? 'ArcAid'}</p>
-          <button type="button" onClick={() => void onUnpair()} disabled={!bridge || busy}>
-            Unpair
-          </button>
-        </div>
+        <Panel>
+          <Note state="ok">Paired with {settings?.arcaidBaseUrl ?? 'ArcAid'}</Note>
+          <div className="cc-row">
+            <Button variant="danger" onClick={() => void onUnpair()} disabled={!bridge || busy}>
+              Unpair
+            </Button>
+          </div>
+        </Panel>
       ) : (
-        <form className="card" onSubmit={(e) => void onPair(e)}>
-          <label className="field">
-            <span>Pairing code</span>
+        <Panel title={<label htmlFor="pair-code">Pairing code</label>}>
+          <form className="cc-stack" onSubmit={(e) => void onPair(e)}>
             <input
+              id="pair-code"
               type="text"
-              className="code"
+              className="cc-input cc-input--code"
               value={code}
               inputMode="text"
               autoCapitalize="characters"
@@ -112,41 +122,51 @@ export function Pairing({ state }: { state: CastcadeState }) {
               onChange={(e) => setCode(e.target.value.replace(/[^A-Za-z0-9]/g, '').toUpperCase())}
               disabled={!bridge || busy}
             />
-          </label>
-          <button
-            type="button"
-            disabled={!bridge || busy}
-            onClick={() =>
-              void bridge?.app.clipboardText().then(
-                (t) => setCode(t.replace(/[^A-Za-z0-9]/g, '').toUpperCase().slice(0, 6)),
-                (e: unknown) => setError(describe(e)),
-              )
-            }
-          >
-            Paste
-          </button>{' '}
-          <button type="submit" disabled={!bridge || busy || code.length !== 6}>
-            {busy ? 'Pairing…' : 'Pair'}
-          </button>
-          <p className="muted">
-            Get a code at{' '}
-            <a
-              href={accountUrl}
-              onClick={(e) => {
-                e.preventDefault();
-                void bridge?.app.openExternal(accountUrl);
-              }}
-            >
-              {accountUrl}
-            </a>{' '}
-            (Account Settings → Witness pairing code).
-          </p>
-        </form>
+            <div className="cc-row">
+              <Button
+                variant="secondary"
+                disabled={!bridge || busy}
+                onClick={() =>
+                  void bridge?.app.clipboardText().then(
+                    (t) => setCode(t.replace(/[^A-Za-z0-9]/g, '').toUpperCase().slice(0, 6)),
+                    (e: unknown) => setError(describe(e)),
+                  )
+                }
+              >
+                Paste
+              </Button>
+              <Button type="submit" disabled={!bridge || busy || code.length !== 6}>
+                {busy ? 'Pairing…' : 'Pair'}
+              </Button>
+            </div>
+            <p className="cc-help">
+              Get a code at{' '}
+              <a
+                href={accountUrl}
+                onClick={(e) => {
+                  e.preventDefault();
+                  void bridge?.app.openExternal(accountUrl);
+                }}
+              >
+                {accountUrl}
+              </a>{' '}
+              (Account Settings → Witness pairing code).
+            </p>
+          </form>
+        </Panel>
       )}
 
-      {error && <p className="error">{error}</p>}
-      {notice && <p className="ok">{notice}</p>}
-      {!bridge && <p className="error">Bridge unavailable: this page is not running inside Castcade.</p>}
-    </section>
+      {(error || notice || !bridge) && (
+        <div className="cc-stack cc-panel--wide">
+          {error && (
+            <Note state="problem" role="alert">
+              {error}
+            </Note>
+          )}
+          {notice && <Note state="ok">{notice}</Note>}
+          {!bridge && <Note state="problem">Bridge unavailable: this page is not running inside Castcade.</Note>}
+        </div>
+      )}
+    </PanelGroup>
   );
 }

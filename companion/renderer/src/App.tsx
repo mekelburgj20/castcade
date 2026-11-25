@@ -1,4 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
+import { Lamp, PageTitle } from './parts/PageTitle.js';
+import { Screen, TabBar } from './parts/Screen.js';
+import { ToastProvider, useToaster } from './parts/Toast.js';
 import { useCastcade } from './useCastcade.js';
 import { Match } from './views/Match.js';
 import { Pairing } from './views/Pairing.js';
@@ -51,33 +54,27 @@ export function App() {
     if (!bridge || witness) return;
     void bridge.launch.viewing(current === 'match').catch(() => undefined);
   }, [bridge, witness, current]);
-  const dot = state.status ? (state.status.running ? 'dot on' : 'dot off') : 'dot';
+  // The witness's state in the title row: the lamp and its word (it was a dot in colour only). Watching is fine
+  // (cyan); not watching is a problem (the kit's red: aw-theme-ext.css names "not watching" as one).
+  const lamp = state.status ? (
+    <Lamp tone={state.status.running ? 'ok' : 'problem'}>{state.status.running ? 'Watching' : 'Paused'}</Lamp>
+  ) : undefined;
+  const toaster = useToaster();
 
   return (
-    <main className="shell">
-      <header className="top">
-        <h1>
-          <span className={dot} aria-hidden="true" /> Castcade
-        </h1>
-        <nav className="tabs" aria-label="Views">
-          {tabs.map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              className={t.id === current ? 'tab active' : 'tab'}
-              onClick={() => setView(t.id)}
-            >
-              {t.label}
-            </button>
-          ))}
-        </nav>
-      </header>
-      <UpdateBanner bridge={bridge} />
-      {current === 'pairing' && <Pairing state={state} />}
-      {current === 'status' && <Status state={state} />}
-      {current === 'stream' && <Stream state={state} />}
-      {current === 'match' && <Match state={state} />}
-      {current === 'settings' && <Settings state={state} />}
-    </main>
+    <ToastProvider api={toaster.api}>
+      <Screen
+        title={<PageTitle name="Castcade" sub={witness ? 'Witness edition' : undefined} end={lamp} />}
+        tabs={<TabBar items={tabs} current={current} onSelect={setView} />}
+        overlays={toaster.overlay}
+      >
+        <UpdateBanner bridge={bridge} />
+        {current === 'pairing' && <Pairing state={state} />}
+        {current === 'status' && <Status state={state} />}
+        {current === 'stream' && <Stream state={state} />}
+        {current === 'match' && <Match state={state} />}
+        {current === 'settings' && <Settings state={state} />}
+      </Screen>
+    </ToastProvider>
   );
 }

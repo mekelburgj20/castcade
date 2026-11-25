@@ -265,7 +265,9 @@ function createWindow(): BrowserWindow {
     show: false,
     autoHideMenuBar: true,
     icon: join(app.getAppPath(), 'build', 'icon.png'),
-    backgroundColor: '#14161a',
+    // The Arcaid look: the kit's canvas (--aw-canvas, renderer/src/aw-theme/aw-theme.css), so the window opens on the
+    // colour its page is drawn on.
+    backgroundColor: '#07090F',
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -450,10 +452,12 @@ function updateBalloon(n: UpdateNotice, host: WitnessHost): void {
 /** E9: a small window for the moments before the main one exists (an update at start, a start during an install). */
 function showNotice(text: string): { close(): void } {
   const esc = (s: string): string => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c] ?? c);
+  // The Arcaid look: the kit's canvas, ice text and panel border (renderer/src/aw-theme/aw-theme.css); a data: page
+  // loads no font file, so the system face stands in for Chakra Petch.
   const html =
     '<!doctype html><meta charset="utf-8"><title>Castcade</title>' +
-    '<body style="margin:0;padding:18px 20px;background:#14161a;color:#e6e6e6;font:14px system-ui,sans-serif;border:1px solid #262a31;height:100vh;box-sizing:border-box">' +
-    `<div style="font-weight:700;letter-spacing:.04em;margin-bottom:8px">Castcade</div><div>${esc(text)}</div></body>`;
+    '<body style="margin:0;padding:18px 20px;background:#07090F;color:#EAF6FF;font:14px system-ui,sans-serif;border:1px solid rgba(79,214,255,.28);height:100vh;box-sizing:border-box">' +
+    `<div style="font-weight:700;letter-spacing:.12em;text-transform:uppercase;margin-bottom:8px;color:#4FD6FF">Castcade</div><div>${esc(text)}</div></body>`;
   const w = new BrowserWindow({
     width: 440,
     height: 140,
@@ -465,7 +469,7 @@ function showNotice(text: string): { close(): void } {
     center: true,
     show: false,
     title: 'Castcade',
-    backgroundColor: '#14161a',
+    backgroundColor: '#07090F',
     icon: join(app.getAppPath(), 'build', 'icon.png'),
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
