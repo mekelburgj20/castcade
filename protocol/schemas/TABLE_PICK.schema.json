@@ -107,6 +107,33 @@
       ],
       "additionalProperties": false,
       "description": "The picked table: its identity keys (`kind`, `tableName`, `tableHash`, `romName`); the other keys are facts of one PC's copy and are null or empty in a pick."
+    },
+    "tableObjects": {
+      "description": "A17: the identity the Castcade VPX build gives the picked table (as `HELLO_ACK.hostTableObjects`), as the picker's PC knows it for its own copy; null or absent: not known. In a lobby `HELLO_ACK.hostTableObjects` is the picked table's.",
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "editables": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295
+            },
+            "hash": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{16}$"
+            }
+          },
+          "required": [
+            "editables",
+            "hash"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "required": [

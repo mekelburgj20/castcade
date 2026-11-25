@@ -194,6 +194,25 @@
     "ownGame": {
       "description": "A17: true: a game the match does not own is running on the sender's table (played alone, in the lobby or as a watcher); false: it has ended.",
       "type": "boolean"
+    },
+    "tableChange": {
+      "description": "A17: what the sender's PC is doing about a change of the lobby's table (`TableChange`); null: nothing any more (its table is the lobby's, or it has no copy: `noCopy`).",
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "waits_game",
+            "waits_person",
+            "offered",
+            "closing",
+            "opening"
+          ],
+          "description": "A17: `waits_game`: a game, or the entry of its initials, is on the table that is open there, and the change waits for it; `waits_person`: the person has to close the open table themselves; `offered`: the PC changes tables only when its person says so; `closing`: the open table was asked to close; `opening`: the lobby's table is being opened."
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "additionalProperties": false,

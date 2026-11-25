@@ -66,9 +66,10 @@ export interface LobbyMatchScript {
   games?: number;
   /**
    * How it ends: `end` (default): End match, back to the lobby, and the next match starts from there; `new`: the
-   * next match's start ends it (Start a new match). The last match of a scenario is always ended.
+   * next match's start ends it (Start a new match); `pick` (step 10): the next match's table pick ends it. The last
+   * match of a scenario is always ended.
    */
-  closes?: 'end' | 'new';
+  closes?: 'end' | 'new' | 'pick';
   /**
    * A17 step 6: the match is ASKED for (START_REQUEST, with the checks and the countdown), by this member; so is
    * each next game of it. Omitted: the lobby's PC starts it itself, at once, as in step 5 (`startMatch`).
@@ -83,6 +84,18 @@ export interface LobbyMatchScript {
    * being played has no result.
    */
   endForEveryone?: { afterGrants: number };
+  /**
+   * A17 step 10: before this match, this member picks the lobby's table (TABLE_PICK; the lobby's PC of its own
+   * engine): `game` over the scenario's default table, `tableObjects` the Castcade VPX build's identity of it. A
+   * match that was left open (`closes: 'pick'` on the one before) ends by it ("the table changed"). Then every
+   * member opens the picked table (each says so), and the match starts on it.
+   */
+  pick?: { by: PlayerId; game: Partial<GameFingerprint>; tableObjects?: { editables: number; hash: string } };
+  /**
+   * A17 step 10: while this match's start is announced (it needs `start`), this member picks another table: refused
+   * ("A match is starting: cancel the start to change the table."), and the match starts on the table it was.
+   */
+  pickDuringStart?: { by: PlayerId; game: Partial<GameFingerprint> };
 }
 
 export interface TransferScript {
@@ -174,6 +187,9 @@ export const LOBBY_SCENARIO_NAMES = [
   'lobby-player-up-drops',
   'lobby-rejoin-other-match',
   'lobby-reconnect-replayed',
+  // Step 10: the table changes in a lobby.
+  'lobby-table-change',
+  'lobby-pick-during-start',
 ] as const;
 export type LobbyScenarioName = (typeof LOBBY_SCENARIO_NAMES)[number];
 
@@ -222,7 +238,12 @@ export function validateScenario(raw: unknown, source = '<inline>'): Scenario {
       for (const id of m.players ?? []) if (!ids.has(id)) throw new Error(`${source}: match ${i + 1}: ${id} is not a player`);
       for (const [id, v] of Object.entries(m.stances ?? {})) if (!ids.has(id) || !isStance(v)) throw new Error(`${source}: match ${i + 1}: a stance is play or watch, for a player of the scenario`);
       if (m.games !== undefined && (typeof m.games !== 'number' || m.games < 1)) throw new Error(`${source}: match ${i + 1}: games must be >= 1`);
-      if (m.closes !== undefined && m.closes !== 'end' && m.closes !== 'new') throw new Error(`${source}: match ${i + 1}: closes is end or new`);
+      if (m.closes !== undefined && m.closes !== 'end' && m.closes !== 'new' && m.closes !== 'pick') throw new Error(`${source}: match ${i + 1}: closes is end, new or pick`);
+      for (const pick of [m.pick, m.pickDuringStart]) {
+        if (pick !== undefined && (!ids.has(pick.by) || typeof pick.game !== 'object' || pick.game === null)) throw new Error(`${source}: match ${i + 1}: a table is picked by a player of the scenario, with a game`);
+      }
+      if (m.pickDuringStart !== undefined && m.start === undefined) throw new Error(`${source}: match ${i + 1}: pickDuringStart needs a start that is asked for`);
+      if (m.closes === 'pick' && s.matches[i + 1]?.pick === undefined) throw new Error(`${source}: match ${i + 1}: closes pick needs a pick before the next match`);
       for (const ask of [m.start, m.alsoStart]) {
         if (ask !== undefined && (!ids.has(ask.by) || (ask.how !== undefined && ask.how !== 'button' && ask.how !== 'table'))) throw new Error(`${source}: match ${i + 1}: a start is asked by a player of the scenario, from a button or a table`);
       }

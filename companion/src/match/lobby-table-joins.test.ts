@@ -16,7 +16,8 @@ const MIN = 60_000;
 
 describe("A17 step 3: the lobby's table, and whether this PC was there when it changed", () => {
   it('a pick made while the client is in the lobby comes under the same `joins`; one made while its link was down is found at the reconnect, under another', async () => {
-    const r = await starLobby(['a', 'b']);
+    // (The limits on how often the table can change are another test's: `lobby-table-pick.test.ts`.)
+    const r = await starLobby(['a', 'b'], { lobby: { pickGapMs: 0, pickMemberGapMs: 0 } });
     const a = client(r, 'a');
     expect(a.lobbyTable()).toMatchObject({ game: { tableName: TABLE.tableName }, joins: 1 });
     // b picks another table: every member hears it, and a was there.

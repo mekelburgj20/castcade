@@ -44,15 +44,32 @@ export function samePick(a: GameFingerprint, b: GameFingerprint): boolean {
   return IDENTITY_KEYS.every((k) => a[k] === b[k]);
 }
 
-/** What differs between a pick and a member's table, on the identity keys only, in the shape of a fingerprint mismatch. */
+/**
+ * What differs between a pick and a member's table, on the identity keys only, in the shape of a fingerprint mismatch.
+ *
+ * A17 step 10: only what is known on both sides can differ. A pick whose file was never hashed (zeros) says nothing
+ * of the bytes, and a table whose PC names no ROM (a companion's own fingerprint carries none) says nothing of the
+ * ROM: neither is a difference. So a pick made from a PC's table list, with its ROM, flags nobody for having the
+ * same file open.
+ */
 export function compareWithPick(pick: GameFingerprint, received: GameFingerprint, expectedFrom: PlayerId): PayloadOf<'REFUSE'>['mismatches'] {
   const out: PayloadOf<'REFUSE'>['mismatches'] = [];
   for (const field of IDENTITY_KEYS) {
     const a = pick[field];
     const b = received[field];
+    if (field === 'tableHash' && ZERO.test(pick.tableHash)) continue;
+    if (field === 'romName' && (a === null || b === null)) continue;
     if (a !== b) out.push({ field, expected: a === null ? null : String(a), received: b === null ? null : String(b), expectedFrom });
   }
   return out;
+}
+
+// eslint-disable-next-line no-control-regex -- control characters are exactly what a name must not hold
+const UNPRINTABLE = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g;
+
+/** A17 step 10: a picked table's name as the lobby keeps it: no control character, no line break, one space between words. */
+export function pickName(name: string): string {
+  return name.replace(UNPRINTABLE, ' ').replace(/ {2,}/g, ' ').trim();
 }
 
 /** How a member's open table stands to the pick. Only meaningful when both are a table (a hash that is not zeros). */

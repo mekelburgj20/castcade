@@ -91,7 +91,7 @@
  *   20 minutes are up, or the shell says the room is gone (`hostLeft`), the lobby is over: `lobbyClosed`, once;
  * - in a lobby nothing thrown inside this engine leaves a transport's handler or a timer (`engineError`).
  */
-import type { AnyMessage, GameFingerprint, GrantBody, Message, MessageType, MidnightMode, ParticipantInfo, PayloadOf, PlayerAdvisory, PlayerId, Stance } from '@castcade/protocol';
+import type { AnyMessage, GameFingerprint, GrantBody, Message, MessageType, MidnightMode, ParticipantInfo, PayloadOf, PlayerAdvisory, PlayerId, Stance, TableChange as TableChangeState } from '@castcade/protocol';
 import { buildMessage, parseMessage, PROTOCOL_VERSION } from '@castcade/protocol';
 import type { Clock, TimerHandle } from './clock.js';
 import { Emitter } from './events.js';
@@ -370,6 +370,8 @@ export class ClientMatch {
   /** A17: what the host was last told about a copy of the lobby's table on this PC, and a game of its own; undefined = never said. */
   private saidNoCopy: boolean | undefined;
   private saidOwnGame: boolean | undefined;
+  /** A17 step 10: what this client last said of its way to the lobby's table (`PARTICIPANT_UPDATE.tableChange`). */
+  private saidTableChange: TableChangeState | null | undefined;
   /** A17: the lobby as the host last said it (HELLO_ACK); null before the join. */
   private lobbyAck: PayloadOf<'HELLO_ACK'> | null = null;
   /**
@@ -386,7 +388,7 @@ export class ClientMatch {
   /** A17 step 6: when the link to the host dropped (this session's clock); null while it is up. */
   private downSince: number | null = null;
   /** A17 step 6 (review): `noCopy` / `ownGame` as last said before this client's place was gone, to be said again to the new row. */
-  private rowAfterRejoin: { noCopy?: boolean; ownGame?: boolean } | null = null;
+  private rowAfterRejoin: { noCopy?: boolean; ownGame?: boolean; tableChange?: TableChangeState } | null = null;
   /** A17 step 6 (review): the log being merged is of a match that is over (`RECONNECT_ACK.closed`): no grant in it is this player's turn. */
   private closedMerge = false;
   /** A17 step 6 (review): a `stale_seq` was answered with a new attempt already (one per drop). */
@@ -619,10 +621,11 @@ export class ClientMatch {
   }
 
   /** A17 step 6: pick the lobby's table (TABLE_PICK); only its identity keys count. Not during a game or a start. */
-  pickTable(game: GameFingerprint): boolean {
+  pickTable(game: GameFingerprint, tableObjects: { editables: number; hash: string } | null = null): boolean {
     this.assertActive();
     if (!this.lobbyOn || !this.joined) return false;
-    this.sendToHost(this.s.build('TABLE_PICK', { game: { ...game } }, this.throwdownCode));
+    // A17 step 10: with the Castcade VPX build's identity of the picker's own copy, when its PC knows it.
+    this.sendToHost(this.s.build('TABLE_PICK', { game: { ...game }, ...(tableObjects ? { tableObjects: { editables: tableObjects.editables, hash: tableObjects.hash } } : {}) }, this.throwdownCode));
     return true;
   }
 
@@ -724,7 +727,7 @@ export class ClientMatch {
    * A13: `ballEndReady` (whether this table can report ball ends) goes the same way, in the lobby only.
    * I11.4.9: so does `stream3dWaitMs` (this PC's 3D connection is still being made; 0: settled), in the lobby only.
    */
-  updateParticipant(u: { rig?: ParticipantInfo['rig']; game?: GameFingerprint; ballEndReady?: boolean; stream3dWaitMs?: number; stance?: Stance; noCopy?: boolean; ownGame?: boolean }): boolean {
+  updateParticipant(u: { rig?: ParticipantInfo['rig']; game?: GameFingerprint; ballEndReady?: boolean; stream3dWaitMs?: number; stance?: Stance; noCopy?: boolean; ownGame?: boolean; tableChange?: TableChangeState | null }): boolean {
     this.assertActive();
     if (!this.joined) return false;
     // A17: in a lobby every key counts in every phase, and three more are read: `stance`, `noCopy`, `ownGame`.
@@ -751,7 +754,7 @@ export class ClientMatch {
   }
 
   /** A17: `updateParticipant` in a lobby: what changed, in any phase, under the lobby's code. */
-  private updateInLobby(u: { rig?: ParticipantInfo['rig']; game?: GameFingerprint; ballEndReady?: boolean; stream3dWaitMs?: number; stance?: Stance; noCopy?: boolean; ownGame?: boolean }): boolean {
+  private updateInLobby(u: { rig?: ParticipantInfo['rig']; game?: GameFingerprint; ballEndReady?: boolean; stream3dWaitMs?: number; stance?: Stance; noCopy?: boolean; ownGame?: boolean; tableChange?: TableChangeState | null }): boolean {
     const payload: PayloadOf<'PARTICIPANT_UPDATE'> = {};
     if (u.rig !== undefined && u.rig !== this.participant.rig) payload.rig = u.rig;
     if (u.game !== undefined && compareFingerprints(this.game, u.game, this.localId).length > 0) payload.game = { ...u.game };
@@ -761,6 +764,8 @@ export class ClientMatch {
     if (u.stance !== undefined && u.stance !== this.myStance) payload.stance = u.stance;
     if (u.noCopy !== undefined && u.noCopy !== this.saidNoCopy) payload.noCopy = u.noCopy;
     if (u.ownGame !== undefined && u.ownGame !== this.saidOwnGame) payload.ownGame = u.ownGame;
+    // A17 step 10: where this PC stands on its way to the lobby's table (null: nothing to say any more).
+    if (u.tableChange !== undefined && u.tableChange !== this.saidTableChange) payload.tableChange = u.tableChange;
     if (Object.keys(payload).length === 0) return false;
     if (payload.rig !== undefined) this.participant = { ...this.participant, rig: payload.rig };
     if (payload.game !== undefined) this.game = { ...payload.game };
@@ -768,6 +773,7 @@ export class ClientMatch {
     if (payload.stance !== undefined) this.myStance = payload.stance;
     if (payload.noCopy !== undefined) this.saidNoCopy = payload.noCopy;
     if (payload.ownGame !== undefined) this.saidOwnGame = payload.ownGame;
+    if (payload.tableChange !== undefined) this.saidTableChange = payload.tableChange;
     this.sendToHost(this.s.build('PARTICIPANT_UPDATE', payload, this.lobbyIdForWire()));
     // A6.1: this player's own rig after a match's start is told here as it always was.
     if (payload.rig !== undefined && this.s.state.phase !== 'lobby') this.events.emit('rigUpdated', { playerId: this.localId, rig: payload.rig });
@@ -1093,6 +1099,7 @@ export class ClientMatch {
     if (this.ballEndReady !== undefined) row.ballEndReady = this.ballEndReady;
     if (this.saidNoCopy !== undefined) row.noCopy = this.saidNoCopy;
     if (this.saidOwnGame !== undefined) row.ownGame = this.saidOwnGame;
+    if (this.saidTableChange !== undefined) row.tableChange = this.saidTableChange;
     this.sendToHost(this.s.build('PARTICIPANT_UPDATE', row, this.lobbyIdForWire()));
   }
 
@@ -1523,7 +1530,9 @@ export class ClientMatch {
       this.ackHostObjects = objects ? { editables: objects.editables, hash: objects.hash } : null;
       this.events.emit('hostTableObjects', this.hostTableObjects());
     }
-    const mismatches = ack.hostGame ? compareFingerprints(ack.hostGame, this.game, ack.hostPlayerId) : [];
+    // A17 step 10: against a pick, only what both sides know can differ (`compareWithPick`: a pick names its ROM,
+    // this PC's own row names none), as the lobby's PC compares every row.
+    const mismatches = ack.hostGame ? (this.lobbyOn ? compareWithPick(ack.hostGame, this.game, ack.hostPlayerId) : compareFingerprints(ack.hostGame, this.game, ack.hostPlayerId)) : [];
     const fields = mismatches.map((m) => m.field).join(',');
     if (fields !== this.mismatchFields) {
       this.mismatchFields = fields;
@@ -1733,9 +1742,14 @@ export class ClientMatch {
         this.joined = false;
         this.lobbyAck = null;
         // The new row has been told nothing: what was said to the old one is said again after the HELLO_ACK.
-        this.rowAfterRejoin = { ...(this.saidNoCopy !== undefined ? { noCopy: this.saidNoCopy } : {}), ...(this.saidOwnGame !== undefined ? { ownGame: this.saidOwnGame } : {}) };
+        this.rowAfterRejoin = {
+          ...(this.saidNoCopy !== undefined ? { noCopy: this.saidNoCopy } : {}),
+          ...(this.saidOwnGame !== undefined ? { ownGame: this.saidOwnGame } : {}),
+          ...(this.saidTableChange != null ? { tableChange: this.saidTableChange } : {}),
+        };
         this.saidNoCopy = undefined;
         this.saidOwnGame = undefined;
+        this.saidTableChange = undefined;
         this.events.emit('rejoining', want.host);
         if (this.s.transport.connectTo) this.openLinkTo(want.host, { endpoint: want.endpoint, replacing: want.host }, true);
         else this.join();

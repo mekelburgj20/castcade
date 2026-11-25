@@ -387,6 +387,38 @@
         "description": "Stable participant id for this match: the ArcAid user id, or a fakeclient label."
       }
     },
+    "tableChange": {
+      "description": "A17: members whose PC is on its way to the lobby's table after a change of it, and where each stands (`PARTICIPANT_UPDATE.tableChange`). Absent: nobody.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "playerId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_.:-]+$",
+            "description": "Stable participant id for this match: the ArcAid user id, or a fakeclient label."
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "waits_game",
+              "waits_person",
+              "offered",
+              "closing",
+              "opening"
+            ],
+            "description": "A17: `waits_game`: a game, or the entry of its initials, is on the table that is open there, and the change waits for it; `waits_person`: the person has to close the open table themselves; `offered`: the PC changes tables only when its person says so; `closing`: the open table was asked to close; `opening`: the lobby's table is being opened."
+          }
+        },
+        "required": [
+          "playerId",
+          "state"
+        ],
+        "additionalProperties": false
+      }
+    },
     "tablePickedBy": {
       "description": "A17: who picked the lobby's table (`hostGame`); null or absent: the table is whatever the lobby's PC has open.",
       "anyOf": [

@@ -171,7 +171,7 @@ import { Emitter } from './events.js';
 import { signCanonical, verifyCanonical, type KeyPair } from './keys.js';
 import { GENESIS_HASH, type LogHead, type MatchLog } from './log.js';
 import { helloProofBody, lobbyReconnectSignBody, logSignBody, pickWinner, rankEntries, reconnectSignBody, seriesOf } from './result.js';
-import { compareWithPick, pickOf, samePick, tableRelation } from './table-identity.js';
+import { compareWithPick, pickName, pickOf, samePick, tableRelation } from './table-identity.js';
 import { Session } from './session.js';
 import {
   cloneState,
@@ -204,6 +204,16 @@ export interface LobbyOptions {
    * own table, open or not). Omitted: no pick is made yet, and the first table this PC has open is taken for it.
    */
   table?: GameFingerprint;
+  /** Step 10: the Castcade VPX build's identity of that table (`pickTable`'s `objects`), when its picker's PC knew it. */
+  tableObjects?: { editables: number; hash: string } | null;
+  /** Step 10: that table is this PC's own, taken by default, and not one a person picked (a restored lobby says so). Default: a person's. */
+  tableByDefault?: boolean;
+  /**
+   * Step 10: how often the lobby's table can change: the least time between two picks by anyone, and between two
+   * picks by one member. Defaults `PICK_GAP_MS` and `PICK_MEMBER_GAP_MS`; 0: no limit (tests of other things).
+   */
+  pickGapMs?: number;
+  pickMemberGapMs?: number;
   /** Step 6: every start counts down this long before MATCH_READY or NEXT_GAME. Default 5 s; at most 60 s. */
   countdownMs?: number;
   /** Step 6: how long the place of a member the game does not need is kept while they are away. Default 3 minutes. */
@@ -240,8 +250,12 @@ export interface SavedLobby {
   code: string;
   /** Everyone but this PC, in the order they joined, as their row stands, with their choice. */
   members: Array<{ participant: ParticipantInfo; stance: Stance }>;
-  /** The table that is picked (`HELLO_ACK.hostGame`), whether a pick was made, and who made it. */
-  table: { game: GameFingerprint; fixed: boolean; pickedBy: PlayerId | null };
+  /**
+   * The table that is picked (`HELLO_ACK.hostGame`), whether a pick was made, and who made it. Step 10: `byDefault`
+   * (the pick is the lobby PC's own table, not one a person made) and `objects` (the Castcade VPX build's identity
+   * of the picked table); a record from before step 10 has neither, and reads as a pick with nothing known of it.
+   */
+  table: { game: GameFingerprint; fixed: boolean; pickedBy: PlayerId | null; byDefault?: boolean; objects?: { editables: number; hash: string } | null };
   /** The number the next match gets (`<code>-<n>`): a lobby never uses a match id twice. */
   nextMatch: number;
   /** The balls per game the lobby was opened with. */
@@ -486,6 +500,15 @@ const HOST_ONLY_TYPES: ReadonlySet<MessageType> = new Set(['HELLO_ACK', 'REFUSE'
 const ZERO_HASH = '0'.repeat(64);
 const defaultTableOpen = (g: GameFingerprint): boolean => g.tableHash !== ZERO_HASH;
 /** A17: what a member says to the lobby and not to a match: the envelope carries the lobby's code (the open match's id is taken too). */
+/**
+ * A17 step 10: how often the lobby's table can change. A change makes every PC close a table and open another, which
+ * takes each of them the better part of a minute: 10 s between two picks by anyone, 30 s between two picks by one
+ * member. Inside either, a pick is refused with a sentence.
+ */
+export const PICK_GAP_MS = 10_000;
+export const PICK_MEMBER_GAP_MS = 30_000;
+const UNHASHED = /^0{64}$/;
+
 const LOBBY_TYPES: ReadonlySet<MessageType> = new Set(['PARTICIPANT_UPDATE', 'MEDIA_SIGNAL', 'START_REQUEST', 'START_CANCEL', 'END_REQUEST', 'TABLE_PICK', 'LEAVE_LOBBY']);
 /** The longest sentence REJECT, REFUSE and HELLO_ACK `startOff` take (the schemas' limit); a sentence with names in it is cut to this where it is built. */
 const SENTENCE_MAX = 500;
@@ -585,6 +608,17 @@ export class HostMatch {
   /** A17 step 6: a pick has been made (at the opening, by a member, or by this PC's first open table). */
   private pickFixed = false;
   private pickedBy: PlayerId | null = null;
+  /** A17 step 10: the pick is this PC's own table, taken by default (true), or one a person made (false). */
+  private pickDefault = true;
+  /** A17 step 10: the Castcade VPX build's identity of the picked table, as its picker's PC said it; null: not said. */
+  private pickObjects: { editables: number; hash: string } | null = null;
+  /** A17 step 10: when a person last picked, and when each member last did (`PICK_GAP_MS`, `PICK_MEMBER_GAP_MS`). */
+  private lastPickAt: number | null = null;
+  private readonly lastPickBy = new Map<PlayerId, number>();
+  private readonly pickGapMs: number;
+  private readonly pickMemberGapMs: number;
+  /** A17 step 10: where each member's PC stands on its way to the lobby's table (`PARTICIPANT_UPDATE.tableChange`). */
+  private readonly changing = new Map<PlayerId, NonNullable<PayloadOf<'PARTICIPANT_UPDATE'>['tableChange']>>();
   private pending: PendingStart | null = null;
   /** A17 step 6: why the announced start went away, for the next HELLO_ACK (`startOff`), once. */
   private startOffNote: string | null = null;
@@ -620,6 +654,8 @@ export class HostMatch {
     this.selfGame = { ...opts.hostGame };
     this.countdownMs = Math.max(0, Math.min(60_000, Math.round(lobby?.countdownMs ?? DEFAULT_START_COUNTDOWN_MS)));
     this.placeMs = Math.max(0, lobby?.placeMs ?? DEFAULT_AWAY_MS);
+    this.pickGapMs = Math.max(0, lobby?.pickGapMs ?? PICK_GAP_MS);
+    this.pickMemberGapMs = Math.max(0, lobby?.pickMemberGapMs ?? PICK_MEMBER_GAP_MS);
     this.turnMs = Math.max(0, lobby?.turnMs ?? DEFAULT_AWAY_MS);
     this.returnAllowMs = Math.max(0, lobby?.returnAllowMs ?? 0);
     this.start3dMaxMs = Math.max(0, lobby?.start3dMaxMs ?? DEFAULT_START_3D_MAX_MS);
@@ -639,6 +675,9 @@ export class HostMatch {
       this.hostGame = pickOf(lobby.table ?? opts.hostGame);
       this.pickFixed = lobby.table !== undefined || this.tableOpen(opts.hostGame);
       this.pickedBy = this.pickFixed ? this.localId : null;
+      // Step 10: a table given at the opening is its opener's pick, with what their PC knew of it.
+      this.pickDefault = lobby.table === undefined || lobby.tableByDefault === true;
+      this.pickObjects = lobby.table !== undefined && lobby.tableObjects ? { editables: lobby.tableObjects.editables, hash: lobby.tableObjects.hash } : null;
       const mine = compareWithPick(this.hostGame, this.selfGame, this.localId);
       if (mine.length > 0) this.mismatched.set(this.localId, mine);
     }
@@ -698,7 +737,7 @@ export class HostMatch {
     return {
       code: this.code,
       members: this.lobby.filter((p) => p.playerId !== this.localId).map((p) => ({ participant: { ...p }, stance: this.stances.get(p.playerId) ?? 'play' })),
-      table: { game: { ...this.hostGame }, fixed: this.pickFixed, pickedBy: this.pickedBy },
+      table: { game: { ...this.hostGame }, fixed: this.pickFixed, pickedBy: this.pickedBy, byDefault: this.pickDefault, objects: this.pickObjects ? { ...this.pickObjects } : null },
       nextMatch: this.matchNumber,
       ballsPerGame: this.ballsPerGameInit,
       match: open ? { matchId: st.matchId as string, results: this.resultMsgs.map((r) => ({ ...r.payload })) } : null,
@@ -744,7 +783,12 @@ export class HostMatch {
         ...opts,
         ballsPerGame: Number.isSafeInteger(saved.ballsPerGame) && saved.ballsPerGame > 0 ? saved.ballsPerGame : opts.ballsPerGame,
         turnMode: open ? st.turnMode : opts.turnMode,
-        lobby: { ...lobby, firstMatch: Math.max(1, Math.floor(saved.nextMatch)), ...(saved.table.fixed ? { table: saved.table.game } : {}) },
+        lobby: {
+          ...lobby,
+          firstMatch: Math.max(1, Math.floor(saved.nextMatch)),
+          // Step 10: with what was known of the pick, and whether a person made it.
+          ...(saved.table.fixed ? { table: saved.table.game, tableObjects: saved.table.objects ?? null, tableByDefault: saved.table.byDefault === true } : {}),
+        },
       },
       session,
     );
@@ -901,6 +945,27 @@ export class HostMatch {
     return { game: { ...this.hostGame }, pickedBy: this.pickedBy };
   }
 
+  /**
+   * A17 step 10: the Castcade VPX build's identity of the lobby's table (HELLO_ACK `hostTableObjects` in a lobby):
+   * what its picker said with the pick; else this PC's own table's (`setHostTableObjects`) while this PC's table is
+   * the picked file, or the pick is this PC's own table by default. Null: not known. It follows the pick, never a
+   * table this PC opened beside it.
+   */
+  tableObjects(): { editables: number; hash: string } | null {
+    if (!this.lobbyOn) return this.hostTableObjects ? { ...this.hostTableObjects } : null;
+    if (this.pickObjects) return { ...this.pickObjects };
+    if (!this.hostTableObjects || !this.pickFixed) return null;
+    const mine = this.selfGame;
+    const sameFile = !UNHASHED.test(this.hostGame.tableHash) && this.hostGame.tableHash.toLowerCase() === mine.tableHash.toLowerCase();
+    const ownByName = this.pickDefault && UNHASHED.test(this.hostGame.tableHash) && this.hostGame.tableName === pickName(mine.tableName);
+    return sameFile || ownByName ? { ...this.hostTableObjects } : null;
+  }
+
+  /** A17 step 10: where each member's PC stands on its way to the lobby's table; a member not listed has nothing to say. */
+  tableChanges(): Array<{ playerId: PlayerId; state: NonNullable<PayloadOf<'PARTICIPANT_UPDATE'>['tableChange']> }> {
+    return this.lobby.map((p) => p.playerId).flatMap((playerId) => (this.changing.has(playerId) ? [{ playerId, state: this.changing.get(playerId)! }] : []));
+  }
+
   /** A17: the match that is open in the lobby, as HELLO_ACK says it (`match`); null when none is, and without a lobby. */
   openMatch(): NonNullable<PayloadOf<'HELLO_ACK'>['match']> | null {
     const st = this.s.state;
@@ -986,9 +1051,12 @@ export class HostMatch {
   setHostTableObjects(objects: { editables: number; hash: string } | null): boolean {
     this.assertActive();
     if (this.s.state.phase !== 'lobby') return false;
+    const said = JSON.stringify(this.tableObjects());
     const was = this.hostTableObjects;
     if (objects === null ? was === null : was !== null && was.editables === objects.editables && was.hash === objects.hash) return false;
     this.hostTableObjects = objects ? { editables: objects.editables, hash: objects.hash } : null;
+    // A17 step 10: in a lobby what is said is the picked table's; this PC's own only counts while it is that table.
+    if (this.lobbyOn && JSON.stringify(this.tableObjects()) === said) return false;
     this.resendAck();
     return true;
   }
@@ -2020,7 +2088,7 @@ export class HostMatch {
               ? this.cancelStart(msg.from)
               : msg.type === 'END_REQUEST'
                 ? this.requestEnd(msg.from)
-                : this.pickTable(msg.payload.game, msg.from);
+                : this.pickTable(msg.payload.game, msg.from, msg.payload.tableObjects ?? null);
         if (why !== null) this.reject(msg, 'unexpected_state', why);
         return;
       }
@@ -2271,7 +2339,12 @@ export class HostMatch {
           if (this.tableOpen(u.game)) {
             this.pickFixed = true;
             this.pickedBy = this.localId;
+            this.pickDefault = true;
           }
+        } else if (this.pickDefault && UNHASHED.test(this.hostGame.tableHash) && !UNHASHED.test(u.game.tableHash) && u.game.kind === this.hostGame.kind && u.game.tableName === this.hostGame.tableName) {
+          // Step 10: a table is named a moment before its file is hashed, and the default pick was made at the name.
+          // The same table's hash, when it comes, is the pick's: without it nobody could be told to have the same file.
+          this.hostGame = pickOf(u.game);
         }
         this.recompareAll();
         changed = true;
@@ -2308,6 +2381,12 @@ export class HostMatch {
       else this.inOwnGame.delete(id);
       changed = true;
     }
+    // Step 10: where this member's PC stands on its way to the lobby's table (null: nothing to say any more).
+    if (u.tableChange !== undefined && (u.tableChange ?? undefined) !== this.changing.get(id)) {
+      if (u.tableChange === null) this.changing.delete(id);
+      else this.changing.set(id, u.tableChange);
+      changed = true;
+    }
     // Step 6: a start from the table belongs to the game that asked for it. That game ended on its table before the
     // start came to anything (the PC says `ownGame: false`): the start is off, and the next one asks again (A12).
     if (u.ownGame === false && this.pending?.tableOf === id) {
@@ -2337,6 +2416,7 @@ export class HostMatch {
     this.stances.delete(peer);
     this.withoutCopy.delete(peer);
     this.inOwnGame.delete(peer);
+    this.changing.delete(peer);
     if (this.stream3dWait.delete(peer)) this.armStream3dTimer();
     const inGrace = this.grace.has(peer);
     const held: TimerHandle | null | undefined = this.grace.get(peer);
@@ -2354,7 +2434,7 @@ export class HostMatch {
   }
 
   /** A17: what HELLO_ACK says in a lobby beyond a match's lobby of before. */
-  private lobbyFacts(): Pick<PayloadOf<'HELLO_ACK'>, 'stances' | 'away' | 'noCopy' | 'ownGame' | 'otherTable' | 'tablePickedBy' | 'ballsPerGame' | 'starter' | 'match' | 'start' | 'startOff'> {
+  private lobbyFacts(): Pick<PayloadOf<'HELLO_ACK'>, 'stances' | 'away' | 'noCopy' | 'ownGame' | 'otherTable' | 'tableChange' | 'tablePickedBy' | 'ballsPerGame' | 'starter' | 'match' | 'start' | 'startOff'> {
     const ids = this.lobby.map((p) => p.playerId);
     const off = this.startOffNote;
     this.startOffNote = null;
@@ -2365,6 +2445,7 @@ export class HostMatch {
       noCopy: ids.filter((id) => this.withoutCopy.has(id)),
       ownGame: ids.filter((id) => this.inOwnGame.has(id)),
       otherTable: this.otherTableIds(),
+      tableChange: this.tableChanges(),
       tablePickedBy: this.pickedBy,
       ballsPerGame: this.ballsPerGameInit,
       starter: this.starter(),
@@ -2528,16 +2609,40 @@ export class HostMatch {
    * table changed": a tally is for one table). What each PC then does about its own VPX is the shell's. Null when
    * the pick stands (also when it is the table the lobby had), or the sentence why not.
    */
-  pickTable(game: GameFingerprint, by: PlayerId = this.localId): string | null {
+  pickTable(game: GameFingerprint, by: PlayerId = this.localId, objects: { editables: number; hash: string } | null = null): string | null {
     this.assertActive();
     const why = this.pickBlocker();
     if (why !== null) return why;
     if (!this.isMember(by)) return `${by} is not in the lobby`;
-    const next = pickOf(game);
-    if (this.pickFixed && samePick(next, this.hostGame)) return null;
+    // Step 10: the name is kept clean (it is shown and logged on every PC), and a pick has to name a table.
+    const next = pickOf({ ...game, tableName: pickName(game.tableName) });
+    if (next.tableName === '' || !this.tableOpen(next)) return 'That is not a table: pick one from the list.';
+    if (this.pickFixed && samePick(next, this.hostGame)) {
+      // The table it already is: nothing changes. What is now known of it is kept (a pick made by default says none).
+      if (objects && !this.pickObjects && this.tableObjects() === null) {
+        this.pickObjects = { editables: objects.editables, hash: objects.hash };
+        this.resendAck();
+      }
+      return null;
+    }
+    // Step 10: limits on how often the lobby's table can change.
+    const now = this.s.clock.now();
+    const left = (since: number | null | undefined, gap: number): number => (since === null || since === undefined ? 0 : Math.ceil((since + gap - now) / 1000));
+    const mine = left(this.lastPickBy.get(by), this.pickMemberGapMs);
+    if (mine > 0) return `You changed the lobby's table a moment ago: you can change it again in ${mine} s.`;
+    const anyone = left(this.lastPickAt, this.pickGapMs);
+    if (anyone > 0) return `The lobby's table was changed a moment ago: it can be changed again in ${anyone} s.`;
+    this.lastPickAt = now;
+    // (Kept when a member leaves, so that leaving and joining again is no way around it; forgotten once it is over.)
+    for (const [id, at] of this.lastPickBy) if (at + this.pickMemberGapMs <= now) this.lastPickBy.delete(id);
+    this.lastPickBy.set(by, now);
     this.hostGame = next;
     this.pickFixed = true;
+    this.pickDefault = false;
+    this.pickObjects = objects ? { editables: objects.editables, hash: objects.hash } : null;
     this.pickedBy = by;
+    // What each PC said of the table before is over: each says where it stands with the new one.
+    this.changing.clear();
     this.recompareAll();
     this.events.emit('tablePicked', { by, game: { ...next } });
     if (this.s.state.phase === 'ended') this.closeMatch('the table changed');
@@ -3024,6 +3129,7 @@ export class HostMatch {
     this.stances.set(id, p.stance ?? 'play');
     this.withoutCopy.delete(id);
     this.inOwnGame.delete(id);
+    this.changing.delete(id);
     this.setMismatch(id, compareWithPick(this.hostGame, p.game, this.localId));
     this.events.emit('reconnected', { playerId: id, entries: 0, quiet });
     // HELLO_ACK first (it is this member's answer), then the open match's log from entry 0.
@@ -3233,7 +3339,7 @@ export class HostMatch {
         ballEndReady: [...this.ballEndReady].map(([playerId, ready]) => ({ playerId, ready })),
         midnightModes: [...this.midnightModeOf].map(([playerId, m]) => ({ playerId, enabled: m.enabled, adjustment: m.adjustment })),
         stream3dWait: this.stream3dWaiting(),
-        hostTableObjects: this.hostTableObjects ? { ...this.hostTableObjects } : null,
+        hostTableObjects: this.tableObjects(),
       },
       null,
     );

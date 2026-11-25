@@ -410,4 +410,35 @@ describe("A17 step 8: the counters of the lobby's PC across a restart", () => {
     expect(r.clock.now()).toBeGreaterThan(ceiling * 1000);
     expect(host.members().map((m) => m.playerId)).toEqual(['h', 'a']);
   });
+
+  it("A17 step 10: a pick a member made is the lobby's table after the restart, with who made it and what the Castcade VPX build says of it; the lobby PC's own table opened beside it is still no pick; and a default pick is still one", async () => {
+    const AFM = { ...TABLE, tableName: 'Attack from Mars', tableHash: 'cd'.repeat(32), romName: 'afm_113b' };
+    const CC = { editables: 1203, hash: '00aa11bb22cc33dd' };
+    const { r, disk, watch } = await saved(['a']);
+    client(r, 'a').pickTable(AFM, CC);
+    await flush();
+    expect(disk.lobby?.table).toMatchObject({ fixed: true, pickedBy: 'a', byDefault: false, objects: CC });
+    const host = await restart(r, disk, watch);
+    host.runAfterRestore();
+    expect(host.table()).toEqual({ game: { kind: 'vpx', tableName: 'Attack from Mars', tableHash: 'cd'.repeat(32), romName: 'afm_113b', romHash: null, physicsHash: null, recipeVersion: null, sidecarHash: null, emulatorVersion: '' }, pickedBy: 'a' });
+    expect(host.tableObjects()).toEqual(CC);
+    // The lobby's PC came back with the table it had before the pick (TABLE): a row with another table, not the pick.
+    await r.mend('a');
+    expect(r.lobby('a').hostGame?.tableName).toBe('Attack from Mars');
+    expect(r.lobby('a').hostTableObjects).toEqual(CC);
+    expect(r.lobby('a').tablePickedBy).toBe('a');
+    expect(r.lobby('a').otherTable).toContain('h');
+    // What its own Castcade says of the table it has open is not the lobby's.
+    expect(host.setHostTableObjects({ editables: 5, hash: 'ffffffffffffffff' })).toBe(false);
+    expect(host.tableObjects()).toEqual(CC);
+
+    // A lobby whose table was never picked by anyone: after the restart it is still the lobby PC's own by default,
+    // so what that PC says of its own table is the lobby's.
+    const d = await saved(['a']);
+    expect(d.disk.lobby?.table).toMatchObject({ fixed: true, pickedBy: 'h', byDefault: true, objects: null });
+    const again = await restart(d.r, d.disk, d.watch);
+    again.runAfterRestore();
+    expect(again.setHostTableObjects(CC)).toBe(true);
+    expect(again.tableObjects()).toEqual(CC);
+  });
 });

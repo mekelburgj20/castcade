@@ -88,6 +88,8 @@ export interface StarOptions {
   client?: Partial<ClientOptions>;
   /** A17 step 8: the lobby PC's session keeps its counters for a restart (`Session.seqGuard`). */
   seqGuard?: SeqGuard;
+  /** A17 step 10: what the lobby's PC counts as an open table (the shell: a table that is named). Default: one with a file hash. */
+  tableOpen?: (game: GameFingerprint) => boolean;
 }
 
 const who = (id: string, keys: KeyPair): ParticipantInfo => ({ playerId: id, displayName: id.toUpperCase(), publicKey: keys.publicKeyB64, rig: 'pc' });
@@ -111,6 +113,7 @@ export async function starLobby(clientIds: string[], opts: StarOptions = {}): Pr
     hostGame: opts.tables?.['h'] ?? TABLE,
     clock,
     ...(opts.ballEndReady?.['h'] !== undefined ? { ballEndReady: opts.ballEndReady['h'] } : {}),
+    ...(opts.tableOpen ? { tableOpen: opts.tableOpen } : {}),
     lobby: { ...(opts.lobby ?? {}), stance: opts.stances?.['h'] ?? 'play' },
   }, opts.seqGuard ? new Session({ transport: taps.get('h') as TapTransport, keys: hostKeys, clock, seqGuard: opts.seqGuard }) : undefined);
   const r: StarRig = {

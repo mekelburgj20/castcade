@@ -220,6 +220,22 @@ export class LobbyPlayer {
     else this.client?.setStance(stance);
   }
 
+  /** Step 10: pick the lobby's table, the way this member's role does: the lobby's PC of its own engine, a client with TABLE_PICK. */
+  pick(game: GameFingerprint, tableObjects: { editables: number; hash: string } | null = null): void {
+    if (this.host) {
+      const why = this.host.pickTable(game, this.playerId, tableObjects);
+      if (why !== null) this.out.refusals.push(why);
+    } else {
+      this.client?.pickTable(game, tableObjects);
+    }
+  }
+
+  /** Step 10: this member's own table is another one now (its PC closed the one it had and opened this), said to the lobby. */
+  openTable(game: GameFingerprint): void {
+    if (this.host) this.host.updateLocal({ game });
+    else this.client?.updateParticipant({ game });
+  }
+
   /** Step 6: ask for a start, the way this member's role asks: the lobby's PC of its own engine, a client with START_REQUEST. */
   ask(how: LobbyAsk['how'], more: { newMatch?: boolean; anyway?: boolean; now?: boolean } = {}): void {
     const ask = { fromTable: how === 'table', ...more };
@@ -530,6 +546,15 @@ export async function runLobbyScenario(scenario: Scenario, opts: RunLobbyOptions
       await until('the choices are said', () => Object.entries(m.stances ?? {}).every(([id, stance]) => host.stanceOf(id) === stance));
       const matchOf = (): LobbyMatchOutcome | undefined => hostPlayer.out.matches[i];
       const ended = (): boolean => matchOf()?.end != null;
+      if (m.pick) {
+        // Step 10: the table is picked, a match that was left open ends by it, and every PC opens the new table.
+        const picked: GameFingerprint = { ...defaultFingerprint, ...m.pick.game };
+        byId.get(m.pick.by)?.pick(picked, m.pick.tableObjects ?? null);
+        await until('the pick to be the lobby\'s table', () => host.table().game.tableName === picked.tableName && host.table().pickedBy === m.pick?.by);
+        await until('the match before to end by the pick', () => host.openMatch() === null);
+        for (const p of players) p.openTable(picked);
+        await until('everyone has the picked table open', () => host.loading().length === 0 && (hostPlayer.out.lobby?.otherTable ?? []).length === 0);
+      }
       if (m.start) {
         // Asked for: the checks, the announced start, the countdown. A match still open is ended by the new one.
         const asker = byId.get(m.start.by);
@@ -539,6 +564,11 @@ export async function runLobbyScenario(scenario: Scenario, opts: RunLobbyOptions
           // The second ask comes a moment after the first: when the first is announced (a client's has to arrive).
           await until('the first start to be announced', () => host.announcedStart() !== null || matchOf() !== undefined);
           byId.get(m.alsoStart.by)?.ask(m.alsoStart.how, { anyway: m.alsoStart.anyway === true });
+        }
+        if (m.pickDuringStart) {
+          // Step 10: a pick while the start is announced is refused; the start goes on.
+          await until('the start to be announced', () => host.announcedStart() !== null || matchOf() !== undefined);
+          byId.get(m.pickDuringStart.by)?.pick({ ...defaultFingerprint, ...m.pickDuringStart.game });
         }
         if (m.startWithout) {
           const presser = byId.get(m.startWithout);

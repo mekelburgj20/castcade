@@ -692,6 +692,7 @@ host -> client. The HELLO was accepted; the match is not ready until MATCH_READY
 | `noCopy` | array of string (`^[A-Za-z0-9_.:-]+$`) | no | A17: members whose PC has no copy of the lobby's table (`PARTICIPANT_UPDATE.noCopy`): they do not play a match that starts. Absent: nobody. |
 | `ownGame` | array of string (`^[A-Za-z0-9_.:-]+$`) | no | A17: members on whose table a game the match does not own is running (`PARTICIPANT_UPDATE.ownGame`). Absent: nobody. |
 | `otherTable` | array of string (`^[A-Za-z0-9_.:-]+$`) | no | A17: members whose open table is another game than the lobby's table. Absent: nobody. |
+| `tableChange` | array of object | no | A17: members whose PC is on its way to the lobby's table after a change of it, and where each stands (`PARTICIPANT_UPDATE.tableChange`). Absent: nobody. |
 | `tablePickedBy` | string (`^[A-Za-z0-9_.:-]+$`) \| null | no | A17: who picked the lobby's table (`hostGame`); null or absent: the table is whatever the lobby's PC has open. |
 | `ballsPerGame` | integer \| null | no | A17: the balls per game of a match started in this lobby. Null or absent: not said. |
 | `starter` | string (`^[A-Za-z0-9_.:-]+$`) \| null | no | A17: the one member whose Start on their own table asks for a game. Null or absent: nobody is named. |
@@ -991,6 +992,7 @@ client -> host in the lobby: replaces the sender's HELLO `participant.rig` and `
 | `stance` | `"play"` \| `"watch"` | no | A17: the sender's choice now, Play or Watch at the next start. It changes nothing in a game that is being played. |
 | `noCopy` | boolean | no | A17: true: the sender's PC has no copy of the lobby's table (`HELLO_ACK.hostGame`); false: it has. |
 | `ownGame` | boolean | no | A17: true: a game the match does not own is running on the sender's table (played alone, in the lobby or as a watcher); false: it has ended. |
+| `tableChange` | `"waits_game"` \| `"waits_person"` \| `"offered"` \| `"closing"` \| `"opening"` \| null | no | A17: what the sender's PC is doing about a change of the lobby's table (`TableChange`); null: nothing any more (its table is the lobby's, or it has no copy: `noCopy`). |
 
 ### `NEXT_GAME`
 
@@ -1053,6 +1055,7 @@ client -> host, in a lobby, outside a game. A member picks the lobby's table; an
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `game` | object | yes | The picked table: its identity keys (`kind`, `tableName`, `tableHash`, `romName`); the other keys are facts of one PC's copy and are null or empty in a pick. |
+| `tableObjects` | object \| null | no | A17: the identity the Castcade VPX build gives the picked table (as `HELLO_ACK.hostTableObjects`), as the picker's PC knows it for its own copy; null or absent: not known. In a lobby `HELLO_ACK.hostTableObjects` is the picked table's. |
 
 ### `LOBBY_CLOSED`
 
