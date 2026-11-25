@@ -63,8 +63,13 @@ export interface WitnessHost {
   vpxPid?(): number | null;
   /** D7.3.3 (2026-11-02): that VPX's process start, epoch ms (the process watch's own query); null when unknown or none runs. */
   vpxStartedAt?(): number | null;
-  /** A17 step 3: that VPX's exe (the Castcade VPX build's too, which `status().vpxExe` never is); null when none runs. */
-  vpxRunningExe?(): string | null;
+  /**
+   * A17 step 3: whether the VPX process `pid` is still held by the witness: false from the moment its exit is seen,
+   * which is seconds before `status().currentTable` lets go of its table (the close-time capture comes between).
+   */
+  vpxAlive?(pid: number): boolean;
+  /** A17 step 3: a finished game's score against the machine's list, null when there is no list to compare with (`Witness.highScoreKnown`). */
+  highScoreKnown?(score: number): boolean | null;
 }
 
 /** A15: what `onEvent` says about an event beside the event itself. */
@@ -93,8 +98,6 @@ export function createWitnessHost(store: SettingsStore, log: Logger, overrides: 
   let launchPid: number | null = null;
   /** D7.3.3: its process start (the OpenXR layer's "VPX predates the registration" rule). */
   let launchStartedAt: number | null = null;
-  /** A17 step 3: its exe, the Castcade VPX build's included (the table closer asks that build by its control connection). */
-  let launchExe: string | null = null;
   let witness: Witness = attach(createWitness(store, deps));
 
   // I11.4.1 (0.2.44): a build before this one remembered the VPX fork as "the VPX exe" whenever the fork was started
@@ -139,7 +142,6 @@ export function createWitnessHost(store: SettingsStore, log: Logger, overrides: 
         log.info(`witness: launch ${i.table} (${i.exe}, pid ${i.pid})`);
         launchPid = i.pid;
         launchStartedAt = i.startedAt;
-        launchExe = i.exe || null;
         // Remember where VPX lives so the import can find scripts\ on the next run without a launch. I11.4.1: never the
         // VPX fork (a 3D watch session's, or one started from its own launchers): A14 starts tables with this exe.
         if (i.exe && !isForkExe(i.exe) && store.get().vpxExe !== i.exe) void store.set({ vpxExe: i.exe }).catch((err: unknown) => log.warn(`settings: could not remember the VPX exe: ${err instanceof Error ? err.message : String(err)}`));
@@ -152,7 +154,6 @@ export function createWitnessHost(store: SettingsStore, log: Logger, overrides: 
         log.info(`witness: exit ${i.table} after ${i.durationSec}s`);
         launchPid = null;
         launchStartedAt = null;
-        launchExe = null;
         for (const l of eventListeners) l({ kind: 'table_exit' }, { backlog: false, mark: null });
       }),
       w.on('capture', (c) => {
@@ -302,7 +303,8 @@ export function createWitnessHost(store: SettingsStore, log: Logger, overrides: 
     journalMark: () => witness.journalMark(),
     vpxPid: () => launchPid,
     vpxStartedAt: () => launchStartedAt,
-    vpxRunningExe: () => launchExe,
+    vpxAlive: (pid) => witness.holdsVpx(pid),
+    highScoreKnown: (score) => witness.highScoreKnown(score),
     onEvent(listener) {
       eventListeners.add(listener);
       return () => {

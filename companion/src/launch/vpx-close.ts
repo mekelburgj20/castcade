@@ -5,28 +5,38 @@
  *
  * 1. **The Castcade VPX build**: the line `quit` on its control connection (docs/design/state-stream-in-match.md §3).
  *    The build closes its table and exits the way its held exit button does. A build from before the line ignores it
- *    (rule 13), stays open, and gets the next rung.
+ *    (rule 13), stays open, and gets the next rung. The line only goes to a build that is proven to be the process
+ *    asked about (`quitFork(pid)`).
  * 2. **Any other VPX**: its window is asked to close (`WM_CLOSE`, which is what the window's own close button and
  *    Alt+F4 send). The message goes to VPX's main window when the process has one: read in the 10.8.0 source, that
  *    handler closes a running player first (the table's Exit event fires, VPinMAME stops) and then the program, whereas
  *    the player window by itself only goes back to the editor when VPX was started with `-Play` alone, which is how
  *    Castcade and most players start it, and the table would stay open there. A process with no main window gets the
  *    message on its player window.
- * 3. **The person**: when VPX is still open `CLOSE_WAIT_MS` after the first request, or nothing could be asked, the
+ * 3. **The person**: when VPX is still running `CLOSE_WAIT_MS` after the first request, or nothing could be asked, the
  *    answer is `ask`: the caller says "Close the table on this PC" and waits for the witness to see the table go.
  *
  * **Never a forced end of the process**: nothing here ends, kills or signals a process. A VPX that shows a dialog
  * (a table with unsaved changes) simply stays open and the third rung says so.
  *
- * Everything that touches the outside is handed in (the control connection, the window messages, the witness's word
- * on whether the table is still open, the timers), so the tests close nothing. `askVpxWindowToClose` is the real
- * second rung: a short PowerShell script, the route `media/window-geometry.ts` already uses.
+ * Review of PR 137:
+ * - the process is named by the caller for the whole request (`close(table, pid, …)`): the VPX that holds the table,
+ *   as the witness has it, never "the VPX launched last";
+ * - **closed means the process has ended** (`alive(pid)` false), not that the witness has let go of the table: the
+ *   witness's status follows seconds later, after its close-time capture;
+ * - `mayClose` (no game began, the setting still allows it) is asked before every request, before the window script
+ *   starts, and again at the moment the message is posted: the script is one run that compiles and lists first (the
+ *   slow part, a second or more) and then waits for a line on its input; the message follows that line by milliseconds.
+ *
+ * Everything that touches the outside is handed in (the control connection, the window script, the witness's word on
+ * the process, the timers), so the tests close nothing. `powershellWindows` is the real second rung: a short
+ * PowerShell script, the route `media/window-geometry.ts` already uses.
  */
 import { spawn } from 'node:child_process';
 
 /** How long the Castcade VPX build has to leave after `quit` before its window is asked as any VPX's is. */
 export const FORK_QUIT_WAIT_MS = 6_000;
-/** How long after the first request a VPX that is still open is the person's to close (the design's 15 s). */
+/** How long after the first request a VPX that is still running is the person's to close (the design's 15 s). */
 export const CLOSE_WAIT_MS = 15_000;
 
 /** A top-level window of the VPX process, as the script lists it. */
@@ -58,11 +68,44 @@ export function pickCloseTarget(windows: readonly VpxProcessWindow[]): { window:
 export type WindowAsk =
   /** `WM_CLOSE` was posted to that window of the process. */
   | { asked: true; kind: 'main' | 'player' }
+  /** Nothing was posted because the caller said no at the last moment (a game began, the setting was switched off). */
+  | { asked: false; held: true }
   /** Nothing was posted: the process is gone or is not VPX, it has no window to ask, or the script failed. */
-  | { asked: false; reason: string };
+  | { asked: false; held?: false; reason: string };
 
-const PS_HEAD = String.raw`
+const isPid = (n: number): boolean => Number.isInteger(n) && n > 0 && n <= 0xffff_ffff;
+
+/**
+ * One run of the window script for one process: it has compiled and listed (`vpx`, `windows`) and now waits. `post`
+ * sends `WM_CLOSE` to one of the listed windows and ends the run; `cancel` ends it with nothing posted.
+ */
+export interface WindowRun {
+  vpx: boolean;
+  windows: VpxProcessWindow[];
+  post(hwnd: string): Promise<{ posted: boolean; why?: string }>;
+  cancel(): void;
+}
+
+/** The window script; the tests hand in their own. */
+export interface WindowScript {
+  open(pid: number): Promise<WindowRun>;
+}
+
+/**
+ * The script. Its output is ASCII only (every other character of a window title or class is written as \uXXXX, and
+ * the console's output encoding is set to UTF-8 without a mark first), so neither a control character in a title nor
+ * the PC's OEM code page can break the line. It lists, waits for one line on its input, and posts only on
+ * `close <hwnd>`; any other line, or the end of the input, posts nothing. The process id is the one thing put into the
+ * text, and it must be one.
+ */
+export function windowScript(pid: number): string {
+  if (!isPid(pid)) throw new Error('not a process id');
+  return windowScriptText(pid);
+}
+
+const windowScriptText = (pid: number): string => String.raw`
 $ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 Add-Type -TypeDefinition @'
 using System;
 using System.Collections.Generic;
@@ -80,7 +123,15 @@ public static class CastcadeClose {
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr h, StringBuilder s, int n);
   [DllImport("user32.dll", SetLastError = true)] static extern bool PostMessage(IntPtr h, uint msg, IntPtr w, IntPtr l);
 
-  static string J(string s) { return "\"" + (s ?? "").Replace("\\", "\\\\").Replace("\"", "\\\"") + "\""; }
+  // A JSON string in ASCII: a quote, a backslash, a control character and anything above 0x7e go out as \uXXXX.
+  static string J(string s) {
+    var b = new StringBuilder("\"");
+    foreach (char c in (s ?? "")) {
+      if (c < 0x20 || c > 0x7e || c == '"' || c == '\\') b.Append("\\u").Append(((int)c).ToString("x4"));
+      else b.Append(c);
+    }
+    return b.Append("\"").ToString();
+  }
 
   // Only ever a process whose program is a VPinballX exe: a process id that Windows gave to another program meanwhile is left alone.
   static bool IsVpx(uint pid) {
@@ -116,107 +167,162 @@ public static class CastcadeClose {
   }
 }
 '@
+[Console]::Out.WriteLine([CastcadeClose]::List(${pid}))
+[Console]::Out.Flush()
+$word = [Console]::In.ReadLine()
+if ($word -match '^close (-?[0-9]{1,20})$') {
+  [Console]::Out.WriteLine([CastcadeClose]::Close(${pid}, [long]$Matches[1]))
+  [Console]::Out.Flush()
+}
 `;
 
-/** Runs one call of the script and answers its JSON line. The arguments are integers checked by the caller. */
-function runScript(call: string, timeoutMs: number): Promise<unknown> {
-  return new Promise((resolve, reject) => {
-    // -EncodedCommand (UTF-16LE base64): `-Command -` would run stdin line by line and break the here-string.
-    const encoded = Buffer.from(`${PS_HEAD}\n${call}\n`, 'utf16le').toString('base64');
-    const ps = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded], { windowsHide: true });
-    let out = '';
-    let err = '';
-    const timer = setTimeout(() => {
-      // The script, never VPX.
-      ps.kill();
-      reject(new Error('the window script timed out'));
-    }, timeoutMs);
-    ps.stdout.on('data', (b: Buffer) => (out += b.toString('utf8')));
-    ps.stderr.on('data', (b: Buffer) => (err += b.toString('utf8')));
-    ps.on('error', (e) => {
-      clearTimeout(timer);
-      reject(e);
-    });
-    ps.on('close', (code) => {
-      clearTimeout(timer);
-      const line = out
-        .trim()
-        .split(/\r?\n/)
-        .filter((l) => l.startsWith('{'))
-        .pop();
-      if (code !== 0 || !line) return reject(new Error(`the window script failed (exit ${code}): ${(err.trim() || out.trim()).slice(0, 300)}`));
-      try {
-        resolve(JSON.parse(line));
-      } catch (e) {
-        reject(e instanceof Error ? e : new Error(String(e)));
-      }
-    });
-    ps.stdin.end();
-  });
+const isHwnd = (s: unknown): s is string => typeof s === 'string' && /^-?\d{1,20}$/.test(s);
+/** How long the script may take to compile and list, and then to answer the word it was given. */
+const LIST_TIMEOUT_MS = 20_000;
+const POST_TIMEOUT_MS = 5_000;
+
+/** One line of the script's output as JSON; the mark some consoles put first is let go. */
+function parseLine(line: string): unknown {
+  const at = line.indexOf('{');
+  return JSON.parse(at > 0 ? line.slice(at) : line);
 }
 
-const isPid = (n: number): boolean => Number.isInteger(n) && n > 0 && n <= 0xffff_ffff;
-
-/** The script's two calls; the tests hand in their own. */
-export interface WindowScript {
-  list(pid: number): Promise<{ vpx: boolean; windows: VpxProcessWindow[] }>;
-  close(pid: number, hwnd: string): Promise<{ posted: boolean; why?: string }>;
-}
-
+/** The real window script: one `powershell.exe` per request. The pid and the window handle are integers, checked here. */
 export const powershellWindows: WindowScript = {
-  async list(pid) {
-    if (!isPid(pid)) throw new Error('not a process id');
-    const r = (await runScript(`[CastcadeClose]::List(${pid})`, 20_000)) as { vpx?: unknown; windows?: unknown };
-    const windows = Array.isArray(r.windows) ? (r.windows as VpxProcessWindow[]).filter((w) => typeof w?.hwnd === 'string' && /^-?\d{1,20}$/.test(w.hwnd)) : [];
-    return { vpx: r.vpx === true, windows: windows.map((w) => ({ hwnd: w.hwnd, className: String(w.className ?? ''), title: String(w.title ?? ''), visible: w.visible === true })) };
-  },
-  async close(pid, hwnd) {
-    if (!isPid(pid) || !/^-?\d{1,20}$/.test(hwnd)) throw new Error('not a window of a process');
-    const r = (await runScript(`[CastcadeClose]::Close(${pid}, ${hwnd})`, 20_000)) as { posted?: unknown; why?: unknown };
-    return r.posted === true ? { posted: true } : { posted: false, why: typeof r.why === 'string' ? r.why : 'unknown' };
+  open(pid) {
+    return new Promise<WindowRun>((resolve, reject) => {
+      if (!isPid(pid)) return reject(new Error('not a process id'));
+      // -EncodedCommand (UTF-16LE base64): `-Command -` would run stdin line by line, and stdin is the script's own here.
+      const encoded = Buffer.from(windowScript(pid), 'utf16le').toString('base64');
+      const ps = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded], { windowsHide: true });
+      let out = '';
+      let err = '';
+      let listed = false;
+      let ended = false;
+      let onLine: ((line: string | null) => void) | null = null;
+      const end = (): void => {
+        if (ended) return;
+        ended = true;
+        ps.stdin.end();
+      };
+      // The script, never VPX.
+      let timer = setTimeout(() => {
+        ps.kill();
+        reject(new Error('the window script timed out'));
+      }, LIST_TIMEOUT_MS);
+      const take = (): void => {
+        for (let nl = out.indexOf('\n'); nl >= 0; nl = out.indexOf('\n')) {
+          const line = out.slice(0, nl).trim();
+          out = out.slice(nl + 1);
+          if (!line.includes('{')) continue;
+          if (!listed) {
+            listed = true;
+            clearTimeout(timer);
+            let r: { vpx?: unknown; windows?: unknown };
+            try {
+              r = parseLine(line) as { vpx?: unknown; windows?: unknown };
+            } catch (e) {
+              end();
+              reject(e instanceof Error ? e : new Error(String(e)));
+              return;
+            }
+            const windows = (Array.isArray(r.windows) ? (r.windows as Array<Partial<VpxProcessWindow>>) : []).filter((w) => isHwnd(w?.hwnd));
+            resolve({
+              vpx: r.vpx === true,
+              windows: windows.map((w) => ({ hwnd: w.hwnd as string, className: String(w.className ?? ''), title: String(w.title ?? ''), visible: w.visible === true })),
+              post: (hwnd) =>
+                new Promise((done) => {
+                  if (ended || !isHwnd(hwnd)) return done({ posted: false, why: 'the window script had ended' });
+                  timer = setTimeout(() => {
+                    onLine = null;
+                    ps.kill();
+                    done({ posted: false, why: 'the window script did not answer' });
+                  }, POST_TIMEOUT_MS);
+                  onLine = (answer) => {
+                    clearTimeout(timer);
+                    onLine = null;
+                    if (answer === null) return done({ posted: false, why: 'the window script ended without an answer' });
+                    try {
+                      const a = parseLine(answer) as { posted?: unknown; why?: unknown };
+                      done(a.posted === true ? { posted: true } : { posted: false, why: typeof a.why === 'string' ? a.why : 'unknown' });
+                    } catch {
+                      done({ posted: false, why: 'the window script answered something else' });
+                    }
+                  };
+                  ended = true;
+                  ps.stdin.end(`close ${hwnd}\n`);
+                }),
+              cancel: end,
+            });
+          } else if (onLine) onLine(line);
+        }
+      };
+      ps.stdout.on('data', (b: Buffer) => {
+        out += b.toString('utf8');
+        take();
+      });
+      ps.stderr.on('data', (b: Buffer) => (err += b.toString('utf8')));
+      ps.stdin.on('error', () => undefined);
+      ps.on('error', (e) => {
+        clearTimeout(timer);
+        reject(e);
+      });
+      ps.on('close', (code) => {
+        clearTimeout(timer);
+        if (!listed) reject(new Error(`the window script failed (exit ${code}): ${err.trim().slice(0, 300)}`));
+        else if (onLine) onLine(null);
+      });
+    });
   },
 };
 
 /**
- * The second rung: ask the window of the VPX process `pid` to close. Windows only; never throws (what went wrong is
- * the reason). The process is only ever asked, and only when it is a VPinballX program.
+ * The second rung: ask the window of the VPX process `pid` to close. `mayClose` is asked before the script starts and
+ * again when it has listed and waits: the message follows that second answer at once. Windows only; never throws
+ * (what went wrong is the reason). The process is only ever asked, and only when it is a VPinballX program.
  */
-export async function askVpxWindowToClose(pid: number, script: WindowScript = powershellWindows): Promise<WindowAsk> {
+export async function askVpxWindowToClose(pid: number, mayClose: () => boolean = () => true, windows: WindowScript = powershellWindows): Promise<WindowAsk> {
+  if (!mayClose()) return { asked: false, held: true };
+  let run: WindowRun | null = null;
   try {
-    const listed = await script.list(pid);
-    if (!listed.vpx) return { asked: false, reason: 'that process is gone, or is not VPX' };
-    const target = pickCloseTarget(listed.windows);
-    if (!target) return { asked: false, reason: `VPX has no window to ask (${listed.windows.length} windows, none its main or player window)` };
-    const r = await script.close(pid, target.window.hwnd);
+    run = await windows.open(pid);
+    if (!run.vpx) return { asked: false, reason: 'that process is gone, or is not VPX' };
+    const target = pickCloseTarget(run.windows);
+    if (!target) return { asked: false, reason: `VPX has no window to ask (${run.windows.length} windows, none its main or player window)` };
+    // The script took its time to start; the answer that counts is the one of this moment.
+    if (!mayClose()) return { asked: false, held: true };
+    const posting = run.post(target.window.hwnd);
+    run = null;
+    const r = await posting;
     return r.posted ? { asked: true, kind: target.kind } : { asked: false, reason: r.why ?? 'unknown' };
   } catch (e) {
     return { asked: false, reason: e instanceof Error ? e.message : String(e) };
+  } finally {
+    run?.cancel();
   }
 }
 
 // ------------------------------------------------------------------------------------ the rungs --
 
 export type CloseOutcome =
-  /** The table is closed; `rung` is the request that was out when it went (1: `quit`, 2: the window). */
+  /** The process has ended; `rung` is the request that was out when it went (1: `quit`, 2: the window). */
   | { state: 'closed'; rung: 1 | 2 }
-  /** The third rung: the person closes it. `why` is for the log. */
-  | { state: 'ask'; why: string }
+  /** The third rung: the person closes it. `asked`: a request is out all the same (it may still be obeyed). `why` is for the log. */
+  | { state: 'ask'; why: string; asked: boolean }
   /** Nothing more was asked because the caller said the table may not be closed any more (a game started); `asked`: a request is already out. */
   | { state: 'held'; asked: boolean };
 
 export interface VpxCloserOptions {
   /**
-   * Rung 1: say `quit` to the Castcade VPX build that runs this table; false when the open table's VPX is not that
-   * build, or none is on the control connection.
+   * Rung 1: say `quit` to the Castcade VPX build that is the process `pid`; false when that process is not proven to
+   * be the build on the control connection (then nothing was sent).
    */
-  quitFork(): boolean;
-  /** Rung 2: ask the window of that process to close (`askVpxWindowToClose`). */
-  askWindow(pid: number): Promise<WindowAsk>;
-  /** The pid of the VPX whose table is open, as the witness knows it; null: not known. */
-  pid(): number | null;
-  /** Whether the table is still open (the witness's word). */
-  open(): boolean;
-  /** Called when the witness says something new, so `open()` is asked again. */
+  quitFork(pid: number): boolean;
+  /** Rung 2: ask the window of that process to close (`askVpxWindowToClose`); `mayClose` is asked again just before the message. */
+  askWindow(pid: number, mayClose: () => boolean): Promise<WindowAsk>;
+  /** Whether the process is still running, as the witness's process watch has it. */
+  alive(pid: number): boolean;
+  /** Called when the witness says something new (a process ended), so `alive` is asked again. */
   onChange(cb: () => void): () => void;
   log: { info(line: string): void; warn(line: string): void };
   forkQuitWaitMs?: number;
@@ -227,11 +333,11 @@ export interface VpxCloserOptions {
 
 export interface VpxCloser {
   /**
-   * Ask the open table's VPX to close, rung by rung, and say how it ended. `mayClose` is asked before every request:
-   * false (a game started meanwhile) and nothing more is asked. One close at a time: a second call while one runs
-   * gets the same answer. Never throws.
+   * Ask the VPX process `pid`, which holds `table`, to close, rung by rung, and say how it ended. `mayClose` is asked
+   * before every request: false (a game started meanwhile, the setting was switched off) and nothing more is asked.
+   * One close per process at a time: a second call while one runs gets the same answer. Never throws.
    */
-  close(table: string, mayClose?: () => boolean): Promise<CloseOutcome>;
+  close(table: string, pid: number, mayClose?: () => boolean): Promise<CloseOutcome>;
 }
 
 export function createVpxCloser(o: VpxCloserOptions): VpxCloser {
@@ -239,14 +345,15 @@ export function createVpxCloser(o: VpxCloserOptions): VpxCloser {
   const cancel = o.clearTimeout ?? ((h: unknown): void => clearTimeout(h as ReturnType<typeof setTimeout>));
   const quitWait = o.forkQuitWaitMs ?? FORK_QUIT_WAIT_MS;
   const closeWait = o.closeWaitMs ?? CLOSE_WAIT_MS;
-  let running: Promise<CloseOutcome> | null = null;
+  const running = new Map<number, Promise<CloseOutcome>>();
 
-  const run = (table: string, mayClose: () => boolean): Promise<CloseOutcome> =>
+  const run = (table: string, pid: number, mayClose: () => boolean): Promise<CloseOutcome> =>
     new Promise<CloseOutcome>((resolve) => {
       let done = false;
       let rung: 1 | 2 = 1;
       let asked = false;
       const timers: unknown[] = [];
+      let off: () => void = () => undefined;
       const finish = (r: CloseOutcome): void => {
         if (done) return;
         done = true;
@@ -254,45 +361,45 @@ export function createVpxCloser(o: VpxCloserOptions): VpxCloser {
         for (const t of timers) cancel(t);
         resolve(r);
       };
-      const check = (): void => {
-        if (done || o.open()) return;
-        o.log.info(`close: ${table} is closed (${rung === 1 ? 'the Castcade VPX build left on quit' : 'VPX closed when its window was asked'})`);
+      /** The process is gone: closed, whatever the witness still says of its table. */
+      const check = (): boolean => {
+        if (done) return true;
+        if (o.alive(pid)) return false;
+        o.log.info(asked ? `close: ${table} is closed: its VPX (pid ${pid}) has ended (${rung === 1 ? 'the Castcade VPX build left on quit' : 'it closed when its window was asked'})` : `close: the VPX that held ${table} (pid ${pid}) has ended by itself`);
         finish({ state: 'closed', rung });
+        return true;
       };
-      const off = o.onChange(check);
-      if (!o.open()) return finish({ state: 'closed', rung: 1 });
+      off = o.onChange(() => void check());
+      if (check()) return;
 
       /** Rung 3: from here it is the person's. */
       const ask = (why: string): void => {
-        if (done) return;
+        if (done || check()) return;
         o.log.warn(`close: ${table} is still open (${why}): the person is asked to close it; nothing is ended by force`);
-        finish({ state: 'ask', why });
+        finish({ state: 'ask', why, asked });
       };
       const window = async (): Promise<void> => {
-        if (done) return;
-        if (!o.open()) return check();
+        if (done || check()) return;
         if (!mayClose()) return finish({ state: 'held', asked });
-        const pid = o.pid();
-        if (pid === null) return ask('Castcade does not know which VPX process it is');
         rung = 2;
-        const r = await o.askWindow(pid);
-        if (done) return;
+        const r = await o.askWindow(pid, mayClose);
+        if (done || check()) return;
+        if (!r.asked && r.held) return finish({ state: 'held', asked });
         if (!r.asked) return ask(`its window could not be asked: ${r.reason}`);
         asked = true;
         o.log.info(`close: asked the ${r.kind === 'main' ? 'VPX window' : 'player window'} of ${table} to close (WM_CLOSE, pid ${pid})`);
-        check();
       };
 
       if (!mayClose()) return finish({ state: 'held', asked: false });
       // The whole wait counts from the first request, whichever it is.
       timers.push(later(() => ask(`${Math.round(closeWait / 1000)} s after it was asked to close`), closeWait));
-      if (o.quitFork()) {
+      if (o.quitFork(pid)) {
         asked = true;
-        o.log.info(`close: quit sent to the Castcade VPX build that runs ${table}`);
+        o.log.info(`close: quit sent to the Castcade VPX build that runs ${table} (pid ${pid})`);
         timers.push(
           later(() => {
-            if (done) return;
-            o.log.info(`close: the Castcade VPX build is still open ${Math.round(quitWait / 1000)} s after quit (a build from before the line ignores it): its window is asked`);
+            if (done || check()) return;
+            o.log.info(`close: the Castcade VPX build is still running ${Math.round(quitWait / 1000)} s after quit (a build from before the line ignores it): its window is asked`);
             void window();
           }, quitWait),
         );
@@ -300,12 +407,13 @@ export function createVpxCloser(o: VpxCloserOptions): VpxCloser {
     });
 
   return {
-    close(table, mayClose = () => true) {
-      if (running) return running;
-      const mine = run(table, mayClose).finally(() => {
-        if (running === mine) running = null;
+    close(table, pid, mayClose = () => true) {
+      const now = running.get(pid);
+      if (now) return now;
+      const mine = run(table, pid, mayClose).finally(() => {
+        if (running.get(pid) === mine) running.delete(pid);
       });
-      running = mine;
+      running.set(pid, mine);
       return mine;
     },
   };

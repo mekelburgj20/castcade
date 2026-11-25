@@ -50,7 +50,7 @@ function rig(start: { name: string; sha: string } | null = null) {
   const eventCbs = new Set<(e: Feed) => void>();
   let table = start;
   let inGame = false;
-  const status = (): WStatus => ({ paired: false, currentTable: table?.name ?? null, currentIdentity: table ? { sha256: table.sha, tableInfo: null } : null, currentAttestation: null, captureMode: table ? 'live' : null, note: null }) as unknown as WStatus;
+  const status = (): WStatus => ({ paired: false, currentTable: table?.name ?? null, currentIdentity: table ? { sha256: table.sha, tableInfo: null } : null, currentAttestation: null, captureMode: table ? 'live' : null, gamesSeen: table ? true : null, currentPid: table ? 4242 : null, vpxOpen: table ? 1 : 0, note: null }) as unknown as WStatus;
   const say = (): void => statusCbs.forEach((cb) => cb(status()));
   const feed = (ev: Feed): void => {
     if (ev.kind === 'game_start') inGame = true;
@@ -79,6 +79,8 @@ function rig(start: { name: string; sha: string } | null = null) {
 }
 
 const dirs: string[] = [];
+/** The user data folder of each Castcade made in a test, by its name. */
+const folders = new Map<string, string>();
 const hosts: MatchHost[] = [];
 const steps: Array<{ stop(): void }> = [];
 afterEach(async () => {
@@ -87,9 +89,11 @@ afterEach(async () => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
-function make(name: string, w: WitnessHost): MatchHost {
-  const dir = mkdtempSync(join(tmpdir(), `castcade-change-${name}-`));
-  dirs.push(dir);
+/** A Castcade on a rig; `at`: the user data folder of an earlier one (the same PC after a restart). */
+function make(name: string, w: WitnessHost, at?: string): MatchHost {
+  const dir = at ?? mkdtempSync(join(tmpdir(), `castcade-change-${name}-`));
+  if (!at) dirs.push(dir);
+  folders.set(name, dir);
   const logger = { info: () => undefined, warn: () => undefined, error: () => undefined, file: '' } as unknown as Logger;
   const mh = createMatchHost({
     file: join(dir, 'match.json'),
@@ -98,6 +102,8 @@ function make(name: string, w: WitnessHost): MatchHost {
     device: () => ({ deviceId: `dev-${name}`, deviceLabel: name }),
     appVersion: '0.2.50',
     log: logger,
+    // A18: no grace: a dropped link counts at once (the restart case below).
+    disconnectGraceMs: 0,
     publicIp: () => Promise.resolve('127.0.0.1'),
     lockFile: join(dir, 'lock', 'turn.lock'),
     listenAddress: '127.0.0.1',
@@ -133,7 +139,7 @@ function oneStepOn(mh: MatchHost, r: ReturnType<typeof rig>, tables: KnownTable[
         return { ok: true, pid: 1 };
       },
     },
-    closer: { close: (table) => new Promise<CloseOutcome>(() => void closes.push(table)) },
+    closer: { close: (table, _pid) => new Promise<CloseOutcome>(() => void closes.push(table)) },
     clipboard: { writeText: () => undefined },
     tables: async () => tables,
     hostHashWaitMs: 0,
@@ -157,7 +163,7 @@ async function lobby() {
   await ho.one.host({ tablePath: null, startTable: false, port: 0, ballsPerGame: 3, displayName: 'Owner' });
   const s = await co.one.openLink(ho.one.status().link!, { trusted: true });
   expect(s.notice).toBeNull();
-  await until(() => C.lobbyTable()?.tableName === 'Monster Bash');
+  await until(() => C.lobbyTable()?.game.tableName === 'Monster Bash');
   await until(() => co.one.status().launch.state === 'running');
   return { hr, cr, H, C, ho, co };
 }
@@ -165,8 +171,12 @@ async function lobby() {
 describe("the lobby's table over real match hosts: what one-step follows is the pick (A17 step 3)", () => {
   it("the pick is the first table the lobby's PC has open, on both PCs; a table open at the join is kept", async () => {
     const { H, C, ho, co } = await lobby();
-    expect(H.lobbyTable()).toMatchObject({ tableName: 'Monster Bash', tableHash: MB_SHA });
-    expect(C.lobbyTable()).toMatchObject({ tableName: 'Monster Bash', tableHash: MB_SHA });
+    expect(H.lobbyTable()).toMatchObject({ game: { tableName: 'Monster Bash', tableHash: MB_SHA } });
+    expect(C.lobbyTable()).toMatchObject({ game: { tableName: 'Monster Bash', tableHash: MB_SHA } });
+    // Each PC's stay in the lobby has a name of its own, which stands while nothing is joined again.
+    const stay = C.lobbyTable()?.joined;
+    expect(typeof stay).toBe('string');
+    expect(C.lobbyTable()?.joined).toBe(stay);
     expect(co.one.status().launch.detail).toBe('Using the table that is already open: mb_vpw_1.1');
     expect(co.launched).toEqual([]);
     expect([...ho.closes, ...co.closes]).toEqual([]);
@@ -185,8 +195,8 @@ describe("the lobby's table over real match hosts: what one-step follows is the 
     // The lobby hears of the other table (the row of the lobby's PC), and the pick stands.
     await until(() => H.hostGame()?.tableName === 'Attack from Mars');
     await sleep(200);
-    expect(H.lobbyTable()?.tableName).toBe('Monster Bash');
-    expect(C.lobbyTable()?.tableName).toBe('Monster Bash');
+    expect(H.lobbyTable()?.game.tableName).toBe('Monster Bash');
+    expect(C.lobbyTable()?.game.tableName).toBe('Monster Bash');
     expect([...ho.closes, ...co.closes]).toEqual([]);
     expect(co.launched).toEqual([]);
     expect(co.one.status().change).toBeNull();
@@ -200,8 +210,8 @@ describe("the lobby's table over real match hosts: what one-step follows is the 
     await until(() => C.status().phase === 'playing' && H.status().phase === 'playing');
     // The match's table is its first player's open one (MATCH_READY.game): the friend's file name.
     expect(C.hostGame()?.tableName).toBe('mb_vpw_1.1');
-    expect(C.lobbyTable()?.tableName).toBe('Monster Bash');
-    expect(H.lobbyTable()?.tableName).toBe('Monster Bash');
+    expect(C.lobbyTable()?.game.tableName).toBe('Monster Bash');
+    expect(H.lobbyTable()?.game.tableName).toBe('Monster Bash');
     await sleep(200);
     expect([...ho.closes, ...co.closes]).toEqual([]);
     expect([...ho.launched, ...co.launched]).toEqual([]);
@@ -209,4 +219,33 @@ describe("the lobby's table over real match hosts: what one-step follows is the 
     expect(ho.one.status().change).toBeNull();
     expect(co.one.status().launch.state).toBe('running');
   });
+
+  it("the lobby's PC starts again with another table open: the lobby it opens again has a pick of its own, the friend comes back by itself, and nobody picked anything, so the friend's table is not closed (review of PR 137, finding 1)", async () => {
+    const { hr, H, C, co } = await lobby();
+    const stayBefore = C.lobbyTable()?.joined;
+    // A match is open, so the lobby's PC has a record to come back with.
+    await C.start({ anyway: true });
+    await until(() => C.status().phase === 'playing' && H.status().phase === 'playing');
+    const code = H.status().code;
+    // Castcade on the lobby's PC closes (a crash, an update), and its owner opens another table meanwhile.
+    await H.stop({ keepForRestart: true });
+    hr.close();
+    hr.open('Attack from Mars', AFM_SHA);
+    const H2 = make('host', hr.w, folders.get('host'));
+    await H2.rejoin();
+    expect(H2.status()).toMatchObject({ role: 'host', code, phase: 'lobby' });
+    // The friend finds the lobby again and joins it as a newcomer: the same code, and a table that was never picked.
+    await until(() => H2.status().participants.length === 2 && C.status().phase === 'lobby' && C.status().lobby?.hostAway === null, 20_000);
+    await until(() => C.lobbyTable()?.game.tableName === 'Attack from Mars');
+    await sleep(300);
+    // A rejoin is a join: the table that is open is kept, whatever the lobby's table is now.
+    expect(co.closes).toEqual([]);
+    expect(co.launched).toEqual([]);
+    expect(co.one.status().change).toBeNull();
+    expect(co.logs.filter((l) => /the lobby's table changed/.test(l))).toEqual([]);
+    expect(co.logs.some((l) => /this PC joined the lobby again; the lobby's table is Attack from Mars \(it was Monster Bash\)/.test(l))).toBe(true);
+    expect(C.lobbyTable()?.joined).not.toBe(stayBefore);
+    // The lobby's own PC: a new lobby object, a new stay, and its own table is its pick.
+    expect(H2.lobbyTable()).toMatchObject({ game: { tableName: 'Attack from Mars' } });
+  }, 60_000);
 });

@@ -50,7 +50,7 @@ import {
 } from './updater.js';
 import { APP_USER_MODEL_ID, ensureStartMenuShortcut } from './start-menu.js';
 import { createResumeStore, RESUME_FILE, resumeFreshness } from './match-resume.js';
-import { createPowershellLister, isForkExe, isVpxExe } from '../witness/process-watch.js';
+import { createPowershellLister, isVpxExe } from '../witness/process-watch.js';
 import { collectLogBundle } from '../witness/log-bundle.js';
 import { createWitnessHost, needsWitnessRestart, type WitnessHost } from './witness-host.js';
 import { smokeJournalPipe, startJournalPipe, type JournalPipe } from '../witness/journal-pipe.js';
@@ -1127,15 +1127,25 @@ async function main(): Promise<void> {
         io: { read: () => (existsSync(hashesFile) ? readFileSync(hashesFile, 'utf8') : null), write: (text) => writeFileSync(hashesFile, text) },
       });
       // A17 step 3: a table that is open and wrong is asked to close, never ended: the Castcade VPX build by `quit`
-      // on its control connection (only when the open table's VPX is that build), any other VPX by its window.
+      // on its control connection (only when that build is proven to be the process asked about), any other VPX by
+      // its window. The process is the one one-step names (the witness's, for the table); it is closed when the
+      // witness's process watch has seen it end.
       const forkQuit = stream3d;
       const mh = matchHost;
       const closer = createVpxCloser({
-        quitFork: () => isForkExe(host.vpxRunningExe?.() ?? null) && (forkQuit?.quitFork() ?? false),
-        askWindow: (pid) => askVpxWindowToClose(pid),
-        pid: () => host.vpxPid?.() ?? null,
-        open: () => host.status().currentTable !== null,
-        onChange: (cb) => host.onStatus(() => cb()),
+        quitFork: (pid) => forkQuit?.quitFork(pid) ?? false,
+        askWindow: (pid, mayClose) => askVpxWindowToClose(pid, mayClose),
+        alive: (pid) => host.vpxAlive?.(pid) ?? true,
+        onChange: (cb) => {
+          const offStatus = host.onStatus(() => cb());
+          const offExit = host.onEvent((e) => {
+            if (e.kind === 'table_exit') cb();
+          });
+          return () => {
+            offStatus();
+            offExit();
+          };
+        },
         log: logger,
       });
       oneStep = createOneStep({

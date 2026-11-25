@@ -28,7 +28,7 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import { createServer, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { win32 } from 'node:path';
-import { askVpxWindowToClose, powershellWindows } from '../src/launch/vpx-close.js';
+import { askVpxWindowToClose, powershellWindows, type VpxProcessWindow } from '../src/launch/vpx-close.js';
 import { forkMatchEnv } from '../src/launch/vpx-launch.js';
 import { isForkExe, isVpxExe } from '../src/witness/process-watch.js';
 
@@ -43,7 +43,21 @@ const stop = (line: string): never => {
   process.exit(2);
 };
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
-const running = (image: string): boolean => /\.exe/i.test(spawnSync('tasklist', ['/FI', `IMAGENAME eq ${image}`, '/NH'], { encoding: 'utf8' }).stdout ?? '');
+/**
+ * The image names of every running process, whole. `tasklist`'s table cuts a name at 25 characters and its CSV does
+ * not (`VPinballX_GL64_castcade.exe` has 27). An empty list means the listing failed, which is a reason to stop.
+ */
+const images = (): string[] =>
+  (spawnSync('tasklist', ['/FO', 'CSV', '/NH'], { encoding: 'utf8' }).stdout ?? '')
+    .split(/\r?\n/)
+    .map((line) => /^"([^"]+)"/.exec(line)?.[1] ?? '')
+    .filter((name) => name !== '');
+/** The windows of a process as the app's own script lists them; the run is ended with nothing asked. */
+const windowsOf = async (process: number): Promise<VpxProcessWindow[]> => {
+  const run = await powershellWindows.open(process);
+  run.cancel();
+  return run.windows;
+};
 const written = (file: string | null): string | null => (file && existsSync(file) ? statSync(file).mtime.toISOString() : null);
 
 const exe = opt('exe') ?? stop('--exe "<VPinballX exe>" is missing');
@@ -52,8 +66,12 @@ const nvram = opt('nvram');
 const seconds = Math.max(5, Number(opt('seconds') ?? 30) || 30);
 if (!win32.isAbsolute(exe) || !isVpxExe(exe) || !existsSync(exe)) stop(`not a VPinballX exe that exists: ${exe}`);
 if (!win32.isAbsolute(table) || !/\.vpx$/i.test(table) || !existsSync(table)) stop(`not a table file that exists: ${table}`);
-if (running(win32.basename(exe))) stop(`${win32.basename(exe)} is already running: close every VPX first`);
-if (running('Castcade.exe') && !args.includes('--allow-companion')) stop('Castcade is running: quit it from the tray first (or pass --allow-companion: it then takes this run for a real game)');
+const runningNow = images();
+if (runningNow.length === 0) stop('the list of running programs could not be read (tasklist): nothing is started');
+// Any VPX at all, under whatever name it runs: a second VPX would take the headset, and two VPinMAME would write one .nv.
+const vpxRunning = [...new Set(runningNow.filter((name) => /^VPinballX/i.test(name)))];
+if (vpxRunning.length > 0) stop(`VPX is already running (${vpxRunning.join(', ')}): close every VPX first`);
+if (runningNow.some((name) => /^Castcade\.exe$/i.test(name)) && !args.includes('--allow-companion')) stop('Castcade is running: quit it from the tray first (or pass --allow-companion: it then takes this run for a real game)');
 
 const freePort = (): Promise<number> =>
   new Promise((resolve, reject) => {
@@ -102,7 +120,7 @@ const loadBy = Date.now() + 240_000;
 for (;;) {
   if (exit) stop(`VPX ended by itself before the table was open (exit ${String((exit as { code: number | null }).code)})`);
   if (Date.now() > loadBy) stop('the table did not open in 4 minutes; VPX is left as it is');
-  if (fork ? hello !== null : (await powershellWindows.list(pid)).windows.some((w) => /^Visual Pinball(?: X)? Player\b/i.test(w.title))) break;
+  if (fork ? hello !== null : (await windowsOf(pid).catch(() => [])).some((w) => /^Visual Pinball(?: X)? Player\b/i.test(w.title))) break;
   await sleep(3_000);
 }
 say(`the table is open. It is asked to close in ${seconds} s: start a game and score now, if the question is whether a high score survives`);
@@ -115,7 +133,7 @@ if (fork) {
   say(sent ? 'control > quit' : 'quit could not be sent: the control connection is gone');
 } else {
   const r = await askVpxWindowToClose(pid);
-  say(r.asked ? `asked the ${r.kind === 'main' ? 'VPX main window' : 'player window'} to close (WM_CLOSE)` : `the window could not be asked: ${r.reason}`);
+  say(r.asked ? `asked the ${r.kind === 'main' ? 'VPX main window' : 'player window'} to close (WM_CLOSE)` : `the window could not be asked: ${r.held ? 'held' : r.reason}`);
 }
 
 // 30 s for it to leave (the app asks the person after 15 s). A dialog on the way is said; nothing is ended.
@@ -123,7 +141,7 @@ const leaveBy = askedAt + 30_000;
 while (!exit && Date.now() < leaveBy) {
   await sleep(2_000);
   if (exit) break;
-  const dialogs = (await powershellWindows.list(pid).catch(() => ({ vpx: false, windows: [] }))).windows.filter((w) => w.visible && w.className === '#32770');
+  const dialogs = (await windowsOf(pid).catch(() => [])).filter((w) => w.visible && w.className === '#32770');
   for (const d of dialogs) say(`VPX shows a dialog: "${d.title}" (NOT a clean exit: say which one)`);
 }
 const after = written(nvram);

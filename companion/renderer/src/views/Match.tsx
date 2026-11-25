@@ -836,9 +836,9 @@ export function Match({ state }: { state: CastcadeState }) {
               <option value="off">Ask me first</option>
             </select>
             <small>
-              Change tables for me: Castcade closes the table that is open on this PC and opens your copy of the new one. Never during a game, and never a
-              table that is not imported: you are asked to close that one yourself. Ask me first: the Match tab shows the new table with an Open it button
-              and nothing closes by itself.
+              Change tables for me: Castcade closes the table that is open on this PC and opens your copy of the new one. Never during a game, and never
+              when it cannot be sure that no game is on (a table that is not imported, two VPX open): then you are asked to close the table yourself. Ask me
+              first: the Match tab shows the new table with an Open it button and nothing closes by itself.
             </small>
           </label>
           <label className="field">

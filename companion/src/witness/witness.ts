@@ -528,6 +528,10 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     captureMode: null,
     ballEnds: null,
     ballEndsNote: null,
+    gamesSeen: null,
+    currentPid: null,
+    currentVpxExe: null,
+    vpxOpen: 0,
     attempt: null,
     attemptStart: null,
     patchNow: null,
@@ -880,6 +884,15 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     const liveBallEnds = following ? (active?.live?.ballEnds ?? null) : null;
     status.ballEnds = !active ? null : following ? liveBallEnds : false;
     status.ballEndsNote = liveBallEnds === false ? (active?.live?.noBallEnds ?? null) : null;
+    // A17 step 3: would a game on this table be seen? Only with evidence: this process's `table_loaded` was read, the
+    // ball ends are (so the game's start and end are: a Stern SAM machine names its start late and has none), and for
+    // an original the import manifest says the patch is whole (a partial one may journal no game start at all).
+    const live = active?.live ?? null;
+    const wholePatch = live !== null && (live.recipe === 'A' || (live.manifest !== null && (live.manifest.partial ?? []).length === 0));
+    status.gamesSeen = !active ? null : following && live !== null && live.accepted && live.recipe !== null && liveBallEnds === true && wholePatch;
+    status.currentPid = active?.launch.pid ?? null;
+    status.currentVpxExe = active?.launch.exe ?? null;
+    status.vpxOpen = sessions.size;
     // C11: the open table is in basic mode and the import would patch it: Status offers Patch now.
     status.patchNow = active && !active.live && active.patchablePath && active.launch.table ? { table: active.launch.table, vpxPath: active.patchablePath } : null;
   };
@@ -2050,7 +2063,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     const drained = !!session?.live;
     if (session?.live) await readToEnd(session, session.live);
     const durationSec = Math.max(0, Math.round((exitedAt - launch.seenAt) / 1000));
-    emitter.emit('exit', { table: launch.table, at: iso(exitedAt), durationSec });
+    emitter.emit('exit', { table: launch.table, at: iso(exitedAt), durationSec, pid: launch.pid });
 
     if (session) await stopLive(session, drained);
     if (session?.live && session.live.captures === 0) {
@@ -2242,6 +2255,16 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
         `witness: ${live.tableId}: score ${score} ${check.qualifies ? 'makes' : 'does not make'} the machine's high-score list (${check.listed ? 'already on it' : `lowest entry ${check.lowest ?? '?'}`})`,
       );
       return check.qualifies;
+    },
+
+    // A17 step 3: the session map itself: a process is dropped from it at the top of `onExit`.
+    holdsVpx: (pid) => sessions.has(pid),
+
+    // A17 step 3: the same check, with "no list to compare with" kept apart from "does not qualify".
+    highScoreKnown(score) {
+      const live = activeSession()?.live;
+      if (!live || !live.accepted) return null;
+      return live.detector.highScoreCheck(score)?.qualifies ?? null;
     },
 
     // B26.4: asked by the match host at host / join and on every status update.

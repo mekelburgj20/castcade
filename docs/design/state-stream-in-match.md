@@ -181,16 +181,27 @@ Added with the fork's fix round (2026-11-19):
 
 Added with the lobby's table change (A17 step 3, 2026-11-25; `companion/src/launch/vpx-close.ts`):
 
-17. `quit` closes the fork's table and then VPX, the way the exit button held down does
-    (`VPinball::QuitPlayer(CS_CLOSE_APP)`): the player closes in its own frame loop, so the table's Exit event
-    fires and a ROM table's VPinMAME stops and writes its NVRAM; a fork that is watching gets its own table back
-    first, as at any close. No answer is sent: the control connection ends with the process. Of several commands
-    in one read a `quit` is the one acted on. A fork from before the line ignores it (rule 13) and stays open:
-    the companion waits 6 s, then asks VPX's window to close (`WM_CLOSE`), as it does for a VPX that is not the
-    fork, and 15 s after the first request it asks the person. Nothing ever ends the process by force. The
-    companion sends `quit` only to the fork whose table the witness names as open, and only when no game, no
-    game's ending and no initials entry is on it (`main/one-step.ts`). **Not run on a rig yet**: the fork half
-    was compiled, and the companion half is tested against a scripted fork.
+17. `quit` closes the fork's table and then VPX, the way the exit button held down does. The fork calls
+    `m_player->SetCloseState(Player::CS_CLOSE_APP)`, the close state `PinInput::ButtonExit` asks for through
+    `VPinball::QuitPlayer`: the player closes in its own frame loop, so the table's Exit event fires and a ROM
+    table's VPinMAME stops and writes its NVRAM; a fork that is watching gets its own table back first, as at
+    any close. No answer is sent: the control connection ends with the process. Of several commands in one read
+    a `quit` is the one acted on. A fork from before the line ignores it (rule 13) and stays open: the companion
+    waits 6 s, then asks VPX's main window to close (`WM_CLOSE`), as it does for a VPX that is not the fork, and
+    15 s after the first request it asks the person. Nothing ever ends the process by force.
+
+    What the companion checks before it sends `quit` (as built after the review of PR #137):
+    - the process asked to close is the one VPX the witness holds, the one it names the open table from; with
+      two VPX open, or none it can name, nothing is sent and the person is asked;
+    - the fork on the control connection is that same process: Castcade started it (the launch's pid is kept,
+      `ForkLaunch.spawned`) and its `hello` names the stream port that start asked for (rule 9). A fork started
+      by hand, or by an earlier run of Castcade, is not known to be it: no `quit`, its window is asked instead;
+    - the witness has evidence that a game on that table would be seen (`WitnessStatus.gamesSeen`), and no game,
+      no game's ending and no initials entry is on it (`main/one-step.ts`).
+
+    The fork's side is on `castcade/quit-line` only, in no tester zip: until a build with it ships, every fork
+    gets the 6 s and then the window. **Not run on a rig yet**: the fork half was compiled, and the companion
+    half is tested against a scripted fork.
 
 That review found three defects in getting the own game back that the swap test could not see (a lamp's
 second stored state left at the file's value, so the first light sequence after a watched turn switched the

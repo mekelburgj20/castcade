@@ -252,10 +252,13 @@ export interface Stream3dHost {
 export interface ForkQuit {
   /**
    * Rung 1: the line `quit` to the Castcade VPX build on the control connection: it closes its table and exits the
-   * way its held exit button does (§3). False when no build is connected. A build from before the line ignores it
-   * (rule 13) and stays open: the caller asks its window next.
+   * way its held exit button does (§3). Only when that build is proven to be the process `pid`: Castcade started it
+   * (`ForkLaunch.spawned`) and the `hello` on the connection names the stream port that start asked for. False, and
+   * nothing sent, for anything else: no build connected, a build started by hand or by an earlier run of Castcade,
+   * another process. A build from before the line ignores it (rule 13) and stays open: the caller asks its window
+   * next, as it does when this answers false.
    */
-  quitFork(): boolean;
+  quitFork(pid: number): boolean;
 }
 
 /** A17 step 3: the control line that closes the Castcade VPX build's table and the program with it. */
@@ -319,6 +322,8 @@ export function createStream3dHost(o: Stream3dHostOptions): Stream3dHost & ForkQ
     awaited = mine;
     return { objects, gone: () => mine.tell(null) };
   };
+  /** A17 step 3: the process of each start in the fork that is still running, by the stream port that start asked for. */
+  const startedPids = new Map<number, number>();
   const names = new Map<string, string>();
   const listeners = new Set<() => void>();
   let queued = false;
@@ -571,6 +576,7 @@ export function createStream3dHost(o: Stream3dHostOptions): Stream3dHost & ForkQ
           what: 'for the match, in the Castcade VPX build',
           onExit: (code) => {
             info(`stream3d: the match table's VPX closed (exit ${code ?? 'unknown'})`);
+            startedPids.delete(streamPort);
             start.ended();
             said.gone();
             machine.forkGone();
@@ -578,11 +584,13 @@ export function createStream3dHost(o: Stream3dHostOptions): Stream3dHost & ForkQ
         },
         didNotStart: start.didNotStart,
         notStarted: () => {
+          startedPids.delete(streamPort);
           start.ended();
           said.gone();
           machine.forkGone();
         },
         objects: said.objects,
+        spawned: (pid) => void startedPids.set(streamPort, pid),
       };
     },
 
@@ -734,10 +742,15 @@ export function createStream3dHost(o: Stream3dHostOptions): Stream3dHost & ForkQ
 
     controlPort: async () => (await ensureControl()).port,
 
-    quitFork() {
+    quitFork(pid) {
       if (stopped || !conn) return false;
+      // The build on the connection is that process only when its hello names the stream port Castcade gave that start.
+      if (connPort === null || startedPids.get(connPort) !== pid) {
+        info(`stream3d: quit is not sent: the Castcade VPX build on the control port is not known to be the VPX that is asked to close (pid ${pid}); its window is asked instead`);
+        return false;
+      }
       const sent = conn.send(QUIT_COMMAND);
-      info(sent ? 'stream3d: quit sent to the Castcade VPX build on the control port (it closes its table and exits; a build from before the line ignores it)' : 'stream3d: quit could not be sent: the control connection is gone');
+      info(sent ? `stream3d: quit sent to the Castcade VPX build on the control port (pid ${pid}; it closes its table and exits; a build from before the line ignores it)` : 'stream3d: quit could not be sent: the control connection is gone');
       return sent;
     },
 
