@@ -248,6 +248,19 @@ export interface Stream3dHost {
   stop(): Promise<void>;
 }
 
+/** A17 step 3: what the shell's table closer (`launch/vpx-close.ts`) asks of the control connection. The match host never does. */
+export interface ForkQuit {
+  /**
+   * Rung 1: the line `quit` to the Castcade VPX build on the control connection: it closes its table and exits the
+   * way its held exit button does (§3). False when no build is connected. A build from before the line ignores it
+   * (rule 13) and stays open: the caller asks its window next.
+   */
+  quitFork(): boolean;
+}
+
+/** A17 step 3: the control line that closes the Castcade VPX build's table and the program with it. */
+export const QUIT_COMMAND = 'quit';
+
 const describe = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
 /** The control port a ports file names (the file of an earlier build also named a stream port: not read any more). */
@@ -261,7 +274,7 @@ function savedControlPort(text: string | null): number | null {
   }
 }
 
-export function createStream3dHost(o: Stream3dHostOptions): Stream3dHost {
+export function createStream3dHost(o: Stream3dHostOptions): Stream3dHost & ForkQuit {
   const info = (line: string): void => o.log.info(line);
   /** The fork on the control connection (it said `hello`), and the stream port that `hello` named. */
   let conn: ControlConnection | null = null;
@@ -720,6 +733,13 @@ export function createStream3dHost(o: Stream3dHostOptions): Stream3dHost {
     },
 
     controlPort: async () => (await ensureControl()).port,
+
+    quitFork() {
+      if (stopped || !conn) return false;
+      const sent = conn.send(QUIT_COMMAND);
+      info(sent ? 'stream3d: quit sent to the Castcade VPX build on the control port (it closes its table and exits; a build from before the line ignores it)' : 'stream3d: quit could not be sent: the control connection is gone');
+      return sent;
+    },
 
     async stop() {
       stopped = true;

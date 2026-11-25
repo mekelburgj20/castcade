@@ -127,6 +127,7 @@ ending in `\n`.
 | fork → companion | `state failed <reason>` | a `watch` did not work (refused, no answer in 10 s); followed by `state playing` |
 | companion → fork | `watch <host>:<port>` | watch the stream at that address; a second `watch` re-aims (the next player is up) |
 | companion → fork | `play` | come back to the own table |
+| companion → fork | `quit` | close this table and VPX with it (rule 17; fork branch `castcade/quit-line`) |
 
 An older fork build ignores `CASTCADE_STREAM=match` (no session: plain VPX), so no control connection ever
 arrives; the companion then treats that PC as having no 3D (§4.2).
@@ -177,6 +178,19 @@ Added with the fork's fix round (2026-11-19):
     no stray fall-back.
 16. A `watch` with no address is an unknown line (rule 13: no answer). A `watch` whose address is not
     loopback, has no port or port 0 is answered `state failed badaddress`, then `state playing`.
+
+Added with the lobby's table change (A17 step 3, 2026-11-25; `companion/src/launch/vpx-close.ts`):
+
+17. `quit` closes the fork's table and then VPX, the way the exit button held down does
+    (`VPinball::QuitPlayer(CS_CLOSE_APP)`): the player closes in its own frame loop, so the table's Exit event
+    fires and a ROM table's VPinMAME stops and writes its NVRAM; a fork that is watching gets its own table back
+    first, as at any close. No answer is sent: the control connection ends with the process. Of several commands
+    in one read a `quit` is the one acted on. A fork from before the line ignores it (rule 13) and stays open:
+    the companion waits 6 s, then asks VPX's window to close (`WM_CLOSE`), as it does for a VPX that is not the
+    fork, and 15 s after the first request it asks the person. Nothing ever ends the process by force. The
+    companion sends `quit` only to the fork whose table the witness names as open, and only when no game, no
+    game's ending and no initials entry is on it (`main/one-step.ts`). **Not run on a rig yet**: the fork half
+    was compiled, and the companion half is tested against a scripted fork.
 
 That review found three defects in getting the own game back that the swap test could not see (a lamp's
 second stored state left at the file's value, so the first light sequence after a watched turn switched the
