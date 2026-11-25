@@ -462,8 +462,9 @@ export function Match({ state }: { state: CastcadeState }) {
             {st.transfer && <p className="warn">{transferLine(st.transfer)}</p>}
             {/* D10.8: which path the match control takes (a lobby says it in its own line). */}
             {!st.lobby && st.path && <p className="muted">{st.path}</p>}
-            {/* A17 step 9: a start that is announced says its own line beside its buttons (below): the same sentence is not said twice. */}
-            {panel?.message && !st.advisories.some((line) => panel.message?.includes(line)) && !(st.lobby?.start && panel.message === st.lobby.start.line) && (
+            {/* A17 step 9: a start that is announced says its own line beside its buttons (below): the same sentence is not said twice.
+                A line that sends the reader to this tab (the headset's "see the Match tab") is not shown on it: what it points at is at the top. */}
+            {panel?.message && !st.advisories.some((line) => panel.message?.includes(line)) && !(st.lobby?.start && panel.message === st.lobby.start.line) && !panel.message.endsWith('see the Match tab') && (
               <p className={panel.message.startsWith('different') || panel.message.includes('cannot report ball ends') || panel.message.startsWith('The lobby is closed') || panel.message.startsWith('The lobby is over') || st.lobby?.hostAway ? 'warn' : 'muted'}>{awayClock(st, panel.message, now)}</p>
             )}
             {/* B26: the Midnight Madness setting when it is ON on a table, and the balls of this game it ran on (a flag only). */}

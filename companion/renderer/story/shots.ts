@@ -55,7 +55,7 @@ export const SHEETS: Shot[] = [
   sheet('away', ['waited-for', 'away-question', 'host-away'], 1000),
   sheet('away-2', ['host-kept-quit', 'given-up-me', 'given-up-others'], 1100),
   sheet('table', ['table-changing', 'table-close-it', 'table-open-it'], 1000),
-  sheet('ask-1', ['four-player~Leave lobby', 'four-starter~Close lobby', 'game-waiting~Give up this game']),
+  sheet('ask-1', ['game-waiting~Leave lobby', 'four-starter~Close lobby', 'game-waiting~Give up this game']),
   sheet('ask-2', ['game-up~End my ball', 'game-owner~End match for everyone', 'game-owner~Pass the turn']),
   sheet('ask-3', ['waited-for~Play on without Chuck', 'between-newmatch~Start a new match', 'four-player~Change table…'], 1100),
 ];
@@ -107,7 +107,8 @@ export const SHOTS: Shot[] = [
   ...tab,
   ...panel,
   ...menus,
-  pressed('ask-leave', 'four-player', ['Leave lobby'], 'Leave lobby was pressed: the question'),
+  // A member who is not in a game leaves with one press; the question is asked of a player during their own game.
+  pressed('ask-leave', 'game-waiting', ['Leave lobby'], 'Leave lobby was pressed by a player of the game: the question'),
   pressed('ask-close', 'four-starter', ['Close lobby'], "Close lobby was pressed on the lobby's PC: the question"),
   pressed('ask-give-up', 'game-waiting', ['Give up this game'], 'Give up this game was pressed: the question'),
   pressed('ask-end-ball', 'game-up', ['End my ball'], 'End my ball was pressed: the question'),

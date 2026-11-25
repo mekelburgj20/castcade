@@ -109,13 +109,17 @@ const TABLES = ['Monster Bash (Williams 1998)', 'Congo (Williams 1995)', 'Attack
   imported: true,
 }));
 
-/** An API object: what it has, as given; any other call answers null; any other `onX` subscription is a no-op. */
-export const api = (o: Record<string, unknown>): Record<string, unknown> =>
+/**
+ * An API object: what it has, as given; any other call answers `other` (null unless given); any other `onX`
+ * subscription is a no-op. The match API answers its status to every call, as the real one does: a button pressed
+ * in a story leaves the tab as it is.
+ */
+export const api = (o: Record<string, unknown>, other: unknown = null): Record<string, unknown> =>
   new Proxy(o, {
     get(t, key: string) {
       if (key in t) return t[key];
       if (typeof key === 'string' && key.startsWith('on')) return () => () => undefined;
-      return () => Promise.resolve(null);
+      return () => Promise.resolve(other);
     },
   });
 export const ok =
@@ -132,7 +136,7 @@ export function installBridge(match: unknown, oneStep: unknown, o: { paired?: bo
     witness: api({ status: ok({ paired: o.paired !== false, running: true, currentTable: o.tableOpen ?? null }) }),
     settings: api({ get: ok({}) }),
     app: api({ versions: ok(null), logPath: ok('companion.log'), loginItem: api({ get: ok({ supported: false, openAtLogin: false }) }), clipboardText: ok('') }),
-    match: api({ status: ok(match), benchClips: ok([]) }),
+    match: api({ status: ok(match), benchClips: ok([]) }, match),
     launch: api({ status: ok(oneStep), tables: ok(TABLES), browse: ok([]), pick: ok(null) }),
     watch: api({ status: ok(WATCH), pickTable: ok(null) }),
   });
