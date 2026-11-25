@@ -837,6 +837,99 @@ describe('A17 step 1 (2026-11-24): the voice from the join on', () => {
   });
 });
 
+describe("A17 step 2 (2026-11-24): the controller's share of what ends with a match", () => {
+  /** Every `setSending` the media layer is given (the fake itself keeps changes only). */
+  const countSending = (s: Seat): { calls: boolean[] } => {
+    const calls: boolean[] = [];
+    const orig = s.media.setSending.bind(s.media);
+    s.media.setSending = (on: boolean): void => {
+      calls.push(on);
+      orig(on);
+    };
+    return { calls };
+  };
+
+  it('releaseMatch on a waiting player: the lock goes; the media stays attached with its peer and the role is still heard, so the turn still comes', async () => {
+    const s = await rig(3);
+    const sent = countSending(s.C);
+    s.host.start();
+    await flush();
+    expect(s.C.locks).toEqual(['lock']);
+    s.C.ctl.releaseMatch();
+    expect(s.C.locks).toEqual(['lock', 'unlock']);
+    expect(sent.calls).toEqual([false]);
+    // Nothing of the lobby: the page and its peer, the listeners.
+    expect(s.C.media.detached).toBe(false);
+    expect(s.C.media.added).toEqual(['h']);
+    expect(s.C.media.removed).toEqual([]);
+    // A second call finds nothing to let go.
+    s.C.ctl.releaseMatch();
+    expect(s.C.locks).toEqual(['lock', 'unlock']);
+    expect(sent.calls).toEqual([false]);
+    // The match goes on over the same role: the host's ball ends and the client's grant arrives.
+    s.H.ctl.feed({ kind: 'game_start', t: 0, players: 1 });
+    s.H.ctl.feed(scores(500));
+    s.H.ctl.feed(ballEnd(1));
+    s.H.ctl.feed(scores(500));
+    await flush();
+    expect(s.C.ctl.status()).toMatchObject({ phase: 'playing', myTurn: true, locked: false });
+    expect(sent.calls).toEqual([false, true]);
+
+    // close() after it: the lobby's share (the media is detached), and "not sending" is said once more only because
+    // a grant turned sending on since.
+    await s.C.ctl.close();
+    expect(s.C.media.detached).toBe(true);
+    expect(sent.calls).toEqual([false, true, false]);
+  });
+
+  it('releaseMatch on the player who is up: a ball end that waits for its bonus score is dropped and "sending" goes off; close() right behind it (a teardown) says nothing twice', async () => {
+    const s = await rig(3);
+    const sent = countSending(s.H);
+    s.host.start();
+    await flush();
+    s.H.ctl.feed({ kind: 'game_start', t: 0, players: 1 });
+    s.H.ctl.feed(scores(500));
+    s.H.ctl.feed(ballEnd(1));
+    expect(sent.calls).toEqual([true]);
+    expect(s.H.locks).toEqual(['lock', 'unlock']);
+    s.H.ctl.releaseMatch();
+    expect(sent.calls).toEqual([true, false]);
+    // The table was the player's own already: no lock call. The ball end's 2 s wait is gone: nothing is reported.
+    expect(s.H.locks).toEqual(['lock', 'unlock']);
+    s.clock.advance(5000);
+    await flush();
+    expect(s.host.state.currentGrant?.grant).toMatchObject({ player: 'h', ballNumber: 1 });
+    expect(s.H.media.detached).toBe(false);
+    await s.H.ctl.close();
+    expect(sent.calls).toEqual([true, false]);
+    expect(s.H.locks).toEqual(['lock', 'unlock']);
+    expect(s.H.media.detached).toBe(true);
+  });
+
+  it('close() alone is what it was: the lock off, "not sending" once, the media detached; in the lobby too, where the start countdown goes with it', async () => {
+    const s = await rig(3);
+    const sent = countSending(s.C);
+    s.host.start();
+    await flush();
+    await s.C.ctl.close();
+    expect(s.C.locks).toEqual(['lock', 'unlock']);
+    expect(sent.calls).toEqual([false]);
+    expect(s.C.media.detached).toBe(true);
+
+    // The lobby: a start is counting down on both panels; releaseMatch leaves it, close() ends it.
+    const l = await rig(3);
+    l.H.ctl.feed({ kind: 'game_start', t: 0, players: 1 });
+    await flush();
+    expect(headerText(l.C.media.panel)).toBe('STARTING IN 5');
+    l.C.ctl.releaseMatch();
+    expect(l.C.ctl.panel().countdown).toBe(5);
+    expect(l.C.media.detached).toBe(false);
+    await l.C.ctl.close();
+    expect(l.C.ctl.panel().countdown ?? null).toBeNull();
+    expect(l.C.media.detached).toBe(true);
+  });
+});
+
 describe('vrViewMode (D7.4, 2026-10-31)', () => {
   const at = (phase: PanelState['phase'], myTurn: boolean, playerUp: string | null) => ({ phase, myTurn, playerUp });
 

@@ -23,7 +23,7 @@ vi.mock('electron', () => {
   return { BrowserWindow, ipcMain: { on: () => undefined } };
 });
 
-const { ballEndsFrom, createMatchHost } = await import('./match-host.js');
+const { ballEndsFrom, createMatchHost, matchHalfOf } = await import('./match-host.js');
 const { createMediaSettingsStore } = await import('../media/media-settings.js');
 const { matchSignalling } = await import('./match-setup.js');
 const { startFakeRelay } = await import('../match/relay-fake.test-support.js');
@@ -1663,6 +1663,91 @@ describe('D10.8 (2026-11-12): match control through ArcAid, and the router port 
     same();
     expect(H.lines.concat(C.lines).filter((l) => l.includes('is being connected now'))).toHaveLength(2);
   }, 60_000);
+
+  it('A17 step 2 (2026-11-24): the match half leaves the voice, the video mesh, the overlay, the menu keys and the link to the host as they are, and ends what a match holds: the saved record, the lock, the table sound; leaving closes the rest', async () => {
+    const r = await fakeRelay();
+    /** A headset seat whose fakes record everything a teardown could touch. */
+    const seat = (name: string, id: 'h' | 'c', pid: number) => {
+      const page = { added: [] as string[], removed: [] as string[], sending: [] as boolean[] };
+      const m = fakeMedia();
+      const media = { ...m.media, addPeer: (p: string) => void page.added.push(p), removePeer: (p: string) => void page.removed.push(p), setSending: (on: boolean) => void page.sending.push(on) };
+      const o = fakeOverlay();
+      const audio = fakeAudio();
+      const video = stubHelper();
+      const keys = new Map<string, () => void>();
+      const shortcuts = { register: (acc: string, cb: () => void) => (keys.set(acc, cb), true), unregister: (acc: string) => void keys.delete(acc) };
+      const wit = { ...liveWitness(VR_ON, VR_OFF).w, vpxPid: () => pid } as unknown as WitnessHost;
+      const s = mk(name, {
+        ...paired(r, id),
+        witness: wit,
+        media: media as never,
+        vrOverlay: o.overlay,
+        tableAudio: audio.ta,
+        shortcuts,
+        signalling: (role: Parameters<typeof matchSignalling>[0], me: string) => matchSignalling(role, me),
+        nativeVideo: { helper: video.helper as never, sendRing: `${name}-send-ABCDEFG`, recvRing: `${name}-recv-ABCDEFG` },
+      });
+      return { ...s, page, calls: m.calls, o, audio, video, keys, resume: join(s.lock, '..', '..', 'match-resume.json') };
+    };
+    const H = seat('a17-2-host', 'h', 111);
+    const C = seat('a17-2-client', 'c', 222);
+    const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
+    await C.mh.join(hs.invite!, 'Krobs');
+    await until(() => H.mh.status().participants.length === 2);
+    await H.mh.start();
+    // The host has ball 1: the client waits, locked and muted, with everything a lobby holds up and running.
+    await until(() => C.mh.status().phase === 'playing' && C.mh.status().locked && C.audio.last()?.mutePid === 222);
+    await until(() => C.page.added.length === 1 && C.o.started.length === 1 && C.video.of('peer').length === 1);
+    expect(existsSync(C.lock)).toBe(true);
+    expect(existsSync(C.resume)).toBe(true);
+    expect(C.keys.size).toBeGreaterThan(0);
+    const before = { keys: [...C.keys.keys()].sort(), video: C.video.sent.length, sound: C.audio.wants.length, calls: [...C.calls] };
+
+    // The match half, alone. It has no caller in the app yet (step 7): until then a teardown always runs both.
+    const endMatch = matchHalfOf(C.mh);
+    expect(endMatch).not.toBeNull();
+    endMatch!();
+
+    // What ends with a match: the saved record, the turn lock, and the table sound is this rig's own again.
+    expect(existsSync(C.resume)).toBe(false);
+    expect(existsSync(C.lock)).toBe(false);
+    expect(C.audio.wants.slice(before.sound)).toEqual([{ mutePid: null, tapPid: null }]);
+    expect(C.page.sending).toEqual([false]);
+    // What the lobby holds is as it was: the voice (the page and its peer), the video mesh, the overlay, the keys.
+    expect(C.page).toMatchObject({ added: [H.mh.status().localId], removed: [] });
+    expect(C.calls).toEqual(before.calls);
+    expect(C.calls).not.toContain('detach');
+    expect(C.video.sent.length).toBe(before.video);
+    expect(C.video.of('close')).toEqual([]);
+    expect(C.o.stops()).toBe(0);
+    expect([...C.keys.keys()].sort()).toEqual(before.keys);
+    expect(C.mh.status()).toMatchObject({ role: 'client', phase: 'playing' });
+    // A second call finds nothing left to end.
+    endMatch!();
+    expect(C.page.sending).toEqual([false]);
+    expect(C.page.removed).toEqual([]);
+
+    // The link to the host, the engine and its listeners are the lobby's too: the match goes on over them, the
+    // client's turn comes, and the log that grows writes no record any more.
+    await H.mh.passTurn();
+    await until(() => C.mh.status().panel?.myTurn === true && C.mh.status().locked === false, 8000);
+    expect(existsSync(C.resume)).toBe(false);
+    expect(C.calls).not.toContain('detach');
+    expect(C.o.stops()).toBe(0);
+
+    // Leave: both halves, and now the lobby's share goes: the page is detached, the video peer closed, the overlay
+    // stopped, every key let go, and the host sees the player gone.
+    await C.mh.leave();
+    expect(C.calls.filter((c) => c === 'detach')).toHaveLength(1);
+    expect(C.video.of('close').map((c) => c.id)).toEqual([H.mh.status().localId]);
+    expect(C.o.stops()).toBe(1);
+    expect(C.keys.size).toBe(0);
+    expect(existsSync(C.lock)).toBe(false);
+    expect(C.mh.status()).toMatchObject({ role: 'none' });
+    await until(() => H.mh.status().panel?.players.find((p) => p.name === 'Krobs')?.flags.includes('disconnected') === true || H.mh.status().phase === 'over', 8000);
+    // A match host this module did not make has no halves.
+    expect(matchHalfOf({} as MatchHost)).toBeNull();
+  }, 30_000);
 
   it("A18: the player who is up loses the host for longer than the grace: the others wait, and on that player's own PC the table is never locked, its sound and its picture are never cut, through the pause it finds at its return", async () => {
     const r = await fakeRelay();

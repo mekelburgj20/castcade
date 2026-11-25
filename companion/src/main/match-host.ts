@@ -651,6 +651,16 @@ function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
   });
 }
 
+/**
+ * A17 step 2 (2026-11-24): the match half of a teardown by itself (`endMatchHalf`), for the tests that pin which half
+ * closes what. Kept off `MatchHost` on purpose: nothing in the app may end a match and keep its lobby before step 7
+ * gives that a meaning. Null for a `MatchHost` this module did not make.
+ */
+const MATCH_HALF = new WeakMap<MatchHost, () => void>();
+export function matchHalfOf(mh: MatchHost): (() => void) | null {
+  return MATCH_HALF.get(mh) ?? null;
+}
+
 export function createMatchHost(opts: MatchHostOptions): MatchHost {
   const { log, witness } = opts;
   const listeners = new Set<(s: MatchStatus) => void>();
@@ -2668,9 +2678,23 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       }
     });
 
-  /** Close everything a match holds: the overlay, the controller (the panel, the media), the engine(s), the sockets. A15: `keep`: its saved record stays. */
-  const teardown = async (a: Active, keep = false): Promise<void> => {
-    if (active === a) active = null;
+  /**
+   * A17 step 2 (2026-11-24, alpha-match.md §11.6): **what ends with a match.** The saved match (A15: its record, the
+   * hook that saves every log entry, the record's heartbeat; `keep`: the record stays for a restart), a client's
+   * linger after the series (A10), what the table said that this match's log never answered and the journal mark
+   * that goes with it (`TableBacklog`), this rig's table sound put back (D2.8, D2.10), and the controller's share
+   * (`releaseMatch`: the ball end that waits for its score, an initials hold, the turn lock, "this rig sends").
+   *
+   * Nothing the lobby holds is touched: the panel page and its voice peers, the native video mesh, the state stream's
+   * tunnels, the overlay, the in-game menu and its global keys, the lobby's peek timer, the engine and its listeners,
+   * the transport, the ArcAid room, the router port. Synchronous, and a second call changes nothing.
+   *
+   * Until the lobby outlives a match (step 7) it never runs alone: `teardown` is its one caller, with `closeLobbyHalf`
+   * right behind it. Against the one function this was, two things happen a moment sooner, with no `await` in
+   * between: the table sound is put back, and the lock goes, before the video mesh and the tunnels are closed and
+   * not after. With `active` already null the unlock is the plain one either way (`lock.unlock`).
+   */
+  const endMatchHalf = (a: Active, keep = false): void => {
     if (a.heartbeat) clearInterval(a.heartbeat);
     a.heartbeat = null;
     a.engine.session.onCommit = null;
@@ -2678,6 +2702,28 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     else dropRecord(a);
     if (a.endTimer) clearTimeout(a.endTimer);
     a.endTimer = null;
+    // A15: the table's events of this match, and where its journal stood, are no other match's.
+    a.backlog = new TableBacklog<GameEvent>(null, false);
+    a.mark = null;
+    a.hold = false;
+    a.reconcileDue = false;
+    a.savedTurnEnds = 0;
+    a.pendingExit = false;
+    // D2.8: this rig's table sounds again at once (the emit that follows would do it too, a moment later).
+    opts.tableAudio?.apply({ mutePid: null, tapPid: null });
+    opts.tableAudio?.unlevel();
+    tableLogged = '';
+    a.controller.releaseMatch();
+  };
+
+  /**
+   * A17 step 2 (2026-11-24, alpha-match.md §11.6): **what ends with the lobby**, which until step 7 is every time a
+   * match ends: the listeners on the engine and the transport, the in-game menu and its global keys, the lobby's peek
+   * timer, the native video mesh, the state stream's tunnels, the overlay, the controller (its `close()` detaches the
+   * media: the panel page and every voice connection), the engine(s), the transport, the ArcAid room and the router
+   * port. A15: `keep`: a host that closes to come straight back does not tell ArcAid it left.
+   */
+  const closeLobbyHalf = async (a: Active, keep = false): Promise<void> => {
     for (const off of a.offs) off();
     unregisterKeys();
     closeMenu();
@@ -2692,10 +2738,6 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     const stream = a.stream;
     a.stream = null;
     await stream?.close().catch((e: unknown) => log.warn(`stream3d: close: ${describeError(e)}`));
-    // D2.8: this rig's table sounds again at once (the emit that follows would do it too, a moment later).
-    opts.tableAudio?.apply({ mutePid: null, tapPid: null });
-    opts.tableAudio?.unlevel();
-    tableLogged = '';
     if (a.overlay) await a.overlay.stop().catch((e: unknown) => log.warn(`match: overlay stop: ${describeError(e)}`));
     const roles = new Set<{ close(): void }>([a.engine, a.controller.currentRole as HostMatch | ClientMatch]);
     await a.controller.close();
@@ -2712,6 +2754,18 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       const ok = await withTimeout(mapping.remove(), UNMAP_TIMEOUT_MS, 'the router did not answer').catch(() => false);
       log.info(`match: the router's mapping of TCP ${mapping.externalPort} ${ok ? 'was removed' : `could not be removed${mapping.leaseSeconds > 0 ? ` (its lease ends within ${mapping.leaseSeconds} s)` : ': remove it in the router'}`}`);
     }
+  };
+
+  /**
+   * Close everything a match holds: the overlay, the controller (the panel, the media), the engine(s), the sockets. A15:
+   * `keep`: its saved record stays. A17 step 2: in two halves, what ends with a match and what ends with the lobby;
+   * every caller still means both (Leave, the end of a client's series, a refused reconnect, a host that cannot
+   * listen, quit), so both run, one behind the other.
+   */
+  const teardown = async (a: Active, keep = false): Promise<void> => {
+    if (active === a) active = null;
+    endMatchHalf(a, keep);
+    await closeLobbyHalf(a, keep);
   };
 
   const leave = (): Promise<MatchStatus> =>
@@ -3035,6 +3089,9 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       cue.destroy();
     },
   };
+  MATCH_HALF.set(api, () => {
+    if (active) endMatchHalf(active);
+  });
   return api;
 }
 

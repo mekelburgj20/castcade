@@ -1006,14 +1006,18 @@ export class MatchController {
     }
   }
 
-  /** Unlock, stop sending, detach media, stop listening to the role. The caller closes the role and transport. */
-  async close(): Promise<void> {
-    if (this.closed) return;
-    this.closed = true;
+  /**
+   * A17 step 2 (2026-11-24, alpha-match.md §11.6): what this controller holds for a MATCH, let go: the ball end that
+   * waits for its bonus score, the STATE timer, a spent table game's unlock and an initials hold, the Midnight Madness
+   * lines' timers, the turn lock, and "this rig sends its picture". Nothing of the lobby: the media stays attached with
+   * its peers (the voice), the role is still listened to, the start countdown and the 3D wait are left alone. Until
+   * the lobby outlives a match (step 7) the only caller is the shell's teardown, with `close()` right behind it.
+   * Twice in a row does nothing the second time: every part is a no-op once done, and the media layer is told "not
+   * sending" once (`sendingOffSaid`).
+   */
+  releaseMatch(): void {
     this.clearPending();
     this.clearStateTimer();
-    this.clearCountdown();
-    this.clearWait3d();
     if (this.spentTimer !== null) this.opts.clearTimeout(this.spentTimer);
     this.spentTimer = null;
     this.spentUnlock = false;
@@ -1022,13 +1026,31 @@ export class MatchController {
     this.midnightTimer = null;
     if (this.midnightSettingTimer !== null) this.opts.clearTimeout(this.midnightSettingTimer);
     this.midnightSettingTimer = null;
+    this.setLocked(false);
+    if (this.opts.media && this.attached && !this.sendingOffSaid) {
+      this.sendingOffSaid = true;
+      this.opts.media.setSending(false);
+    }
+  }
+  /** A17 step 2: `releaseMatch` told the media layer "not sending", and no grant of this player's has turned it on since. */
+  private sendingOffSaid = false;
+
+  /** Unlock, stop sending, detach media, stop listening to the role. The caller closes the role and transport. */
+  async close(): Promise<void> {
+    if (this.closed) return;
+    this.closed = true;
+    // A17 step 2: the match's share first (done already when the shell's match half ran), then the lobby's: the start
+    // countdown and the 3D wait, the role's events, and the media with its peers.
+    this.releaseMatch();
+    this.clearCountdown();
+    this.clearWait3d();
     for (const off of this.offs) off();
     this.offs = [];
+    // The lobby's own lock (A12: the host's table before anyone joined) goes here at the latest.
     this.setLocked(false);
     this.listeners.clear();
     const media = this.opts.media;
     if (media && this.attached) {
-      media.setSending(false);
       await this.attached;
       await media.detach().catch((e: unknown) => this.opts.log(`match: media detach failed: ${String(e)}`));
     }
@@ -1552,6 +1574,7 @@ export class MatchController {
       this.setLocked(false);
       if (!was) {
         this.opts.cue.play('your_turn');
+        this.sendingOffSaid = false;
         this.opts.media?.setSending(true);
         this.opts.log(`match: grant ${g.grantSeq}: my ball ${g.ballNumber}`);
       }

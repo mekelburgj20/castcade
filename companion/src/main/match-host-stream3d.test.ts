@@ -32,7 +32,7 @@ vi.mock('electron', () => {
   return { BrowserWindow, ipcMain: { on: () => undefined } };
 });
 
-const { createMatchHost } = await import('./match-host.js');
+const { createMatchHost, matchHalfOf } = await import('./match-host.js');
 const { matchSignalling } = await import('./match-setup.js');
 const { createStream3dHost } = await import('./stream3d-host.js');
 const { startFakeRelay } = await import('../match/relay-fake.test-support.js');
@@ -1155,4 +1155,39 @@ describe('the turn lock and a fork that answers at once (A8)', () => {
     expect(lines.filter((l) => l === 'stream3d: the table is unlocked (VPX is back on its own table)')).toHaveLength(2);
     expect(lines.some((l) => l.includes('could not'))).toBe(false);
   }, 20_000);
+});
+
+describe('A17 step 2 (2026-11-24): what ends with a match, what ends with the lobby', () => {
+  it('the match half leaves the state stream as it is: the tunnel open, the fork told nothing, the other PC still watching in 3D; leaving closes the tunnel', async () => {
+    const hub = new TunnelHub();
+    const { seats, forks: f } = await lobby(hub, [['Hosty'], ['Krobs']]);
+    const [H, K] = seats as [Seat, Seat];
+    await H.mh.start();
+    await until(() => up(H, 1) && sees(K, f['Krobs'], H), 8000, 'Krobs to watch Hosty in 3D');
+    expect(H.tunnel()?.closed).toBe(false);
+    const told = f['Hosty']?.got.length;
+
+    // The match half alone (no caller in the app before step 7; a teardown runs both halves).
+    const endMatch = matchHalfOf(H.mh);
+    expect(endMatch).not.toBeNull();
+    endMatch!();
+    // The tunnel is the lobby's: open, its peers as they were, the fork on the control connection told nothing.
+    expect(H.tunnel()?.closed).toBe(false);
+    expect(H.tunnel()?.peers).toEqual([K.id()]);
+    expect(f['Hosty']?.got.length).toBe(told);
+    expect(H.mh.status().stream3d).not.toBeNull();
+    expect(lineFor(H, K)).toBe('Krobs: 3D, on your own table');
+    // The other PC goes on watching the player who is up, and a ball that ends still moves the turn.
+    await sleep(100);
+    expect(watching(K)).toBe(H.id());
+    expect(K.tunnel()?.closed).toBe(false);
+    await endBall(H, 1, 1000);
+    await until(() => up(K, 1), 8000, "Krobs's ball 1");
+    expect(H.tunnel()?.closed).toBe(false);
+
+    // Leave: the lobby's half closes the tunnel, as it always did.
+    const left = await H.mh.leave();
+    expect(left).toMatchObject({ role: 'none', stream3d: null });
+    expect(H.tunnel()?.closed).toBe(true);
+  }, 30_000);
 });
