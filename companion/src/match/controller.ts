@@ -427,6 +427,14 @@ export const MATCH_OVER_LINE_MS = 20_000;
 export const TABLE_ASK_WAIT_MS = 5_000;
 /** A10: the prompt for the player whose first ball of a game it is. */
 const PRESS_START_MESSAGE = 'Press Start on the table to begin your game';
+/**
+ * A17 step 8 (2026-11-26, the review of PR 138): the game this player gave up (or was counted out of) is still
+ * running on their table. Its balls count for nothing; the table is theirs to play it out; and a new game on the
+ * table begins only when it is over. What to do, said on that PC: in a turn of the next game (`GIVEN_UP_AT_TURN`),
+ * and before it (`GIVEN_UP_WAIT`).
+ */
+export const GIVEN_UP_AT_TURN = 'The game you gave up is still on your table: play it out (it counts for nothing) or restart the table, then press Start: your ball begins with the new game';
+export const GIVEN_UP_WAIT = 'The game you gave up is still on your table, which is yours meanwhile: play it out (it counts for nothing) or restart the table. The next game waits for it';
 /** A17 step 7: what a member asks the lobby's PC for; its REJECT carries a sentence for the asker. */
 const LOBBY_REQUESTS: ReadonlySet<string> = new Set(['START_REQUEST', 'START_CANCEL', 'END_REQUEST', 'TABLE_PICK', 'LEAVE_LOBBY']);
 const DEFAULT_SETTLE_MS = 2000;
@@ -542,6 +550,9 @@ export class MatchController {
   private holdWaitLogged = false;
   /** A16: the table's running game is the one this player already finished; nothing it says is reported. */
   private spentTableGame = false;
+  /** A17 step 8: the spent table game is one this player gave up (or was counted out of), not one they finished; and they let a start go on with it still running. */
+  private givenUp = false;
+  private givenUpReleased = false;
   /** A16: the table is held unlocked for that game's ending (initials); ends with the game or the timer. */
   private spentUnlock = false;
   private spentTimer: unknown = null;
@@ -1872,6 +1883,7 @@ export class MatchController {
     offs.push(c.on('rejoining', () => this.onRejoining()));
     // A member who joined, or came back, while a match is open holds its whole log now.
     offs.push(c.on('caughtUp', () => this.onCaughtUp()));
+    offs.push(c.on('wentBack', () => this.onWentBack()));
     offs.push(c.on('rigUpdated', (r) => this.onRigUpdated(r.playerId, r.rig)));
     offs.push(c.on('advisory', (a) => this.onAdvisory(a.playerId, a.advisory)));
     offs.push(c.on('midnightMode', (m) => this.onMidnightMode(m.playerId, m.mode)));
@@ -2438,7 +2450,11 @@ export class MatchController {
 
   /** A FORFEIT in the log. This player's own, when it was not their press (Play on without them, a clock): their table game is spent. */
   private onForfeitMsg(player: PlayerId): void {
-    if (player === this.localId && !this.replaying()) this.spendForfeitedGame();
+    if (player === this.localId && !this.replaying()) {
+      this.spendForfeitedGame();
+      // The lobby hears of the game that is still on this table now, not at its next word.
+      this.syncOwnGame();
+    }
     this.push();
   }
 
@@ -2458,6 +2474,8 @@ export class MatchController {
       if (isHostRole(r)) r.forfeit(this.localId, reason);
       else r.forfeit(reason);
     }, 'FORFEIT');
+    // Step 8: the game that is still on this table is said to the lobby now (the next start waits for it).
+    this.syncOwnGame();
     this.push();
   }
 
@@ -2516,7 +2534,18 @@ export class MatchController {
   private spendForfeitedGame(): void {
     if (!this.lobbyOn || this.spentTableGame || !this.tableGameRunning) return;
     this.spentTableGame = true;
-    this.opts.log("match: my game of the match is over and the table's own game is still on: nothing it says is reported, and it is not a game of my own");
+    // Step 8 (the review of PR 138): and it is said to the lobby as long as it runs (`syncOwnGame`): the table is
+    // this player's to play it out, the next start waits for it (everyone is told why, and Start without them works
+    // where enough players are left), and this player can let the start go on with them (`requestStart` with `now`).
+    this.givenUp = true;
+    this.givenUpReleased = false;
+    this.opts.log("match: my game of the match is over and the table's own game is still on: nothing it says is reported; the table is mine to play it out, and the next start waits for it");
+    this.syncLobbyLock();
+  }
+
+  /** The given-up game is still running on this table (`spendForfeitedGame`). */
+  private givenUpRuns(): boolean {
+    return this.givenUp && this.spentTableGame && this.tableGameRunning;
   }
 
   /**
@@ -2541,6 +2570,8 @@ export class MatchController {
   /** A16: the spent table game is over (its end, or a new game started): the turn lock rules again. */
   private endSpentGame(why: string): void {
     if (!this.spentTableGame) return;
+    this.givenUp = false;
+    this.givenUpReleased = false;
     this.spentTableGame = false;
     this.spentUnlock = false;
     if (this.spentTimer !== null) this.opts.clearTimeout(this.spentTimer);
@@ -2759,7 +2790,9 @@ export class MatchController {
 
   private setLocked(want: boolean): void {
     this.wantLocked = want;
-    const on = want && !this.spentUnlock && !this.initialsHold;
+    // Step 8 (the review of PR 138): the game this player gave up is still on their table: the table is theirs to
+    // play it out, whatever the turn says (it reports nothing); the lock rules again when that game has ended.
+    const on = want && !this.spentUnlock && !this.initialsHold && !(this.lobbyOn && this.givenUpRuns());
     if (this.locked === on && !this.lockStale) return;
     this.lockStale = false;
     this.locked = on;
@@ -2940,7 +2973,8 @@ export class MatchController {
     if (this.tableAskTimer !== null) this.opts.clearTimeout(this.tableAskTimer);
     this.tableAskTimer = null;
     this.myGameOver = !inGame;
-    if (inGame) this.setLocked(!first);
+    // (A given-up game still on this table: the table stays this player's until their own ball: `lobbyLockWanted`.)
+    if (inGame) this.setLocked(!first && !this.givenUpRuns());
     else this.syncLobbyLock();
     this.syncOwnGame();
   }
@@ -3038,6 +3072,28 @@ export class MatchController {
    * of the log have been played to this controller as they would have come live; what a player's own reports would
    * have counted is taken from the log.
    */
+  /**
+   * A17 step 8 (the review of PR 138): the lobby's PC came back with an earlier state of this match and this PC's
+   * log of it was put away. What this controller counted for the match (its own balls done, its score, the grant it
+   * held, a ball end it kept) is of a log that no longer exists: it is all taken from the lobby's log when that has
+   * arrived (`onCaughtUp`), never the larger of the two.
+   */
+  private onWentBack(): void {
+    this.holding = null;
+    this.clearPending();
+    this.clearStateTimer();
+    this.unansweredEnd = null;
+    this.clearOwed();
+    this.myBallsDone = 0;
+    this.myScore = null;
+    this.myGameOver = false;
+    this.scores.clear();
+    this.result = null;
+    this.upPlayer = null;
+    this.upBall = null;
+    this.opts.log("match: the lobby's PC came back with an earlier state of this match: this PC's log of it is put away, and the match goes on from the lobby's");
+  }
+
   private onCaughtUp(): void {
     const st = this.role.state;
     const me = st.players[this.localId];
@@ -3099,6 +3155,14 @@ export class MatchController {
     const whole = a?.until != null ? Math.max(1, Math.round((a.until - a.since) / 60_000)) : null;
     const left = a?.until != null ? Math.max(1, Math.ceil((a.until - this.opts.now()) / 60_000)) : null;
     const what = this.phase === 'playing' || this.phase === 'paused' ? 'The match goes on when it is back' : 'The lobby goes on when it is back';
+    // Step 8 (the review of PR 138): the lobby's last word was that its owner closed Castcade and keeps the lobby
+    // (`HELLO_ACK.hostQuit`): said as that, not as a PC that is away for no known reason.
+    if (this.ack?.hostQuit) {
+      const name = this.nameOf(this.hostId);
+      const kept = Math.max(1, Math.round(this.ack.hostQuit.keptMs / 60_000));
+      const mins = left ?? kept;
+      return `${name} closed Castcade and kept the lobby: it goes on if ${name} opens Castcade again within ${kept} minute${kept === 1 ? '' : 's'} (${mins} min left). You can wait and keep talking; Leave lobby frees your table now.`;
+    }
     return `${possessive(this.nameOf(this.hostId))} PC is away. ${what}${whole !== null ? `: waiting up to ${whole} minute${whole === 1 ? '' : 's'} (${left} min left)` : ''}. You can keep talking; Leave lobby ends the wait for you.`;
   }
 
@@ -3124,6 +3188,9 @@ export class MatchController {
     const a = this.ack;
     const me = this.localId;
     const ownRunning = this.tableGameRunning && !this.spentTableGame;
+    // Step 8 (the review of PR 138): the game this player gave up is still on their table: the table is theirs to
+    // play it out, in every phase, whenever they are not on a ball of the match.
+    if (this.givenUpRuns() && !this.holding) return false;
     if (this.phase === 'playing' || this.phase === 'paused') return this.inThisGame() ? null : !ownRunning;
     // Before the countdown's rule: this table stays locked through a countdown too, whatever runs on it.
     if (this.tableKept()) return true;
@@ -3255,7 +3322,9 @@ export class MatchController {
     // The review of PR 136: nor a game on a table the lobby's own rule keeps locked whatever runs on it (a player of
     // the open match between games who does not start the next one; a player of this game whose game is over). Its
     // owner cannot play it out, so a start must not wait for it; the next game takes the table as it finds it.
-    const own = this.tableGameRunning && !this.spentTableGame && this.tableAsk === 'none' && !playing && !this.seriesOver && !this.tableKept();
+    // Step 8: a given-up game that still runs is said too, until it ends or this player lets a start go on with it.
+    const givenUp = this.givenUpRuns() && !this.givenUpReleased && !this.holding;
+    const own = this.tableGameRunning && this.tableAsk === 'none' && !this.seriesOver && (givenUp || (!this.spentTableGame && !playing && !this.tableKept()));
     if (own === this.ownGameSaid) return;
     try {
       if (isHostRole(r)) (r as LobbyHostRole).updateLocal({ ownGame: own });
@@ -3469,7 +3538,14 @@ export class MatchController {
         outside.length > 0 && everyone.length >= 2 && s === null && !this.seriesOver && !this.hostIsAway
           ? { line: `${this.namesOf(outside, own)} ${outside.length === 1 ? 'plays' : 'play'} too. The match that is open ends${endsAt ? ` at ${endsAt}` : ''}.`, warnings: this.unreadableLines(this.unreadableAmong(everyone)) }
           : null,
-      startWithout: s !== null && s.waitsFor !== null && s.waitsFor !== 'result' ? (s.waitsFor === '3d' ? 'Start without 3D' : `Start without ${this.namesOf(s.waitsOn)}`) : null,
+      startWithout:
+        s !== null && s.waitsFor !== null && s.waitsFor !== 'result'
+          ? s.waitsFor === '3d'
+            ? 'Start without 3D'
+            : s.waitsFor === 'own_games' && s.waitsOn.length === 1 && s.waitsOn[0] === me && this.givenUpRuns()
+              ? 'Start now: I play that game out at my turn'
+              : `Start without ${this.namesOf(s.waitsOn)}`
+          : null,
       end: this.seriesOver || this.hostIsAway ? null : between ? 'match' : game && isHostRole(r) ? 'everyone' : null,
       giveUp: game && this.inPlay() && !this.myGameDone(),
       hostAway: this.hostIsAway && !isHostRole(r) ? (r as LobbyClientRole).hostAway() : null,
@@ -3500,6 +3576,16 @@ export class MatchController {
     if (!this.lobbyOn || this.closed) return 'There is no lobby';
     if (this.seriesOver) return 'The lobby is closed.';
     const r = this.role;
+    // Step 8: the start waits for the game this player gave up, and this player says "go on": the lobby is no longer
+    // told of that game, so the start counts down with them in it; at their turn they are told what to do on the table.
+    const s = this.ack?.start ?? null;
+    if (ask.now && this.givenUpRuns() && !this.givenUpReleased && s?.waitsFor === 'own_games' && s.waitsOn.includes(this.localId)) {
+      this.givenUpReleased = true;
+      this.opts.log('match: the start waited for the game I gave up, which is still on my table; I let it go on: I play that game out at my turn');
+      this.syncOwnGame();
+      this.push();
+      return null;
+    }
     let no: string | null = 'The start could not be asked for';
     this.call(() => {
       if (isHostRole(r)) no = (r as LobbyHostRole).requestStart(ask);
@@ -3721,6 +3807,12 @@ export class MatchController {
     if (this.lobbyOn && this.seriesOver) return this.seriesOverLine;
     if (this.lobbyOn && this.hostIsAway) return this.hostAwayLine();
     if (this.message) return this.message;
+    // Step 8 (the review of PR 138): the game this player gave up is still on their table: what to do about it, in
+    // place of "Press Start on the table" (which cannot work while it runs) and of the line of somebody who waits.
+    if (this.lobbyOn && this.givenUpRuns() && !this.initialsHold) {
+      if (this.phase === 'playing' && this.holding) return GIVEN_UP_AT_TURN;
+      if (!this.givenUpReleased) return GIVEN_UP_WAIT;
+    }
     // A16.2: the one thing to do right now, over the turn and result lines.
     if (this.initialsHold) return INITIALS_HOLD_MESSAGE;
     // A17 step 10: what this PC is waiting for before it opens the lobby's table (its person may have to act).

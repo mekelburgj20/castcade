@@ -468,7 +468,7 @@ export function Match({ state }: { state: CastcadeState }) {
                       {st.lobby.start.seconds !== null ? ` · ${st.lobby.start.seconds}` : ''}
                     </span>
                     {st.lobby.startWithout && (
-                      <button type="button" className="small" disabled={busy || st.lobby.hostAway !== null} title={st.lobby.hostAway ? "The lobby's PC is away: this waits until it is back" : undefined} onClick={() => void run(() => bridge.match.start({ now: true }))}>
+                      <button type="button" className="small" disabled={busy || st.lobby.hostAway !== null} title={st.lobby.hostAway ? "The lobby's PC is away: this waits until it is back" : undefined} onClick={() => void run(() => bridge.match.start({ now: true, without: st.lobby?.startWithout ?? null }))}>
                         {st.lobby.startWithout}
                       </button>
                     )}

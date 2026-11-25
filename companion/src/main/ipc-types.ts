@@ -296,7 +296,7 @@ export interface CastcadeApi {
      * `newMatch`: end the open match and start one with everyone set to Play; `now`: start without what the
      * announced start waits for.
      */
-    start(opts?: { anyway?: boolean; newMatch?: boolean; now?: boolean }): Promise<MatchStatus>;
+    start(opts?: { anyway?: boolean; newMatch?: boolean; now?: boolean; without?: string | null }): Promise<MatchStatus>;
     /** A17 step 7: take back the start that counts down or waits (anybody in the lobby). */
     cancelStart(): Promise<MatchStatus>;
     /**

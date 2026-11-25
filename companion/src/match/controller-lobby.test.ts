@@ -9,7 +9,7 @@ import type { GameFingerprint, ParticipantInfo } from '@castcade/protocol';
 import type { MatchMedia, MediaStatus, PanelState } from '../media/match-media-types.js';
 import { ClientMatch } from './client.js';
 import { ManualClock } from './clock.js';
-import { COUNTDOWN_HELD_MS, MatchController, MIDNIGHT_LINE_MS, type ControllerFeed } from './controller.js';
+import { COUNTDOWN_HELD_MS, GIVEN_UP_AT_TURN, GIVEN_UP_WAIT, MatchController, MIDNIGHT_LINE_MS, type ControllerFeed } from './controller.js';
 import { HostMatch } from './host.js';
 import { generateKeys, type KeyPair } from './keys.js';
 import { MemoryBus } from './transport.js';
@@ -115,63 +115,92 @@ async function playBall(r: Awaited<ReturnType<typeof lobby>>, s: Seat, ball: num
 const row = (s: Seat, name: string) => s.ctl.status().lobby?.members.find((m) => m.name === name);
 
 describe("A17 step 7: the controller in a lobby, from one game and one match to the next (the review of PR 136)", () => {
-  it('Give up this game with the table\'s game still running: that table game is spent (A16), never a game of one\'s own: the lobby is not told OWN GAME, and the next game starts without waiting for it', async () => {
+  it("Give up this game with the table's game still running (the reviews of PR 136 and PR 138): nothing it says is reported; the table is the player's to play it out and they are told what to do on it; the next game waits for it and everyone is told why; with two players the player who gave up lets the start go on, and at their turn the panel says what to do, never \"Press Start\"", async () => {
     const r = await lobby(['c'], 1);
     const { h: H, c: C } = r.seats as { h: Seat; c: Seat };
     expect(H.ctl.requestStart()).toBeNull();
     await r.tick(1000);
-    expect(H.ctl.status().phase).toBe('playing');
     H.ctl.feed(start);
     await playBall(r, H, 1, 500);
     H.ctl.feed(gameEnd(500));
     await flush();
-    // Krobs is up, starts his table's game, scores, and gives the game up with that table game still running.
     expect(C.ctl.panel()).toMatchObject({ myTurn: true, ball: 1 });
     C.ctl.feed(start);
     C.ctl.feed(scores(50));
     await flush();
     expect(C.ctl.giveUp()).toBe(true);
     await r.tick(100);
-    // The game is over (the other player had finished): between games now.
-    expect(H.ctl.status().phase).toBe('over');
     expect(C.ctl.status().phase).toBe('over');
-    // Krobs is a player of the open match who does not start the next game: his table is locked, and the game on
-    // it is the one he gave up. It is not his own game: nothing says OWN GAME, here or on the other PC.
-    expect(C.locked()).toBe(true);
-    expect(C.ctl.status().ownGame).toBe(false);
-    expect(row(H, 'Krobs')?.flags ?? []).not.toContain('own_game');
-    expect(row(C, 'Krobs')?.flags ?? []).not.toContain('own_game');
-    // A word of the lobby (anybody's Play / Watch) does not make it one either.
-    H.ctl.setStance('watch');
-    H.ctl.setStance('play');
-    await flush();
-    expect(C.ctl.status().ownGame).toBe(false);
-    expect(row(H, 'Krobs')?.flags ?? []).not.toContain('own_game');
-
-    // The next game is asked for and counts down at once: nothing is waited for.
+    // The table is his, with the game he gave up on it; he reads what to do; the others read OWN GAME on his row.
+    expect(C.locked()).toBe(false);
+    expect(C.ctl.panel().message).toBe(GIVEN_UP_WAIT);
+    expect(C.ctl.status().ownGame).toBe(true);
+    expect(row(H, 'Krobs')?.flags).toContain('own_game');
+    // The next game is asked for: it waits for that game, and both are told why.
     expect(H.ctl.requestStart()).toBeNull();
     await flush();
-    expect(r.host.announcedStart()).toMatchObject({ waitsFor: null });
+    expect(r.host.announcedStart()).toMatchObject({ waitsFor: 'own_games', waitsOn: ['c'] });
+    expect(H.ctl.status().lobby?.start?.line).toBe("You start the next game once the game on Krobs' table has ended");
+    expect(H.ctl.status().lobby?.startWithout).toBe('Start without Krobs');
+    // With two players there is nobody to start without: said, and nothing changes.
+    expect(H.ctl.requestStart({ now: true })).toMatch(/needs two/);
+    // The way on is the player's own: "Start now" on his PC. The start counts down with him in it.
+    expect(C.ctl.status().lobby?.startWithout).toBe('Start now: I play that game out at my turn');
+    expect(C.ctl.requestStart({ now: true })).toBeNull();
+    await flush();
+    expect(r.host.announcedStart()).toMatchObject({ waitsFor: null, players: ['h', 'c'] });
     await r.tick(1000);
-    expect(H.ctl.status().phase).toBe('playing');
     expect(r.host.state.gameNumber).toBe(2);
-    // What the given-up game still says on Krobs' table is nobody's: nothing is reported for it, and its end ends it.
+    // The table stays his while the other plays (the old game can be played out meanwhile).
+    expect(C.locked()).toBe(false);
     H.ctl.feed(start);
     await playBall(r, H, 1, 700);
-    expect(C.ctl.panel()).toMatchObject({ myTurn: true, ball: 1 });
+    // His turn, the game he gave up still on the table: the panel says what to do, and it is not "Press Start".
+    expect(C.ctl.panel()).toMatchObject({ myTurn: true, ball: 1, message: GIVEN_UP_AT_TURN });
+    // The old game's balls report nothing to the new game.
     C.ctl.feed(scores(80));
     C.ctl.feed(ballEnd(1));
     await r.tick(2500);
     expect(C.ctl.panel()).toMatchObject({ myTurn: true, ball: 1 });
     expect(C.logs.filter((l) => l.includes('BALL_END ball'))).toEqual([]);
     C.ctl.feed(gameEnd(80));
+    await r.tick(1);
+    expect(C.ctl.panel().message).toBe('Press Start on the table to begin your game');
     // The new game on his table is this game's.
     C.ctl.feed(start);
     await playBall(r, C, 1, 300);
     expect(C.logs.filter((l) => l.includes('BALL_END ball'))).toEqual(['match: BALL_END ball 1 score 300']);
   });
 
-  it("a player counted out by the lobby's PC (Play on without them) with their table's game still running: the same, that game is spent and never OWN GAME", async () => {
+  it("the given-up game ends by itself (the player plays it out between games): the lobby hears it, and the start that waited counts down", async () => {
+    const r = await lobby(['c'], 1);
+    const { h: H, c: C } = r.seats as { h: Seat; c: Seat };
+    expect(H.ctl.requestStart()).toBeNull();
+    await r.tick(1000);
+    H.ctl.feed(start);
+    await playBall(r, H, 1, 500);
+    H.ctl.feed(gameEnd(500));
+    await flush();
+    C.ctl.feed(start);
+    C.ctl.feed(scores(50));
+    await flush();
+    expect(C.ctl.giveUp()).toBe(true);
+    await r.tick(100);
+    expect(H.ctl.requestStart()).toBeNull();
+    await flush();
+    expect(r.host.announcedStart()).toMatchObject({ waitsFor: 'own_games' });
+    // He drains the balls that are left; the table says the game is over.
+    C.ctl.feed(ballEnd(1));
+    C.ctl.feed(gameEnd(60));
+    await r.tick(1);
+    expect(C.ctl.status().ownGame).toBe(false);
+    expect(r.host.announcedStart()).toMatchObject({ waitsFor: null });
+    expect(C.logs.filter((l) => l.includes('BALL_END ball'))).toEqual([]);
+    await r.tick(1000);
+    expect(r.host.state.gameNumber).toBe(2);
+  });
+
+  it("a player counted out by the lobby's PC (Play on without them) with their table's game still running: the same; and with three in the match the next game starts without them when somebody says so", async () => {
     const r = await lobby(['c', 'd'], 1);
     const { h: H, c: C, d: D } = r.seats as { h: Seat; c: Seat; d: Seat };
     expect(H.ctl.requestStart()).toBeNull();
@@ -184,22 +213,24 @@ describe("A17 step 7: the controller in a lobby, from one game and one match to 
     C.ctl.feed(start);
     C.ctl.feed(scores(50));
     await flush();
-    // The lobby's PC counts Krobs out of this game (the engine's FORFEIT for him), while his table's game runs.
     r.host.forfeit('c', 'counted out');
     await flush();
-    expect(C.ctl.status().ownGame).toBe(false);
-    // Dana plays her ball: the game ends.
+    expect(C.locked()).toBe(false);
+    expect(C.ctl.panel().message).toBe(GIVEN_UP_WAIT);
     expect(D.ctl.panel()).toMatchObject({ myTurn: true });
     D.ctl.feed(start);
     await playBall(r, D, 1, 400);
     D.ctl.feed(gameEnd(400));
     await r.tick(100);
     expect(C.ctl.status().phase).toBe('over');
-    expect(C.ctl.status().ownGame).toBe(false);
-    expect(row(H, 'Krobs')?.flags ?? []).not.toContain('own_game');
+    expect(row(H, 'Krobs')?.flags).toContain('own_game');
     expect(H.ctl.requestStart()).toBeNull();
     await flush();
-    expect(r.host.announcedStart()).toMatchObject({ waitsFor: null });
+    expect(r.host.announcedStart()).toMatchObject({ waitsFor: 'own_games', waitsOn: ['c'] });
+    // Enough players are left: Start without Krobs.
+    expect(H.ctl.requestStart({ now: true })).toBeNull();
+    await flush();
+    expect(r.host.announcedStart()).toMatchObject({ waitsFor: null, players: ['h', 'd'] });
   });
 
   it('a game of one\'s own is still said: a watcher who plays alone is OWN GAME until that game ends, and a start that they are in waits for it', async () => {

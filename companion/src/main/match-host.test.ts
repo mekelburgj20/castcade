@@ -2073,7 +2073,7 @@ describe('D10.8 (2026-11-12): match control through ArcAid, and the router port 
     expect(B.page.removed.sort()).toEqual([ids.h, ids.a].sort());
   }, 30_000);
 
-  it("the review of PR 127, as a lobby has it (A17 step 7): the host's Castcade quits: the lobby is closed for the client; ArcAid closes the room, or this PC's own link drops: nobody is let go, and the client is back by itself", async () => {
+  it("the review of PR 127, as a lobby has it (A17 step 7): the owner closes the lobby (Close lobby): it is closed for the client; ArcAid closes the room, or this PC's own link drops: nobody is let go, and the client is back by itself", async () => {
     // (1) The owner closes the lobby (Close lobby, which every member is told). A17 step 8: quitting Castcade on the
     // lobby's PC is NOT that any more: with somebody in the lobby it keeps the lobby for the next start, and the
     // members read that its PC is away (`match-restart.test.ts`, "the lobby's PC is quit (not closed) ..."); a crash

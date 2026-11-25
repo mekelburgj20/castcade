@@ -450,6 +450,46 @@ describe('A17 step 6: the lobby`s PC itself is cut off (design 11.8a)', () => {
     expect(q.host.state.players['a']?.status).toBe('forfeit');
   });
 
+  it('step 7 (the review of PR 138): the time to return is for members who were here when the lobby`s PC went away. One who was away by themselves before it gets none: their turn clock is the three minutes it was; and none for anybody when the caller says they cannot come back', async () => {
+    const ALLOW = 200_000;
+    const r = await starLobby(['a', 'b'], { lobby: { returnAllowMs: ALLOW } });
+    r.host.startMatch(['a', 'h', 'b']);
+    await flush();
+    // A, who is up, drops by itself; the game waits for A, and A's turn clock runs.
+    await r.cut('a');
+    await r.tick(5000);
+    expect(r.host.state.paused).toEqual({ reason: 'disconnect', player: 'a' });
+    await r.tick(60_000);
+    // Then the lobby's PC is cut off for half a minute and back. B was here when it went; A was not.
+    r.host.setCutOff(true);
+    await r.cut('b');
+    await r.tick(30_000);
+    r.host.setCutOff(false);
+    // (B's return takes a second of the clock in this rig.)
+    await r.relink('b');
+    // A's clock starts from zero at the return (accepted), and is three minutes: not three minutes and the time to return.
+    await r.tick(3 * MIN - 1000 - 1);
+    expect(r.host.state.players['a']?.status).toBe('playing');
+    await r.tick(1);
+    expect(r.host.state.players['a']?.status).toBe('forfeit');
+
+    // `returning: false`: the room the members came through is closed for good.
+    const q = await starLobby(['a', 'b'], { lobby: { returnAllowMs: ALLOW } });
+    q.host.startMatch(['a', 'h', 'b']);
+    await flush();
+    q.host.setCutOff(true);
+    await q.cut('a');
+    await q.cut('b');
+    await q.tick(10_000);
+    q.host.setCutOff(false, { returning: false });
+    await q.tick(5000);
+    expect(q.host.state.paused).toEqual({ reason: 'disconnect', player: 'a' });
+    await q.tick(3 * MIN - 1);
+    expect(q.host.state.players['a']?.status).toBe('playing');
+    await q.tick(1);
+    expect(q.host.state.players['a']?.status).toBe('forfeit');
+  });
+
   it('a member waits 20 minutes for the lobby`s PC, not thirty attempts; then the lobby is gone for it', async () => {
     const r = await starLobby(['a', 'b'], { stances: { b: 'watch' } });
     r.host.startMatch(['h', 'a']);

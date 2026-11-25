@@ -218,7 +218,7 @@ export interface ClientEvents extends Record<string, unknown> {
   /** RECONNECT accepted by `host`; `entries` were appended to the log (A2/A3). A18: `quiet`: no `peerLeft` came before it. */
   reconnected: { host: PlayerId; entries: number; quiet: boolean };
   /** RECONNECT rejected: re-join with a fresh HELLO, which after MATCH_READY is refused. */
-  reconnectRejected: { host: PlayerId; code: ReconnectCode | null };
+  reconnectRejected: { host: PlayerId; code: ReconnectCode | null; willRetry?: boolean };
   /**
    * One reconnect attempt to `host` failed; `attemptsLeft` 0 means this client gave up. A17 step 6 (review): in a
    * lobby the wait is counted in minutes, so `attemptsLeft` is only "some" (a large whole number) and `nextInMs` says
@@ -254,6 +254,13 @@ export interface ClientEvents extends Record<string, unknown> {
    * host's): `entries` long. From here on the match's messages are taken live.
    */
   caughtUp: { match: string; entries: number };
+  /**
+   * A17 step 8 (the review of PR 138): the lobby's PC holds an EARLIER state of the match this client is in than
+   * this client does (its Castcade came back from a record that was behind): this client's log of it is put away
+   * and the lobby's follows (`caughtUp`). `had`: how many entries this client held. What was played since the
+   * lobby's state is not in the match any more; the shell says so.
+   */
+  wentBack: { match: string; had: number };
   /** A17: the host closed the lobby (LOBBY_CLOSED); nothing follows, and this client does not reconnect. */
   lobbyClosed: PayloadOf<'LOBBY_CLOSED'>;
   /**
@@ -393,6 +400,8 @@ export class ClientMatch {
   private closedMerge = false;
   /** A17 step 6 (review): a `stale_seq` was answered with a new attempt already (one per drop). */
   private seqRaised = false;
+  /** A17 step 8 (the review of PR 138): the number this client last went above on the lobby's word (`stale_seq`). */
+  private seqRaisedTo = -1;
   /** A17 step 6 (review): the match whose log did not chain and was asked for once more (one ask per match). */
   private askedAgainFor: string | null = null;
 
@@ -1732,7 +1741,10 @@ export class ClientMatch {
     const p = msg.payload;
     if (!p.accept) {
       this.clearDown();
-      this.events.emit('reconnectRejected', { host: want.host, code: p.code });
+      // `willRetry` (the review of PR 138): the lobby named a number above the last one this client went above, so
+      // it goes on above it and comes back by itself (below): for the shell this refusal is not final.
+      const raise = this.lobbyOn && p.code === 'stale_seq' && p.seqAbove !== undefined && !this.ended && (!this.seqRaised || p.seqAbove > this.seqRaisedTo);
+      this.events.emit('reconnectRejected', { host: want.host, code: p.code, ...(raise ? { willRetry: true } : {}) });
       // A17 step 6: the place in the lobby is gone (it ran out while this PC was away): a newcomer again, with a
       // fresh HELLO, which a lobby takes while there is room. 2026-11-25: that HELLO is the opening frame of a link
       // of its own (the link a refused RECONNECT came on is closed by the lobby's PC, and that close is not the
@@ -1757,8 +1769,11 @@ export class ClientMatch {
       // A17 step 6 (review): the counter fell behind what the lobby last took from this member (a Castcade that
       // started again without its counter). The lobby says where it stands; this client goes on above it and comes
       // back once more. The counter only moves forward, and the new RECONNECT is signed over the new number.
-      if (this.lobbyOn && p.code === 'stale_seq' && p.seqAbove !== undefined && !this.seqRaised && !this.ended) {
+      // Step 8 (the review of PR 138): once more for every time the lobby's own count has moved since (its PC
+      // started again, and again before this client's return was answered): a number above the last one named.
+      if (this.lobbyOn && p.code === 'stale_seq' && p.seqAbove !== undefined && !this.ended && (!this.seqRaised || p.seqAbove > this.seqRaisedTo)) {
         this.seqRaised = true;
+        this.seqRaisedTo = p.seqAbove;
         this.s.raiseSeq(p.seqAbove);
         this.relinkTo(want.host, { delayFirst: true });
       }
@@ -1771,9 +1786,11 @@ export class ClientMatch {
       // A17 step 6: this client's log is not of the open match (it ended while this PC was away, another began, or
       // none is open): it is put away. The open match's log, when there is one, follows in MATCH_LOG from entry 0.
       const had = this.s.state.matchId;
+      const hadEntries = this.s.log.length;
       const games = this.resultsReceived.size;
       this.putMatchAway();
       if (had !== null && had !== (p.match ?? null)) this.events.emit('matchEnded', { games, reason: 'the match ended while this PC was away' });
+      else if (had !== null && hadEntries > 0) this.events.emit('wentBack', { match: had, had: hadEntries });
       const back = (entries: number): void => {
         const quiet = this.clearDown();
         this.sayRowAgain();

@@ -284,7 +284,8 @@ describe("the in-game menu in a lobby (A17 step 7, 2026-11-25, alpha-match.md se
       ['startNow', 'Start without Dana'],
       ['cancelStart', 'Cancel the start'],
     ]);
-    expect(run(waiting, ['menu', 'choose']).effects).toEqual([{ kind: 'start', anyway: false, now: true }]);
+    // The press says what it was about (the review of PR 138): the shell refuses it when the start waits for something else by then.
+    expect(run(waiting, ['menu', 'choose']).effects).toEqual([{ kind: 'start', anyway: false, now: true, without: 'Start without Dana' }]);
     expect(run(waiting, ['menu', 'down', 'choose']).effects).toEqual([{ kind: 'cancelStart' }]);
     // With the lobby's PC away neither would reach it: both are off and say so.
     const away = inLobby({ announced: { without: 'Start without Dana' }, hostAway: true });
