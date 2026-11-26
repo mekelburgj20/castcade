@@ -18,8 +18,11 @@ never deleted: a superseded ADR gets a `**Superseded by:**` line and stays in th
 | 0009 | [Spectating is 2D: flat video on a screen, never a stereo or head-tracked view](0009-spectating-is-2d.md) | Accepted (§7 amended by 0011) | 2026-11-04 |
 | 0010 | [The stack under `castcade-video.exe`, chosen by the D10.0.1 spike](0010-spectator-video-stack.md) | Accepted | 2026-11-07 |
 | 0011 | [A watcher may render the player's table in their own VPX, from their own viewpoint (state streaming, in the fork)](0011-state-streamed-spectating-in-the-fork.md) | Accepted as a direction; design revert-if-wrong | 2026-11-15 |
+| 0012 | [Another player's disconnect never disturbs the player who is up](0012-a-disconnect-never-disturbs-the-player-who-is-up.md) | Accepted | 2026-11-24 |
+| 0013 | [A lobby that outlives a match](0013-a-lobby-that-outlives-a-match.md) | Accepted (unverified on two PCs) | 2026-11-24 |
+| 0014 | [Castcade wears the Arcaid look](0014-castcade-wears-the-arcaid-look.md) | Accepted (unverified in a headset) | 2026-11-25 |
 
-**Next free number: 0012.**
+**Next free number: 0015.**
 
 ## Convention
 
