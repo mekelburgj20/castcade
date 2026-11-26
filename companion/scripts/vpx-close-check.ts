@@ -8,8 +8,10 @@
  *
  * - With the Castcade VPX build (`VPinballX_GL64_castcade.exe`) the table is started in the match role with a control
  *   connection to this script, and the line `quit` is sent on it (rung 1).
- * - With any other VPX the table is started the way Castcade starts one (`-Play` and nothing else) and its window is
- *   asked to close with the app's own code, `askVpxWindowToClose` (rung 2: `WM_CLOSE`).
+ * - With any other VPX the table is started the way Castcade starts one (`-Play` and nothing else) and its main window
+ *   is asked to close with the app's own code, `askVpxWindowToClose` (rung 2: the front-end close request,
+ *   `PinSim::FrontEndControls` CLOSE_APP, after the window said it takes it; never `WM_CLOSE`, which left VPX with
+ *   exit code 0x80000003 and its NVRAM not written on the owner's rig, 2026-11-25).
  *
  * Options:
  *   --seconds N        how long the table stays open before it is asked to close (default 30): time to start a game
@@ -105,7 +107,7 @@ if (fork) {
   const controlPort = await new Promise<number>((resolve) => server.listen({ host: '127.0.0.1', port: 0 }, () => resolve((server.address() as { port: number }).port)));
   env = { ...env, ...forkMatchEnv(await freePort(), controlPort, streamLog) };
   say(`the Castcade VPX build: role match, control on 127.0.0.1:${controlPort}, its stream log is ${streamLog}`);
-} else say('a VPX that is not the Castcade build: its window will be asked to close (WM_CLOSE)');
+} else say('a VPX that is not the Castcade build: its main window will be asked to close (the front-end close request)');
 
 const before = written(nvram);
 say(`starting ${win32.basename(exe)} -Play "${win32.basename(table)}"`);
@@ -133,7 +135,7 @@ if (fork) {
   say(sent ? 'control > quit' : 'quit could not be sent: the control connection is gone');
 } else {
   const r = await askVpxWindowToClose(pid);
-  say(r.asked ? `asked the ${r.kind === 'main' ? 'VPX main window' : 'player window'} to close (WM_CLOSE)` : `the window could not be asked: ${r.held ? 'held' : r.reason}`);
+  say(r.asked ? 'asked the VPX main window to close (the front-end close request)' : `the window could not be asked: ${r.held ? 'held' : r.reason}`);
 }
 
 // 30 s for it to leave (the app asks the person after 15 s). A dialog on the way is said; nothing is ended.
@@ -147,7 +149,7 @@ while (!exit && Date.now() < leaveBy) {
 const after = written(nvram);
 const done = exit as { code: number | null; at: number } | null;
 console.log('');
-if (done) say(`RESULT: VPX left ${((done.at - askedAt) / 1000).toFixed(1)} s after it was asked, exit code ${String(done.code)}${done.at - askedAt > 15_000 ? ' (later than the 15 s the app waits: the app would have asked the person)' : ''}`);
+if (done) say(`RESULT: VPX left ${((done.at - askedAt) / 1000).toFixed(1)} s after it was asked, exit code ${String(done.code)}${done.code === 0 ? '' : ' (NOT a clean exit: a clean one is 0)'}${done.at - askedAt > 15_000 ? ' (later than the 15 s the app waits: the app would have asked the person)' : ''}`);
 else say('RESULT: VPX is STILL OPEN 30 s after it was asked (not clean). It is left open: close it by hand and say what was on screen');
 if (nvram) say(before === after ? `NVRAM NOT written (${nvram}: ${before ?? 'no such file'})` : `NVRAM written (${nvram}: ${before ?? 'no file'} -> ${after ?? 'no file'})`);
 if (fork && existsSync(streamLog)) {

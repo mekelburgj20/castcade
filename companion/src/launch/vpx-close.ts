@@ -7,12 +7,21 @@
  *    The build closes its table and exits the way its held exit button does. A build from before the line ignores it
  *    (rule 13), stays open, and gets the next rung. The line only goes to a build that is proven to be the process
  *    asked about (`quitFork(pid)`).
- * 2. **Any other VPX**: its window is asked to close (`WM_CLOSE`, which is what the window's own close button and
- *    Alt+F4 send). The message goes to VPX's main window when the process has one: read in the 10.8.0 source, that
- *    handler closes a running player first (the table's Exit event fires, VPinMAME stops) and then the program, whereas
- *    the player window by itself only goes back to the editor when VPX was started with `-Play` alone, which is how
- *    Castcade and most players start it, and the table would stay open there. A process with no main window gets the
- *    message on its player window.
+ * 2. **Any other VPX**: its main window (class `VPinball`) gets the front-end close request, the window message
+ *    `PinSim::FrontEndControls` (`RegisterWindowMessage`) with `wParam` 2, CLOSE_APP: the protocol PinballY and other
+ *    front-ends use (http://mjrnet.org/pinscape/PinSimFrontEndControls/PinSimFrontEndControls.htm). VPX 10.8.0 answers
+ *    it with `QuitPlayer(CS_CLOSE_APP)`, the close state the held exit button asks for, so the player closes in its own
+ *    frame loop: the table's Exit event fires and VPinMAME stops and writes its NVRAM (`OnFrontEndControlsMsg` in
+ *    `vpinball.cpp`). The window is first asked whether it takes the protocol (`wParam` 1, IS_HANDLER_WINDOW, sent
+ *    with `SendMessageTimeout` and SMTO_ABORTIFHUNG, 2 s at most, so a stalled or hung VPX never holds Castcade); it
+ *    must answer 1. The request itself is posted, never sent: VPX's handler then closes any modal dialog in a loop.
+ *    A VPX that does not answer (an older build, a hung one, or one that runs elevated, whose window Windows keeps
+ *    from Castcade's messages) is asked nothing and goes to the third rung.
+ *    **Never `WM_CLOSE`**: the rig check of 2026-11-25 (`scripts/vpx-close-check.ts`, the owner's Panasony
+ *    `VPinballX_GL64.exe` 10.8.0.2078 on Monster Bash) had VPX leave 2.2 s after a `WM_CLOSE` to its main window with
+ *    exit code 0x80000003 and its NVRAM not written: that handler closes the player from outside its frame loop. The
+ *    player window is never asked either: it does not take the request, and its `WM_CLOSE` only goes back to the
+ *    editor when VPX was started with `-Play` alone, leaving the table open there.
  * 3. **The person**: when VPX is still running `CLOSE_WAIT_MS` after the first request, or nothing could be asked, the
  *    answer is `ask`: the caller says "Close the table on this PC" and waits for the witness to see the table go.
  *
@@ -50,34 +59,35 @@ export interface VpxProcessWindow {
 
 /** VPX's main (editor) window: its window class is `VPinball` in every Windows build. */
 const MAIN_CLASS = /^VPinball$/i;
-/** The player window's title (10.7: "Visual Pinball Player", 10.8: the same, with the build behind it). */
-const PLAYER_TITLE = /^Visual Pinball(?: X)? Player\b/i;
 
 /**
- * Which window of the process is asked to close: the main window (it closes the player and then the program), else
- * the player window, else none. Never a dialog, a DMD or a backglass window.
+ * Which window of the process is asked to close: its main window, the one whose window procedure handles the
+ * front-end close request (it closes the player in its own frame loop, then the program), else none. Never the player
+ * window (it does not take the request), a dialog, a DMD or a backglass window.
  */
-export function pickCloseTarget(windows: readonly VpxProcessWindow[]): { window: VpxProcessWindow; kind: 'main' | 'player' } | null {
+export function pickCloseTarget(windows: readonly VpxProcessWindow[]): { window: VpxProcessWindow; kind: 'main' } | null {
   const main = windows.find((w) => MAIN_CLASS.test(w.className));
-  if (main) return { window: main, kind: 'main' };
-  const player = windows.find((w) => PLAYER_TITLE.test(w.title));
-  return player ? { window: player, kind: 'player' } : null;
+  return main ? { window: main, kind: 'main' } : null;
 }
 
 /** What the second rung did. */
 export type WindowAsk =
-  /** `WM_CLOSE` was posted to that window of the process. */
-  | { asked: true; kind: 'main' | 'player' }
+  /** The front-end close request was posted to the main window of the process, after it said it takes the protocol. */
+  | { asked: true; kind: 'main' }
   /** Nothing was posted because the caller said no at the last moment (a game began, the setting was switched off). */
   | { asked: false; held: true }
-  /** Nothing was posted: the process is gone or is not VPX, it has no window to ask, or the script failed. */
+  /**
+   * Nothing was posted: the process is gone or is not VPX, it has no main window, it did not answer the front-end
+   * check (an older or hung VPX, or one that runs elevated), or the script failed.
+   */
   | { asked: false; held?: false; reason: string };
 
 const isPid = (n: number): boolean => Number.isInteger(n) && n > 0 && n <= 0xffff_ffff;
 
 /**
  * One run of the window script for one process: it has compiled and listed (`vpx`, `windows`) and now waits. `post`
- * sends `WM_CLOSE` to one of the listed windows and ends the run; `cancel` ends it with nothing posted.
+ * asks one of the listed windows whether it takes the front-end protocol, posts the close request to it when it does,
+ * and ends the run; `cancel` ends it with nothing posted.
  */
 export interface WindowRun {
   vpx: boolean;
@@ -122,6 +132,8 @@ public static class CastcadeClose {
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr h, StringBuilder s, int n);
   [DllImport("user32.dll", SetLastError = true)] static extern bool PostMessage(IntPtr h, uint msg, IntPtr w, IntPtr l);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern uint RegisterWindowMessage(string name);
+  [DllImport("user32.dll", SetLastError = true)] static extern IntPtr SendMessageTimeout(IntPtr h, uint msg, IntPtr w, IntPtr l, uint flags, uint ms, out IntPtr result);
 
   // A JSON string in ASCII: a quote, a backslash, a control character and anything above 0x7e go out as \uXXXX.
   static string J(string s) {
@@ -156,14 +168,22 @@ public static class CastcadeClose {
     return "{\"vpx\":true,\"windows\":[" + string.Join(",", wins.ToArray()) + "]}";
   }
 
-  // WM_CLOSE (0x0010), posted: the window's own close request, handled by VPX in its own time. Nothing is ended.
+  // The front-end close request (PinSim::FrontEndControls, wParam 2 = CLOSE_APP), posted once the window has said it
+  // takes the protocol (wParam 1 = IS_HANDLER_WINDOW answers 1). VPX closes its player in its own frame loop, as at the
+  // held exit button, in its own time. Never WM_CLOSE; nothing is ended.
   public static string Close(uint pid, long hwnd) {
     var h = new IntPtr(hwnd);
     uint owner;
     if (!IsVpx(pid) || !IsWindow(h)) return "{\"posted\":false,\"why\":\"gone\"}";
     GetWindowThreadProcessId(h, out owner);
     if (owner != pid) return "{\"posted\":false,\"why\":\"not that process\"}";
-    return PostMessage(h, 0x0010, IntPtr.Zero, IntPtr.Zero) ? "{\"posted\":true}" : "{\"posted\":false,\"why\":\"the message was not taken\"}";
+    uint msg = RegisterWindowMessage("PinSim::FrontEndControls");
+    if (msg == 0) return "{\"posted\":false,\"why\":\"the front-end message could not be registered\"}";
+    IntPtr answer;
+    // SMTO_ABORTIFHUNG (0x2), 2 s at most: a stalled or hung VPX never holds the caller. An elevated VPX drops it too.
+    if (SendMessageTimeout(h, msg, new IntPtr(1), IntPtr.Zero, 0x2, 2000, out answer) == IntPtr.Zero) return "{\"posted\":false,\"why\":\"no answer\"}";
+    if (answer.ToInt64() != 1) return "{\"posted\":false,\"why\":\"not a handler\"}";
+    return PostMessage(h, msg, new IntPtr(2), IntPtr.Zero) ? "{\"posted\":true}" : "{\"posted\":false,\"why\":\"the message was not taken\"}";
   }
 }
 '@
@@ -277,6 +297,22 @@ export const powershellWindows: WindowScript = {
 };
 
 /**
+ * The script's short answers in words for the log and the person. A VPX that does not answer the front-end check is
+ * an older build, a hung one, or one that runs elevated (Windows keeps a program that runs as administrator from
+ * Castcade's window messages): the table could not be asked, and the person closes it.
+ */
+export function whyNotAsked(why: string | undefined): string {
+  switch (why) {
+    case 'no answer':
+      return 'VPX did not answer the request to close within 2 s (it may be busy, or running as administrator, where Castcade cannot reach it)';
+    case 'not a handler':
+      return 'this VPX does not take a front-end request to close';
+    default:
+      return why ?? 'unknown';
+  }
+}
+
+/**
  * The second rung: ask the window of the VPX process `pid` to close. `mayClose` is asked before the script starts and
  * again when it has listed and waits: the message follows that second answer at once. Windows only; never throws
  * (what went wrong is the reason). The process is only ever asked, and only when it is a VPinballX program.
@@ -288,13 +324,13 @@ export async function askVpxWindowToClose(pid: number, mayClose: () => boolean =
     run = await windows.open(pid);
     if (!run.vpx) return { asked: false, reason: 'that process is gone, or is not VPX' };
     const target = pickCloseTarget(run.windows);
-    if (!target) return { asked: false, reason: `VPX has no window to ask (${run.windows.length} windows, none its main or player window)` };
+    if (!target) return { asked: false, reason: `VPX has no main window to ask (${run.windows.length} windows)` };
     // The script took its time to start; the answer that counts is the one of this moment.
     if (!mayClose()) return { asked: false, held: true };
     const posting = run.post(target.window.hwnd);
     run = null;
     const r = await posting;
-    return r.posted ? { asked: true, kind: target.kind } : { asked: false, reason: r.why ?? 'unknown' };
+    return r.posted ? { asked: true, kind: target.kind } : { asked: false, reason: whyNotAsked(r.why) };
   } catch (e) {
     return { asked: false, reason: e instanceof Error ? e.message : String(e) };
   } finally {
@@ -389,7 +425,7 @@ export function createVpxCloser(o: VpxCloserOptions): VpxCloser {
         if (!r.asked && r.held) return finish({ state: 'held', asked });
         if (!r.asked) return ask(`its window could not be asked: ${r.reason}`);
         asked = true;
-        o.log.info(`close: asked the ${r.kind === 'main' ? 'VPX window' : 'player window'} of ${table} to close (WM_CLOSE, pid ${pid})`);
+        o.log.info(`close: asked the VPX window of ${table} to close (the front-end close request, pid ${pid})`);
       };
 
       if (!mayClose()) return finish({ state: 'held', asked: false });

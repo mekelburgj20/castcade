@@ -187,7 +187,8 @@ Added with the lobby's table change (A17 step 3, 2026-11-25; `companion/src/laun
     table's VPinMAME stops and writes its NVRAM; a fork that is watching gets its own table back first, as at
     any close. No answer is sent: the control connection ends with the process. Of several commands in one read
     a `quit` is the one acted on. A fork from before the line ignores it (rule 13) and stays open: the companion
-    waits 6 s, then asks VPX's main window to close (`WM_CLOSE`), as it does for a VPX that is not the fork, and
+    waits 6 s, then sends VPX's main window the front-end close request (`PinSim::FrontEndControls`, CLOSE_APP;
+    never `WM_CLOSE`, which did not close cleanly on the owner's rig), as it does for a VPX that is not the fork, and
     15 s after the first request it asks the person. Nothing ever ends the process by force.
 
     What the companion checks before it sends `quit` (as built after the review of PR #137):

@@ -11,7 +11,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { QUIT_COMMAND, createStream3dHost, type ForkQuit, type Stream3dHost } from '../main/stream3d-host.js';
 import { ScriptedFork, TunnelHub, until } from '../main/stream3d.test-support.js';
-import { CLOSE_WAIT_MS, FORK_QUIT_WAIT_MS, askVpxWindowToClose, createVpxCloser, pickCloseTarget, windowScript, type VpxProcessWindow, type WindowAsk, type WindowScript } from './vpx-close.js';
+import { CLOSE_WAIT_MS, FORK_QUIT_WAIT_MS, askVpxWindowToClose, createVpxCloser, pickCloseTarget, whyNotAsked, windowScript, type VpxProcessWindow, type WindowAsk, type WindowScript } from './vpx-close.js';
 
 const VPX = String.raw`C:\vpx\VPinballX_GL64.exe`;
 const PID = 4242;
@@ -130,15 +130,32 @@ function fakeScript(o: { vpx?: boolean; windows?: VpxProcessWindow[]; openMs?: n
 }
 
 describe('closing the open table: which window is asked (A17 step 3)', () => {
-  it('the VPX main window is asked when the process has one: it closes the player and then the program', () => {
+  it('the VPX main window is asked: its window procedure takes the front-end close request (it closes the player in its own frame loop, then the program)', () => {
     expect(pickCloseTarget([DMD, PLAYER, MAIN, DIALOG])).toEqual({ window: MAIN, kind: 'main' });
   });
 
-  it('without a main window the player window is asked; a DMD, a backglass or a dialog never is', () => {
-    expect(pickCloseTarget([DMD, PLAYER, DIALOG])).toEqual({ window: PLAYER, kind: 'player' });
-    expect(pickCloseTarget([win('7', 'Win32++', 'Visual Pinball X Player')])?.kind).toBe('player');
+  it('without a main window nothing is asked: the player window does not take the request, and a DMD, a backglass or a dialog never is (rig check 2026-11-25)', () => {
+    expect(pickCloseTarget([DMD, PLAYER, DIALOG])).toBeNull();
+    expect(pickCloseTarget([win('7', 'Win32++', 'Visual Pinball X Player')])).toBeNull();
     expect(pickCloseTarget([DMD, DIALOG])).toBeNull();
     expect(pickCloseTarget([])).toBeNull();
+  });
+
+  it('the main window answers the front-end check: the close request is posted to it', async () => {
+    const s = fakeScript({ windows: [PLAYER, MAIN], posted: { posted: true } });
+    expect(await askVpxWindowToClose(PID, () => true, s.windows)).toEqual({ asked: true, kind: 'main' });
+    expect(s.posted).toEqual([[PID, MAIN.hwnd]]);
+  });
+
+  it('a VPX that does not answer the front-end check within 2 s, or does not take it, or a script that does not answer, is asked nothing: the reason says so, and that an elevated VPX cannot be reached', async () => {
+    const silent = fakeScript({ windows: [MAIN], posted: { posted: false, why: 'no answer' } });
+    const silentAsk = await askVpxWindowToClose(PID, () => true, silent.windows);
+    expect(silentAsk).toEqual({ asked: false, reason: whyNotAsked('no answer') });
+    expect(whyNotAsked('no answer')).toBe('VPX did not answer the request to close within 2 s (it may be busy, or running as administrator, where Castcade cannot reach it)');
+    const older = fakeScript({ windows: [MAIN], posted: { posted: false, why: 'not a handler' } });
+    expect(await askVpxWindowToClose(PID, () => true, older.windows)).toEqual({ asked: false, reason: 'this VPX does not take a front-end request to close' });
+    const stuck = fakeScript({ windows: [MAIN], posted: { posted: false, why: 'the window script did not answer' } });
+    expect(await askVpxWindowToClose(PID, () => true, stuck.windows)).toEqual({ asked: false, reason: 'the window script did not answer' });
   });
 
   it('a fake window: the message goes to the main window of that process, and only what the script lists is ever asked', async () => {
@@ -153,7 +170,7 @@ describe('closing the open table: which window is asked (A17 step 3)', () => {
     const gone = fakeScript({ vpx: false, windows: [] });
     expect(await askVpxWindowToClose(PID, () => true, gone.windows)).toEqual({ asked: false, reason: 'that process is gone, or is not VPX' });
     const none = fakeScript({ windows: [DMD, DIALOG] });
-    expect(await askVpxWindowToClose(PID, () => true, none.windows)).toMatchObject({ asked: false, reason: expect.stringContaining('no window to ask') as unknown });
+    expect(await askVpxWindowToClose(PID, () => true, none.windows)).toMatchObject({ asked: false, reason: expect.stringContaining('no main window to ask') as unknown });
     const broken = fakeScript({ fail: 'the window script timed out' });
     expect(await askVpxWindowToClose(PID, () => true, broken.windows)).toEqual({ asked: false, reason: 'the window script timed out' });
     expect([...gone.posted, ...none.posted, ...broken.posted]).toEqual([]);
@@ -195,6 +212,16 @@ describe('closing the open table: which window is asked (A17 step 3)', () => {
     expect(read).toBeGreaterThan(list);
     expect(close).toBeGreaterThan(read);
     expect(text).toContain("if ($word -match '^close (-?[0-9]{1,20})$')");
+    // The rig check of 2026-11-25: the front-end close request, never WM_CLOSE. The window is asked first whether it
+    // takes the protocol (IS_HANDLER_WINDOW, wParam 1, answered 1), sent with a 2 s limit that never waits on a hung
+    // VPX (SMTO_ABORTIFHUNG); CLOSE_APP (wParam 2) is then posted, never sent.
+    expect(text).toContain('RegisterWindowMessage("PinSim::FrontEndControls")');
+    expect(text).toContain('SendMessageTimeout(h, msg, new IntPtr(1), IntPtr.Zero, 0x2, 2000, out answer) == IntPtr.Zero');
+    expect(text).toContain('if (answer.ToInt64() != 1)');
+    expect(text).toContain('PostMessage(h, msg, new IntPtr(2), IntPtr.Zero)');
+    expect(text.indexOf('new IntPtr(1)')).toBeLessThan(text.indexOf('new IntPtr(2)'));
+    expect(text).not.toContain('0x0010');
+    expect(text).not.toMatch(/PostMessage\(h, 0x/);
     // The pid is the only thing put into it, and it must be one.
     expect(() => windowScript(Number.NaN)).toThrow('not a process id');
     expect(() => windowScript(-1)).toThrow('not a process id');
@@ -285,7 +312,18 @@ describe('closing the open table: the three rungs (A17 step 3)', () => {
     await until(() => r.asked.length === 1, 2_000, 'the window to be asked');
     r.exit();
     expect(await closing).toEqual({ state: 'closed', rung: 2 });
-    expect(r.logs.some((l) => /asked the VPX window of Monster Bash to close \(WM_CLOSE, pid 4242\)/.test(l))).toBe(true);
+    expect(r.logs.some((l) => /asked the VPX window of Monster Bash to close \(the front-end close request, pid 4242\)/.test(l))).toBe(true);
+  });
+
+  it('rung 2 to rung 3 at once: a VPX that cannot be asked (no answer to the front-end check: busy, older, or elevated) goes to the person without the 15 s wait', async () => {
+    for (const why of ['no answer', 'not a handler', 'the window script did not answer']) {
+      const s = fakeScript({ windows: [PLAYER, MAIN], posted: { posted: false, why } });
+      const r = rig({ window: (pid, mayClose) => askVpxWindowToClose(pid, mayClose, s.windows), closeWaitMs: 60_000 });
+      const started = Date.now();
+      expect(await r.closer.close('Monster Bash', PID)).toEqual({ state: 'ask', why: `its window could not be asked: ${whyNotAsked(why)}`, asked: false });
+      expect(Date.now() - started).toBeLessThan(5_000);
+      expect(r.logs.some((l) => l.startsWith('WARN close: Monster Bash is still open (its window could not be asked:'))).toBe(true);
+    }
   });
 
   it('closed means the process has ended, whatever the witness still says of its table: a build that left on quit is not answered with "ask" (finding 6)', async () => {

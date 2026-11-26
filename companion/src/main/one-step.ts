@@ -392,7 +392,7 @@ const fileName = (vpxPath: string): string => (vpxPath.split(/[\\/]/).pop() ?? v
  * nobody changed anything and the table open here is simply not this PC's copy of the lobby's table (`here`: a join
  * beside another table, a join by code, a Castcade that started again, a table closed by hand).
  */
-export type ChangeWhy = 'game' | 'initials' | 'unnamed' | 'unnamed_ask' | 'unwatched' | 'often' | 'away' | 'back' | 'here' | null;
+export type ChangeWhy = 'game' | 'initials' | 'unnamed' | 'unnamed_ask' | 'unwatched' | 'not_asked' | 'often' | 'away' | 'back' | 'here' | null;
 
 /**
  * A17 step 3: what the Match tab says of a change that waits (alpha-match.md sections 11.5 and 11.9). `by`: who
@@ -425,6 +425,9 @@ export function changeWords(state: ChangeState, table: string, open: string | nu
       // A17 step 10: VPX is open and the witness cannot name its table (an editor, a VPX it cannot read).
       if (why === 'unnamed') return `${now} VPX is open on this PC and Castcade cannot tell which table it has: close VPX, and Castcade opens ${table}.`;
       if (why === 'unnamed_ask') return `${now} VPX is open on this PC and Castcade cannot tell which table it has: close VPX, and ${table} can be opened from here (Open it).`;
+      // The rig check of 2026-11-25: VPX did not take the request to close at all (an older or busy VPX, or one that
+      // runs as administrator, which Windows keeps from Castcade's messages). Nothing was asked of it.
+      if (why === 'not_asked') return `Castcade could not ask VPX to close ${open ?? 'the open table'} (VPX did not answer; it may be running as administrator): close it yourself, and Castcade opens ${table}.`;
       return `Close the table on this PC: Castcade opens ${table} when it is closed.`;
   }
 }
@@ -914,7 +917,8 @@ export function createOneStep(o: OneStepOptions): OneStep {
       return false;
     }
     if (s.person) {
-      moveSwap(s, 'close_it', null, `${s.open} is the person's to close; ${s.table} opens when it is closed`);
+      // Nothing went out for this change (VPX did not take the request at all): the person is told that much.
+      moveSwap(s, 'close_it', s.sent ? null : 'not_asked', `${s.open} is the person's to close${s.sent ? '' : ' (VPX could not be asked)'}; ${s.table} opens when it is closed`);
       return false;
     }
     clearSwapTimer();

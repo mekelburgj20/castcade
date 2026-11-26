@@ -12,7 +12,7 @@ import type { ForkLaunch, LaunchOptions, LaunchResult, VpxLauncher } from '../la
 import { formatJoinLink } from './deep-link.js';
 import type { MatchStatus, PickAnswer } from './match-host.js';
 import { NO_TABLE_NAME, ZERO_SHA256 } from './match-setup.js';
-import { createOneStep, linkJoinFailure, noCopyAtJoinWords } from './one-step.js';
+import { changeWords, createOneStep, linkJoinFailure, noCopyAtJoinWords } from './one-step.js';
 
 const TABLES = 'C:\\vpx\\tables';
 const table = (tableId: string, o: Partial<KnownTable> = {}): KnownTable => ({
@@ -1616,6 +1616,22 @@ describe("the lobby's table changes while a table is open here (A17 step 3)", ()
     await w.table(AFM_OPEN);
     expect(w.closes).toHaveLength(1);
     expect(w.launched).toEqual([]);
+    await w.table(null);
+    expect(w.launched).toEqual([MB.vpxPath]);
+  });
+
+  it('VPX could not be asked at all (it did not take the request to close: busy, older, or running as administrator): the player is told that, and closes it', async () => {
+    const w = await inLobby();
+    await w.pick(fingerprint('Monster Bash'));
+    w.closes[0]!.answer({ state: 'ask', why: 'its window could not be asked: VPX did not answer the request to close within 2 s', asked: false });
+    await flush();
+    const change = w.one.status().change;
+    expect(change?.state).toBe('close_it');
+    expect(change?.detail).toMatch(/^Castcade could not ask VPX to close .+ \(VPX did not answer; it may be running as administrator\): close it yourself, and Castcade opens Monster Bash\.$/);
+    expect(change?.detail).toBe(changeWords('close_it', 'Monster Bash', change!.open, 'not_asked'));
+    await w.phase('lobby');
+    await w.table(AFM_OPEN);
+    expect(w.closes).toHaveLength(1);
     await w.table(null);
     expect(w.launched).toEqual([MB.vpxPath]);
   });
