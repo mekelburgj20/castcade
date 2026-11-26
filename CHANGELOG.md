@@ -7,14 +7,123 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
 
-- **The log bundle also holds VPX's own files and the 3D stream logs (E8.4).** Both ways of sending it (0.2.50's
-  button in Settings, and Get logs on arcaid.app) now add: `vpx/VPinballX.ini` (the ini VPX reads for the exe Castcade last saw
-  run: beside the exe, else `%APPDATA%\VPinballX`; the value of any key named like a password, token, secret or API
-  key is replaced with `<removed>`), `vpx/vpinball.log` and `vpx/crash.txt` (the newest copy in the exe's folder or
-  the ini's; the end of each, 500 KB at most; never `crash.dmp`), and the fork's `vpx-stream-match.log`,
+## [0.2.51] — 2026-11-25
+
+**Protocol 7: everyone updates together.** A PC on this version and a 0.2.46 to 0.2.50 PC no longer meet: the one that
+tries is told which version the other needs ("This lobby needs Castcade 0.2.51 or newer", "The lobby's PC runs
+another version of Castcade"), and a match saved by 0.2.50 is not gone back into (said once). **Not companion-only:**
+the OpenXR layer is **0.8.1** (pipe protocol 5 unchanged; the scoreboard puts itself back in view), so VPX is restarted
+once after the update; the native helpers and the hook library (0.6.0) are as in 0.2.48. It carries the lobby (A17 steps
+1 to 10 and their review rounds), the Arcaid look on every surface (E14), the fixes from the match nights of
+2026-11-23 and 2026-11-24, the AskToTurnOn warning and a wider log bundle. Released on the owner's word, as one
+release (owner 2026-11-25). **The lobby has not run on two PCs yet**: every part is held by tests, and every screen was
+drawn from fixtures bound to the code, in a browser, without Electron. The first evening is its first run. One part was
+tried on the owner's rig: the table close a table change leans on (A17.5.1, below).
+
+### Added
+
+- **The lobby (A17).** The Match tab opens or joins a lobby, not a match: you join once an evening, everyone in it
+  talks, plays or watches, and you play as many matches as you like without leaving. Up to four people; a match is two
+  to four of them on the same table, one ball each in turn. Open a lobby gives a six-letter code through ArcAid, with
+  Copy code, Copy link (it opens the lobby with its table started) and Copy for chat; a direct invite on your own TCP
+  port is under Advanced. Your microphone is on for the people in the lobby from the moment you join.
+- **Play or Watch, and the start.** Each person sets Play or Watch for the next match. Anybody can press Start match;
+  the starter (their row says "starts from the table") can also simply start a game on their table. Every headset
+  counts down 5 s, and Cancel the start takes it back. A start waits for a table that is not open yet, for a game still
+  on somebody's table and for the 3D connections (45 s at most), says for whom, and offers Start without ….
+- **During a game.** End my ball (the score is said first, then the turn passes), Give up this game (the others play
+  on, you watch), Leave lobby (it gives up your game; coming back is a new join). The lobby's PC also has Pass the
+  turn, End match for everyone and Close lobby. The in-game menu (Ctrl+Alt+M) has the same choices.
+- **Between games.** Next game; End match closes the tally and everyone stays; Start a new match is offered when
+  somebody outside the match is set to Play, and says what it ends. The final standing stays on the tab until the next
+  match begins. Every game is also posted to ArcAid as a normal score.
+- **Somebody away.** A player whose link drops is shown AWAY with a clock; their place is kept, the game waits at
+  their turn, and the lobby's PC can play on without them. A player out of reach but still playing their ball is a
+  question on the lobby's PC: keep waiting, end their ball, or play on without them. When the lobby's PC itself is
+  away, everyone reads the minutes left (20); a ball in play goes on and its end is reported when that PC is back.
+- **Quit and come back.** The lobby's owner can close Castcade and keep the lobby for 20 minutes: started again,
+  Castcade offers it and opens it as it was, with the match where it stood, and the others come back by themselves.
+  A member's Castcade that closed offers Rejoin the lobby. If ArcAid does not answer at that moment, the lobby waits
+  for it and takes its room back. A saved lobby that does not read is opened again empty under its code, and says so.
+- **The lobby's table.** One table for the lobby, and anyone can change it: Change table… asks first (between games
+  the open match ends); the lobby's PC judges every pick (10 s between changes, 30 s for the same person) and answers
+  that very pick. Every PC follows: Castcade closes the open table and opens the new one, after a game or high-score
+  initials on it. A PC asks first instead (Open it) when "Change tables for me" is off, when the table changed several
+  times in a few minutes, or when it changed while that PC was away. A PC that joins with another table open, or none,
+  is offered the lobby's table, and "Make <table> the lobby's table" makes your open table the lobby's. A PC with no
+  copy watches or picks another table; a copy under another name counts when Castcade can tell it is the same game.
+  "No table: I open it myself" opens a lobby without one: the first table its PC opens, or anybody's pick, becomes it,
+  and Start match waits for that.
+- **How Castcade closes a table (A17.5.1).** VPX's main window gets the front-end close request (the window message
+  `PinSim::FrontEndControls`, CLOSE_APP: the protocol PinballY uses), after it has said within 2 s that it takes the
+  protocol. VPX 10.8.0 answers it the way it answers the held exit button: the table's Exit event fires and VPinMAME
+  writes its NVRAM. Never `WM_CLOSE`. A VPX that does not answer (an older or busy build, or one that runs as
+  administrator) is asked nothing, and the Match tab says to close it yourself; Castcade then opens the next table.
+  Tried on the owner's rig on 2026-11-25 (`npm run vpx-close-check -w companion`: Panasony `VPinballX_GL64.exe`
+  10.8.0.2078 in the headset, Monster Bash with the ROM running): VPX left 1.6 s after it was asked, exit code 0, and
+  `mb_106b.nv` was written. Not yet tried: the official 10.8.0 build, and the desktop exe. `launch/vpx-close.ts`.
+- **The headset in a lobby.** LOBBY · N HERE with every person, PLAY or WATCH and what is special about their row
+  (AWAY, LOADING, NO TABLE, OTHER TABLE, CHANGING TABLE, ASKED TO OPEN IT); CHANGING TABLE · <table> while PCs are on
+  their way; MATCH OVER; "Watching: …" under the scores. A watcher gets the scoreboard too.
+- **A warning before VPX shows an OpenComposite error (A6.3).** With `[PlayerVR] AskToTurnOn = 1`, VPX 10.8.0 opens
+  OpenVR as a background app and OpenComposite refuses it: the table starts on the desktop. When the value is 1 and
+  VPX's OpenVR goes through OpenComposite, Status, the Match tab and Settings say so before a table starts, and name the
+  file that set it: set AskToTurnOn = 0 under [PlayerVR], with VPX closed. Castcade never writes that file.
+  `witness/ask-to-turn-on.ts`.
+- **The log bundle also holds VPX's own files and the 3D stream logs (E8.4).** Both ways of sending it (Settings →
+  Send logs to Arcaid support, and Get logs on arcaid.app) now add: `vpx/VPinballX.ini` (the ini VPX reads for the exe
+  Castcade last saw run: beside the exe, else `%APPDATA%\VPinballX`; the value of any key named like a password, token,
+  secret or API key is replaced with `<removed>`), `vpx/vpinball.log` and `vpx/crash.txt` (the newest copy in the exe's
+  folder or the ini's; the end of each, 500 KB at most; never `crash.dmp`), and the fork's `vpx-stream-match.log`,
   `vpx-stream-play.log` and `vpx-stream-watch.log` (the end of each, 500 KB at most). `manifest.txt` names the exe
   and the ini, and any file that found no room in the 12 MB; the small files go first and the journals last, newest
   first, so a full bundle leaves out its oldest journal. `companion/src/witness/log-bundle.ts`.
+
+### Changed
+
+- **Castcade wears the Arcaid look (E14, ADR 0014).** The window and all its tabs, the Witness edition, the headset
+  panel, the scoreboard card and the in-game menu use Arcaid's Witness kit on the arcade carpet, the look of Arcaid's
+  own account pages. Cyan means fine, pink needs your attention (and marks your own ball), red is a problem; no text
+  under 12 px, a visible focus ring, placeholders in the shape of what is loading, empty lists that say what to do.
+  Play or Watch is one switch. The fonts are carried in the app, which runs offline.
+- **The Match tab in one order**: what the lobby is (code, invite, who is here, its table), then what is happening,
+  then what you can do; every question is asked beside its own buttons. "Before the match" is gone. The 3D watch card
+  stays a session of its own (Host a session), outside the lobby.
+
+### Fixed
+
+- **Another player's dropped link no longer disturbs the player who is up (A18, ADR 0012).** A link that drops has 5 s
+  before anyone is told; after that only the player who holds the turn is paused for, and the others are waited for at
+  their own turn. The voice, picture and 3D connections between two PCs whose own connection is up are no longer made
+  again because ArcAid or a third PC blinked, and whatever a player reported into a dead link is sent again after the
+  reconnect. VPX gets the foreground back after a pause (I11.4.18).
+- **A joining PC opens the copy of the table the host plays (I11.4.15).** Among several copies of a table, the one the
+  Castcade VPX build counts as the host's (its table objects, the identity that decides 3D) comes first, not the one
+  played last: on 2026-11-23 a joining PC opened a mixed-reality mod of Congo, and the turn was 2D.
+- **The scoreboard puts itself back in view (D8.12.3.2, OpenXR layer 0.8.1).** A scoreboard fixed in the room that has
+  been out of view for 8 s while the head kept facing one way is placed again where the head faces, so turning to the
+  arcade controls and recentring the table in VPX no longer leaves it behind you.
+- **Voice and 3D connections try again from both ends, sooner, and never give up (I11.12).** Restarts take turns
+  between the two PCs, 3 to 12 s apart, then one every 30 s for as long as the other player is in the match; the panel
+  no longer asks for a TURN relay beside a picture that already has a direct path.
+- **Four small races (E13).** A 3D watch client told once, after an ArcAid restart, that its room was gone never asked
+  again; every 3D watch join was asked twice, so a mistyped code counted as two misses; a Castcade closed during a
+  player's first ball could take a reopened table for the same one; a recording whose folder went away while ffmpeg ran
+  left the recorder stuck. The tests take their ports from the system, which ends most of the flaky runs (H8).
+- **The match link is hardened (H10).** A link belongs to one player once its first frame is accepted.
+
+### Before the first evening
+
+- Everyone on this version the same evening: protocol 7 does not meet 0.2.50.
+- VPX restarted once after the update (OpenXR layer 0.8.1).
+- In VR, Open it, Change table and "Make … the lobby's table" are buttons on the Match tab of the desktop window; the
+  headset says so where it matters.
+- After the evening, whatever happened: Settings → Send logs to Arcaid support.
+
+**Wire / journal:** protocol 7 (`PROTOCOL_SINCE_RELEASE` '0.2.51'). New messages START_REQUEST, START_CANCEL,
+END_REQUEST, TABLE_PICK, LEAVE_LOBBY, LOBBY_CLOSED and MATCH_LOG (a match's log in pages); a lobby's facts in
+HELLO_ACK; one signed body for every RECONNECT (`protocol/SPEC.md`, `protocol/schemas/`). No score parameter and no
+journal line changed; the hook library is unchanged; the OpenXR layer's pipe protocol stays 5.
 
 ## [0.2.50] — 2026-11-24
 
