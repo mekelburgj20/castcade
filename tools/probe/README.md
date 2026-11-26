@@ -38,3 +38,27 @@ and point it at them:
 
 The `castcade-probe-....txt` file, to whoever asked you to run this. Open it in Notepad first if you
 like; everything it contains is plain text.
+
+# Castcade build check
+
+A second, smaller script for one question: why a score's evidence says the VPX or VPinMAME build
+could not be validated (ArcAid's "Known build" rule). Give it to a player whose scores are flagged
+for that. Like the probe it only reads, uses no network and needs no administrator rights; it must
+**not** be run as administrator, because it has to see what Castcade sees.
+
+It reports, with the Windows user name replaced by `<user>`:
+
+- whether each running `VPinballX*` process is elevated, the path and command line Castcade reads
+  for it (both are empty for an elevated VPX, which is what makes the build unreadable), its real
+  path, and which programs started it;
+- whether PinUP Popper runs elevated (a table it starts inherits that, whatever VPX's own
+  "Run as administrator" box says), "Run as administrator" compatibility flags and startup tasks
+  with highest privileges on pinball programs, and whether UAC is switched off;
+- the VPX exe and the VPinMAME DLL that VPX loads: version, SHA-256, whether it is an official
+  release, and whether ArcAid passes it by version (VPX from 10.8.0, VPinMAME from 3.6.0);
+- the last build lines of Castcade's `companion.log`.
+
+How to run it: start a table the usual way (from the frontend, if the player uses one) and leave it
+running, double-click `Castcade Build Check.cmd`, and send back the
+`castcade-build-check-<date>-<time>.txt` it writes on the Desktop (`-OutDir <folder>` to choose).
+Written on 2026-11-25 for a player whose scores failed "Known build" (WORK B32, B32.1, B33).
