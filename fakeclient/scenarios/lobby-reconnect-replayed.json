@@ -1,0 +1,15 @@
+{
+  "name": "lobby-reconnect-replayed",
+  "description": "A17 step 6: a player's link drops and comes back; the RECONNECT it sent is then sent a second time, as it was. The lobby's PC refuses it (stale_seq) and nothing about the player changes: the match is played out with one log.",
+  "matchId": "REPLAY",
+  "ballsPerGame": 2,
+  "lobby": true,
+  "host": "p1",
+  "players": [
+    { "playerId": "p1", "displayName": "Lobby PC", "stance": "play", "scores": [1000, 2000] },
+    { "playerId": "p2", "displayName": "Player Two", "stance": "play", "scores": [1500, 3000], "drops": { "match": 1, "afterGrants": 3, "forMs": 30 } }
+  ],
+  "matches": [
+    {}
+  ]
+}

@@ -17,6 +17,7 @@
  * self-contained (no imports, no closures over this module).
  */
 import type { PanelState, ScoreboardCorner } from './match-media-types.js';
+import { kitCss } from './aw-kit.js';
 
 export type { ScoreboardCorner };
 
@@ -36,15 +37,31 @@ export interface ScoreboardRow {
   score: string;
   /** This player's ball now. */
   up: boolean;
+  /**
+   * A18 (2026-11-24): this player is not on the match's control link right now (the panel's `disconnected` flag). The
+   * match goes on without a pause while it is somebody else's ball, so this card, which is all the player who is up
+   * sees of the match, is where it shows: the row is dimmed and says AWAY.
+   */
+  away: boolean;
 }
 
 export interface ScoreboardView {
-  /** `GAME 3 · BALL 2 OF 3`, `PAUSED · GAME 3 · BALL 2 OF 3`, `GAME 3 OVER`. */
+  /** `GAME 3 · BALL 2 OF 3`, `PAUSED · GAME 3 · BALL 2 OF 3`, `KROBS AWAY · GAME 3 · BALL 2 OF 3` (A17 step 4), `LOBBY PC AWAY · GAME 3 · BALL 2 OF 3` (step 9), `GAME 3 OVER`. */
   title: string;
   /** The players in turn order (the controller's), never re-sorted: a row does not jump while a score climbs. */
   rows: ScoreboardRow[];
   /** `18 GAMES PLAYED · MekelburgJ 10 · Krobs 8`. */
   tally: string;
+}
+
+/**
+ * The final review (finding 10): a name as it is shown in a header or a sentence: cut to `max` characters, the last an
+ * ellipsis. The page embeds its helpers by their source text, and a helper can only call what is defined in its own
+ * file: this is `match/short-name.ts`, word for word (held equal by panel-page.test.ts).
+ */
+export function shortName(name: string, max = 24): string {
+  const chars = Array.from(String(name));
+  return chars.length <= max ? String(name) : chars.slice(0, Math.max(1, max - 1)).join('') + '…';
 }
 
 /**
@@ -58,7 +75,7 @@ export function tallyText(s: Pick<PanelState, 'players' | 'series'>): string {
   for (const x of series) if (x.games > games) games = x.games;
   const wins = s.players.map((p) => {
     const sr = series.find((x) => x.id === p.id);
-    return p.name + ' ' + (sr ? sr.wins : 0);
+    return shortName(p.name, 14) + ' ' + (sr ? sr.wins : 0);
   });
   return [games + (games === 1 ? ' GAME PLAYED' : ' GAMES PLAYED'), ...wins].join(' · ');
 }
@@ -73,11 +90,25 @@ export function scoreboardView(s: PanelState | null): ScoreboardView | null {
   let title = 'GAME ' + game;
   if (s.phase === 'over') title += ' OVER';
   else if (s.ball !== null) title += ' · BALL ' + s.ball + ' OF ' + s.ballsPerGame;
-  if (s.phase === 'paused') title = 'PAUSED · ' + title;
+  if (s.phase === 'paused') {
+    // A17 step 4 (2026-11-24): a pause for the player who is up, read by somebody who watches them: that player is
+    // away from the host and may well be playing on, and the watcher keeps the picture while it arrives. The card is
+    // then all that says so: `KROBS AWAY · GAME 2 · BALL 1 OF 3`. Any other pause, and the player's own card: PAUSED.
+    const up = s.pausedFor && s.pausedFor === s.playerUp && !s.myTurn ? s.players.find((p) => p.id === s.pausedFor) : null;
+    // The final review (finding 4): the game waits for a player who does not hold the turn: said by name.
+    const waited = !up && s.pausedFor ? s.players.find((p) => p.id === s.pausedFor) : null;
+    title = (up ? shortName(up.name, 10).toUpperCase() + ' AWAY' : waited && !s.myTurn ? 'WAITING FOR ' + shortName(waited.name, 10).toUpperCase() : 'PAUSED') + ' · ' + title;
+  }
+  // A17 step 9 (2026-11-27, design 11.9): the lobby's PC is away (the first of the lobby's rows is its own): the
+  // game goes on under the player who is up, and this card is all that player sees of it.
+  const lobbyPc = s.members && s.members.length > 0 ? s.members[0] : null;
+  if (lobbyPc && lobbyPc.flags.indexOf('away') >= 0 && title.indexOf(' AWAY · ') < 0) title = 'LOBBY PC AWAY · ' + title.replace(/^PAUSED · /, '');
   const rows = s.players.map((p) => ({
-    name: p.name,
+    // The final review (finding 10): cut so that AWAY beside it and the score keep their room.
+    name: shortName(p.name, 11),
     score: p.score === null ? '–' : p.score.toLocaleString('en-US'),
     up: s.phase !== 'over' && p.isUp,
+    away: s.phase !== 'over' && (p.flags || []).indexOf('disconnected') >= 0,
   }));
   return { title, rows, tally: tallyText(s) };
 }
@@ -90,29 +121,37 @@ export function scoreboardWanted(s: Pick<PanelState, 'phase'> | null, enabled: b
   return enabled && s !== null && s.phase !== 'idle';
 }
 
-const HELPERS = [tallyText, scoreboardView];
+const HELPERS = [shortName, tallyText, scoreboardView];
 
 /** The page: a transparent 512x384 frame with the card at its bottom edge. */
 export function scoreboardPageHtml(): string {
   const helpers = HELPERS.map((f) => f.toString()).join('\n');
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Castcade scoreboard</title>
+<style>${kitCss()}</style>
 <style>
-  :root { --card: rgba(8, 10, 14, 0.78); --text: #fff; --dim: #b8c0cc; --up: #4fd1ff; }
+  /* The Arcaid look (2026-11-25): the kit's panel (its edge and top light bar) over the game; the kit's board (the
+     name in the UI face at 700, as before, the score in Orbitron; the player who is up in cyan). Every size is what it was before. The
+     card is a little darker than before (the kit's panel, 0.86 of the canvas) so its text keeps 4.5:1 over a bright table. */
+  :root { --card: color-mix(in srgb, var(--aw-canvas) 86%, transparent); --text: var(--aw-ice); --dim: var(--aw-chrome); --up: var(--aw-cyan); }
   * { box-sizing: border-box; margin: 0; }
   html, body { width: 100%; height: 100%; background: transparent; overflow: hidden; color: var(--text);
-    font-family: 'Segoe UI', system-ui, sans-serif; font-weight: 700; }
+    font-family: var(--aw-font-ui); font-weight: 700; -webkit-font-smoothing: antialiased; }
   body { display: flex; flex-direction: column; justify-content: flex-end; }
-  #card { background: var(--card); border-radius: 14px; padding: 12px 16px 12px; display: grid; gap: 6px; }
+  #card { position: relative; background: var(--card); border: 2px solid var(--aw-panel-border); border-radius: 14px; padding: 12px 16px 12px; display: grid; gap: 6px; }
+  #card::before { content: ""; position: absolute; left: 24px; right: 24px; top: -2px; height: 3px; border-radius: 3px;
+    background: linear-gradient(90deg, var(--aw-pink), var(--aw-cyan)); box-shadow: 0 0 12px color-mix(in srgb, var(--aw-cyan) 60%, transparent); }
   #card.off { display: none; }
-  #title { font-size: 21px; letter-spacing: 0.06em; color: var(--dim); }
+  #title { font-size: 21px; letter-spacing: 0.1em; color: var(--dim); }
   #rows { display: grid; gap: 4px; }
-  .row { display: grid; grid-template-columns: 24px 1fr auto; gap: 6px; align-items: baseline; font-size: 30px; line-height: 1.25; }
+  .row { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; gap: 6px; align-items: baseline; font-size: 30px; line-height: 1.25; }
   .row .mark { color: var(--up); font-size: 22px; }
   .row .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .row .score { font-variant-numeric: tabular-nums; }
+  .row .score { font-family: var(--aw-font-display); font-weight: 700; font-variant-numeric: tabular-nums; }
   .row.up .name, .row.up .score { color: var(--up); }
-  #tally { font-size: 20px; line-height: 1.3; color: var(--dim); border-top: 2px solid rgba(255, 255, 255, 0.18); padding-top: 6px; }
+  .row.away .name, .row.away .score { color: var(--dim); }
+  .row .name small { font-size: 16px; letter-spacing: 0.14em; margin-left: 8px; color: var(--dim); }
+  #tally { font-size: 20px; line-height: 1.3; color: var(--dim); border-top: 2px solid var(--aw-divider); padding-top: 6px; }
 </style></head>
 <body>
 <div id="card" class="off"><div id="title"></div><div id="rows"></div><div id="tally"></div></div>
@@ -140,13 +179,18 @@ function render(state) {
   rows.replaceChildren();
   for (const r of view ? view.rows : []) {
     const el = document.createElement('div');
-    el.className = r.up ? 'row up' : 'row';
+    el.className = 'row' + (r.up ? ' up' : '') + (r.away ? ' away' : '');
     const mark = document.createElement('span');
     mark.className = 'mark';
     mark.textContent = r.up ? '▶' : '';
     const name = document.createElement('span');
     name.className = 'name';
     name.textContent = r.name;
+    if (r.away) {
+      const tag = document.createElement('small');
+      tag.textContent = 'AWAY';
+      name.appendChild(tag);
+    }
     const score = document.createElement('span');
     score.className = 'score';
     score.textContent = r.score;

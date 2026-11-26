@@ -1366,6 +1366,144 @@ describe('createWitness: live mode (a table with a Castcade sidecar posts every 
       await o.until(() => o.witness.status().ballEnds === true);
       expect(o.witness.status()).toMatchObject({ captureMode: 'live', ballEnds: true, ballEndsNote: null });
     });
+
+    describe('A17 step 3: `gamesSeen` is true only with evidence that a game on the open table would be seen (review of PR 137, finding 2)', () => {
+      const loaded = (recipe: string, rom: string, atMs: number): string =>
+        `{"event":"table_loaded","t":0,"table":"T","recipe":"${recipe}","recipe_version":"${RECIPE_VERSION}","rom":"${rom}","lib":"0.6.0","session":"${hookStamp(atMs)}","locked":false}\n`;
+      /** The import's manifest for the original the Data East file stands in for: recipe B, whole or partial. */
+      const originalManifest = (partial?: string[]): string =>
+        JSON.stringify({
+          tableId: TFTC_TABLE, vpxPath: TFTC_PATH, vpxSha256: null, vpxSize: MM_VPX.length, vpxMtimeMs: 0, scriptSha256: '0'.repeat(64),
+          class: 'B', recipe: 'B', recipeVersion: RECIPE_VERSION, libVersion: '0.6.0', rom: null, sidecarPath: TFTC_SIDECAR,
+          sidecarSha256: '0'.repeat(64), anchors: {}, warnings: [], renderedAt: '2026-11-20T00:00:00Z', verified: null, ...(partial ? { partial } : {}),
+        });
+
+      it('a machine followed without its ball ends (Stern SAM names a game start late): live, and not seen', async () => {
+        const h = smanHarness(true);
+        await h.witness.start();
+        expect(h.witness.status()).toMatchObject({ gamesSeen: null, currentPid: null, currentVpxExe: null, vpxOpen: 0 });
+        await h.launch(SMAN_CMD, 31);
+        await h.until(() => h.witness.status().captureMode === 'live');
+        expect(h.witness.status()).toMatchObject({ captureMode: 'live', gamesSeen: false, currentPid: 31, vpxOpen: 1 });
+        h.fs.put(SMAN_JOURNAL, smanJournalAt(h.clock.now() + 4000).split('\n').slice(0, 4).join('\n') + '\n');
+        await h.poll();
+        await h.until(() => h.witness.status().ballEnds === false);
+        expect(h.witness.status()).toMatchObject({ captureMode: 'live', gamesSeen: false });
+      });
+
+      it("a ROM machine whose ball is in NVRAM: not before this process's table_loaded was read, then yes; a journal session of an earlier process is no evidence", async () => {
+        const h = liveHarness();
+        await h.witness.start();
+        await h.launch(TFTC_CMD, 31);
+        expect(h.witness.status()).toMatchObject({ captureMode: 'live', gamesSeen: false });
+        h.fs.put(TFTC_JOURNAL, loaded('A', 'tftc_400', h.clock.now()));
+        await h.poll();
+        await h.until(() => h.witness.status().ballEnds === true);
+        expect(h.witness.status()).toMatchObject({ captureMode: 'live', gamesSeen: true, currentPid: 31, vpxOpen: 1 });
+        // No table open: nothing to see.
+        await h.exit();
+        await h.settle(8000);
+        expect(h.witness.status()).toMatchObject({ gamesSeen: null, currentPid: null, vpxOpen: 0 });
+
+        // The journal's last table_loaded is an hour older than this VPX process: it is not this process's table.
+        const old = harness({}, { journalDir: '/journal', journalPollMs: 250 });
+        old.fs.put(TFTC_PATH, MM_VPX);
+        old.fs.put(TFTC_SIDECAR, SIDECAR_HEAD + "Sub Table1_KeyDown(ByVal KeyCode)\r\nEnd Sub\r\n");
+        await old.witness.start();
+        old.fs.put(TFTC_JOURNAL, loaded('A', 'tftc_400', old.clock.now() - 3_600_000));
+        await old.launch(TFTC_CMD, 31, { startedAt: old.clock.now() });
+        await old.poll();
+        await old.flush();
+        expect(old.witness.status()).toMatchObject({ captureMode: 'live', gamesSeen: false });
+      });
+
+      it('review of PR 139: `watching` is true only while the witness runs and has looked at the processes; while watching is paused no game is seen, and what the status names is what was open at the pause', async () => {
+        const h = liveHarness();
+        // A witness that was just made has looked at nothing: "no table, no VPX" is not something it knows yet.
+        expect(h.witness.status()).toMatchObject({ watching: false, vpxOpen: 0 });
+        expect(h.witness.watching()).toBe(false);
+        await h.witness.start();
+        await h.until(() => h.witness.status().watching === true);
+        await h.launch(TFTC_CMD, 31);
+        h.fs.put(TFTC_JOURNAL, loaded('A', 'tftc_400', h.clock.now()));
+        await h.poll();
+        await h.until(() => h.witness.status().gamesSeen === true);
+        // "Pause watching": the table is still named, and nothing says a game on it would be seen.
+        const said: Array<boolean | null | undefined> = [];
+        h.witness.on('status', (s) => said.push(s.gamesSeen));
+        await h.witness.stop();
+        expect(h.witness.status()).toMatchObject({ running: false, watching: false, gamesSeen: false, currentPid: 31, vpxOpen: 1 });
+        expect(h.witness.status().currentTable).not.toBeNull();
+        expect(said.at(-1)).toBe(false);
+        expect([h.witness.watching(), h.witness.holdsVpx(31)]).toEqual([false, true]);
+        // Watching again: only once it has looked.
+        await h.witness.start();
+        await h.until(() => h.witness.status().watching === true);
+        await h.poll();
+        await h.until(() => h.witness.status().gamesSeen === true);
+        expect(h.witness.status()).toMatchObject({ watching: true, gamesSeen: true, currentPid: 31, vpxOpen: 1 });
+      });
+
+      it('an original: seen only when the import manifest says its patch is whole; partial, or no manifest at all, is not', async () => {
+        // No manifest: the journal is read (live) and the ball ends are the recipe's, but nobody can say the patch is whole.
+        const none = liveHarness();
+        await none.witness.start();
+        await none.launch(TFTC_CMD, 31);
+        none.fs.put(TFTC_JOURNAL, loaded('B', '', none.clock.now()));
+        await none.poll();
+        await none.until(() => none.witness.status().ballEnds === true);
+        expect(none.witness.status()).toMatchObject({ captureMode: 'live', ballEnds: true, gamesSeen: false });
+
+        const whole = liveHarness();
+        whole.fs.put(manifestPathFor(manifestDirFor('/data'), TFTC_TABLE), originalManifest());
+        await whole.witness.start();
+        await whole.launch(TFTC_CMD, 31);
+        // Armed, VPX has written nothing yet: still not seen.
+        expect(whole.witness.status()).toMatchObject({ captureMode: 'live', gamesSeen: false });
+        whole.fs.put(TFTC_JOURNAL, loaded('B', '', whole.clock.now()));
+        await whole.poll();
+        await whole.until(() => whole.witness.status().gamesSeen === true);
+        expect(whole.witness.status()).toMatchObject({ captureMode: 'live', ballEnds: true, gamesSeen: true });
+
+        // A partial patch may journal no game start at all: live for the whole game, and none is ever seen.
+        const partial = liveHarness();
+        partial.fs.put(manifestPathFor(manifestDirFor('/data'), TFTC_TABLE), originalManifest(['no game start is journaled']));
+        await partial.witness.start();
+        await partial.launch(TFTC_CMD, 31);
+        partial.fs.put(TFTC_JOURNAL, loaded('B', '', partial.clock.now()));
+        await partial.poll();
+        await partial.until(() => partial.witness.status().ballEnds === true);
+        expect(partial.witness.status()).toMatchObject({ captureMode: 'live', ballEnds: true, gamesSeen: false });
+      });
+
+      it('basic mode is never seen; two VPX open are counted, and each exit names its process', async () => {
+        const h = harness();
+        const exits: Array<number | undefined> = [];
+        /** What the witness says at the moment a process is seen gone: whether it still holds it, and how many VPX its status counts. */
+        const atExit: Array<[boolean, number | undefined]> = [];
+        h.witness.on('exit', (i) => {
+          exits.push(i.pid);
+          atExit.push([h.witness.holdsVpx(i.pid ?? -1), h.witness.status().vpxOpen]);
+        });
+        await h.witness.start();
+        await h.launch(MM_CMD, 10);
+        expect(h.witness.status()).toMatchObject({ captureMode: 'basic', gamesSeen: false, currentPid: 10, vpxOpen: 1 });
+        expect([h.witness.holdsVpx(10), h.witness.holdsVpx(11)]).toEqual([true, false]);
+        await h.processes([
+          { pid: 10, exe: EXE, commandLine: MM_CMD, startedAt: null, windowTitle: null },
+          { pid: 11, exe: EXE, commandLine: TFTC_CMD, startedAt: null, windowTitle: null },
+        ]);
+        expect(h.witness.status().vpxOpen).toBe(2);
+        await h.processes([{ pid: 11, exe: EXE, commandLine: TFTC_CMD, startedAt: null, windowTitle: null }]);
+        await h.settle(8000);
+        expect(exits).toEqual([10]);
+        // The process is let go of at once; the status follows when the close-time capture is done (it still counted two).
+        expect(atExit).toEqual([[false, 2]]);
+        expect(h.witness.status()).toMatchObject({ currentPid: 11, vpxOpen: 1 });
+        // No list to compare a score with (no live table): not known, which is not "no".
+        expect(h.witness.highScoreKnown(1_000_000)).toBeNull();
+      });
+    });
   });
 
   it('B15: a table that loaded an older patch than this build says so once, and stays live', async () => {

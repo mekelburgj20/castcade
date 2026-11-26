@@ -58,6 +58,12 @@ export interface FakeRelayOptions {
   reverifyMs?: number;
   /** socket.io path, for a base URL with a path. Default `/socket.io`. */
   path?: string;
+  /**
+   * How long the device check takes (a database read on the server), in ms. Default: the next tick, which a test PC
+   * answers in well under a millisecond; a real answer from ArcAid takes tens of them, and what a client does while
+   * it waits for one only shows with a wait here (2026-11-24).
+   */
+  checkMs?: number;
 }
 
 interface Window {
@@ -111,6 +117,8 @@ export interface FakeRelay {
   dropDevice(deviceId: string): void;
   /** The device's pairing is revoked: it no longer verifies. */
   revoke(deviceId: string): void;
+  /** The device verifies (again): after `revoke`, the server "could not read the device" only for a while. */
+  accept(deviceId: string, token: string): void;
   /** Close every room as the server does, the sockets staying up (`expired`, `server_restart`). */
   closeRooms(reason: string): void;
   /**
@@ -159,7 +167,7 @@ export async function startFakeRelay(opts: FakeRelayOptions): Promise<FakeRelay>
   };
   /** The device check is a database read on the server: never in the same tick. */
   const deviceOf = async (s: Socket): Promise<string | null> => {
-    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => (opts.checkMs ? setTimeout(r, opts.checkMs) : setImmediate(r)));
     const { deviceId, deviceToken } = authOf(s);
     return deviceId !== '' && deviceToken !== '' && devices[deviceId] === deviceToken ? deviceId : null;
   };
@@ -465,6 +473,9 @@ export async function startFakeRelay(opts: FakeRelayOptions): Promise<FakeRelay>
     },
     revoke(deviceId) {
       delete devices[deviceId];
+    },
+    accept(deviceId, token) {
+      devices[deviceId] = token;
     },
     closeRooms(reason) {
       for (const room of [...rooms.values()]) closeRoom(room, reason);

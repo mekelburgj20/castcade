@@ -41,6 +41,7 @@ async function rig(clientIds: string[], balls = 1, opts: { ballEndTimeoutMs?: nu
   const clock = new ManualClock();
   const hostKeys = generateKeys();
   const host = new HostMatch({
+    disconnectGraceMs: 0,
     transport: bus.transport('h'),
     keys: hostKeys,
     matchId: 'M',
@@ -57,7 +58,7 @@ async function rig(clientIds: string[], balls = 1, opts: { ballEndTimeoutMs?: nu
   for (const id of clientIds) {
     const k = generateKeys();
     keys[id] = k;
-    const c = new ClientMatch({ transport: bus.transport(id), keys: k, participant: participant(id, k), game, throwdownCode: 'M', hostId: 'h', clock });
+    const c = new ClientMatch({ disconnectGraceMs: 0, transport: bus.transport(id), keys: k, participant: participant(id, k), game, throwdownCode: 'M', hostId: 'h', clock });
     clients[id] = c;
     c.join();
   }
@@ -76,11 +77,11 @@ describe('joining', () => {
     r.host.on('refused', (x) => refusals.push({ id: x.playerId, code: x.refuse.code }));
     const join = (id: string, throwdown = 'M'): ClientMatch => {
       const k = generateKeys();
-      const c = new ClientMatch({ transport: r.bus.transport(id), keys: k, participant: participant(id, k), game, throwdownCode: throwdown, hostId: 'h', clock: r.clock });
+      const c = new ClientMatch({ disconnectGraceMs: 0, transport: r.bus.transport(id), keys: k, participant: participant(id, k), game, throwdownCode: throwdown, hostId: 'h', clock: r.clock });
       c.join();
       return c;
     };
-    const dup = new ClientMatch({ transport: r.bus.transport('a2'), keys: generateKeys(), participant: { ...participant('a2', generateKeys()) }, game, throwdownCode: 'M', hostId: 'h' });
+    const dup = new ClientMatch({ disconnectGraceMs: 0, transport: r.bus.transport('a2'), keys: generateKeys(), participant: { ...participant('a2', generateKeys()) }, game, throwdownCode: 'M', hostId: 'h' });
     // Hand-built HELLO whose participant id differs from the envelope (refused with `other`).
     dup.session.transport.send('h', buildMessage('HELLO', { protocolVersion: PROTOCOL_VERSION, companionVersion: '0', throwdownCode: 'M', participant: participant('a', generateKeys()), game }, { matchId: null, seq: 1, from: 'a2' }));
     const wrong = join('w', 'OTHER');
@@ -109,7 +110,7 @@ describe('joining', () => {
     await flush();
     const late = join.call(null, 'late');
     void late;
-    const lateClient = new ClientMatch({ transport: r2.bus.transport('late2'), keys: generateKeys(), participant: participant('late2', k), game, throwdownCode: 'M', hostId: 'h' });
+    const lateClient = new ClientMatch({ disconnectGraceMs: 0, transport: r2.bus.transport('late2'), keys: generateKeys(), participant: participant('late2', k), game, throwdownCode: 'M', hostId: 'h' });
     lateClient.join();
     await flush();
     expect(dupRefused).toEqual(['match_started']);
@@ -147,9 +148,9 @@ describe('joining', () => {
     const setup = (policy?: 'refuse' | 'advise') => {
       const bus = new MemoryBus();
       const hk = generateKeys();
-      const host = new HostMatch({ transport: bus.transport('h'), keys: hk, matchId: 'M', ballsPerGame: 1, hostParticipant: participant('h', hk), hostGame: game, fingerprintPolicy: policy });
+      const host = new HostMatch({ disconnectGraceMs: 0, transport: bus.transport('h'), keys: hk, matchId: 'M', ballsPerGame: 1, hostParticipant: participant('h', hk), hostGame: game, fingerprintPolicy: policy });
       const ck = generateKeys();
-      const client = new ClientMatch({ transport: bus.transport('c'), keys: ck, participant: participant('c', ck), game: other, throwdownCode: 'M', hostId: 'h' });
+      const client = new ClientMatch({ disconnectGraceMs: 0, transport: bus.transport('c'), keys: ck, participant: participant('c', ck), game: other, throwdownCode: 'M', hostId: 'h' });
       const hostFlags: string[][] = [];
       const clientFlags: Array<{ playerId: string; fields: string[] }> = [];
       host.on('tableMismatch', (m) => hostFlags.push(m.mismatches.map((x) => x.field)));
@@ -221,8 +222,9 @@ describe('rejects and the seq rule', () => {
       ['FORFEIT', 'unexpected_state'],
       ['LOG_SIGN', 'unexpected_state'],
     ]);
-    // REJECTs reached the client (the unknown_player one went to 'zz', which has no transport).
-    expect(aRejects.map((x) => x.code)).toEqual(['unexpected_state', 'schema', 'unexpected_state', 'not_grant_holder', 'unexpected_state', 'unexpected_state', 'unexpected_state']);
+    // REJECTs reached the client, the unknown_player one too: an answer goes to the link its frame came on (2026-11-25).
+    expect(aRejects.map((x) => x.code)).toEqual(['unexpected_state', 'unknown_player', 'schema', 'unexpected_state', 'not_grant_holder', 'unexpected_state', 'unexpected_state', 'unexpected_state']);
+    expect(r.rejects[1]).toMatchObject({ to: 'a', refType: 'STATE', code: 'unknown_player' });
     // Nothing was logged by any of that.
     expect(r.host.log.length).toBe(2);
     expect(a.log.length).toBe(2);
@@ -480,13 +482,13 @@ describe('A8 (2026-10-31): every client sees whose table differs, and a transfer
     const bus = new MemoryBus();
     const clock = new ManualClock();
     const hk = generateKeys();
-    const host = new HostMatch({ transport: bus.transport('h'), keys: hk, matchId: 'M', ballsPerGame: 1, hostParticipant: participant('h', hk), hostGame: game, fingerprintPolicy: 'advise', clock });
+    const host = new HostMatch({ disconnectGraceMs: 0, transport: bus.transport('h'), keys: hk, matchId: 'M', ballsPerGame: 1, hostParticipant: participant('h', hk), hostGame: game, fingerprintPolicy: 'advise', clock });
     const clients: Record<string, ClientMatch> = {};
     const flags: Record<string, Array<{ playerId: string; fields: string[] }>> = {};
     const rosters: Record<string, string[][]> = {};
     for (const id of ids) {
       const k = generateKeys();
-      const c = new ClientMatch({ transport: bus.transport(id), keys: k, participant: participant(id, k), game: id === 'a' ? other : game, throwdownCode: 'M', hostId: 'h', clock });
+      const c = new ClientMatch({ disconnectGraceMs: 0, transport: bus.transport(id), keys: k, participant: participant(id, k), game: id === 'a' ? other : game, throwdownCode: 'M', hostId: 'h', clock });
       const f: Array<{ playerId: string; fields: string[] }> = [];
       const ro: string[][] = [];
       c.on('tableMismatch', (m) => f.push({ playerId: m.playerId, fields: m.mismatches.map((x) => x.field) }));

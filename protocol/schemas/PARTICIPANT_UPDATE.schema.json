@@ -1,5 +1,5 @@
 {
-  "$id": "https://castcade.dev/protocol/v6/PARTICIPANT_UPDATE.schema.json",
+  "$id": "https://castcade.dev/protocol/v7/PARTICIPANT_UPDATE.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "properties": {
@@ -178,8 +178,77 @@
       "type": "integer",
       "minimum": 0,
       "maximum": 120000
+    },
+    "stance": {
+      "description": "A17: the sender's choice now, Play or Watch at the next start. It changes nothing in a game that is being played.",
+      "type": "string",
+      "enum": [
+        "play",
+        "watch"
+      ]
+    },
+    "noCopy": {
+      "description": "A17: true: the sender's PC has no copy of the lobby's table (`HELLO_ACK.hostGame`); false: it has.",
+      "type": "boolean"
+    },
+    "ownGame": {
+      "description": "A17: true: a game the match does not own is running on the sender's table (played alone, in the lobby or as a watcher); false: it has ended.",
+      "type": "boolean"
+    },
+    "tableChange": {
+      "description": "A17: what the sender's PC is doing about a change of the lobby's table (`TableChange`); null: nothing any more (its table is the lobby's, or it has no copy: `noCopy`).",
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "waits_game",
+            "waits_person",
+            "offered",
+            "closing",
+            "opening"
+          ],
+          "description": "A17: `waits_game`: a game, or the entry of its initials, is on the table that is open there, and the change waits for it; `waits_person`: the person has to close the open table themselves; `offered`: the PC changes tables only when its person says so; `closing`: the open table was asked to close; `opening`: the lobby's table is being opened."
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "pickCopy": {
+      "description": "A17: the sender's open table (`tableName` and `tableHash` as its `game` says them) is its PC's own copy of the lobby's table named `pick`, by the rules that PC finds a copy with (the ROM its table list knows, which `game` does not carry). While the lobby's table has that name and the sender's `game` is that table, the host does not list the sender in `otherTable`. Null: no longer.",
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "pick": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "tableName": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "tableHash": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$",
+              "description": "Lower-case hex SHA-256."
+            }
+          },
+          "required": [
+            "pick",
+            "tableName",
+            "tableHash"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "additionalProperties": false,
-  "description": "client -> host in the lobby: replaces the sender's HELLO `participant.rig` and `game`; the host compares the fingerprint again and re-sends HELLO_ACK to every client; (I11.4.9) `stream3dWaitMs` says whether the sender's 3D connection is still being made. After MATCH_READY (A6.1, 2026-11-01) only `rig`, (B26) `advisory` and (B26.4) `midnightMode` count: the roster in the log stays final, and the host passes the update on to every other participant (`from` preserved) and sends its own the same way, so each Match tab and panel shows the rig each player has now. Never logged."
+  "description": "client -> host in the lobby: replaces the sender's HELLO `participant.rig` and `game`; the host compares the fingerprint again and re-sends HELLO_ACK to every client; (I11.4.9) `stream3dWaitMs` says whether the sender's 3D connection is still being made. After MATCH_READY (A6.1, 2026-11-01) only `rig`, (B26) `advisory` and (B26.4) `midnightMode` count: the roster in the log stays final, and the host passes the update on to every other participant (`from` preserved) and sends its own the same way, so each Match tab and panel shows the rig each player has now. Never logged. In a lobby (A17) it counts in every phase for `rig`, `game`, `ballEndReady`, `midnightMode`, `stance`, `noCopy`, `ownGame`, `tableChange` and `pickCopy`: the host answers with HELLO_ACK to every member, and a match's logged roster and fingerprint stay what its MATCH_READY said."
 }

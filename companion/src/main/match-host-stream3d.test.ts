@@ -32,7 +32,7 @@ vi.mock('electron', () => {
   return { BrowserWindow, ipcMain: { on: () => undefined } };
 });
 
-const { createMatchHost } = await import('./match-host.js');
+const { createMatchHost, matchHalfOf } = await import('./match-host.js');
 const { matchSignalling } = await import('./match-setup.js');
 const { createStream3dHost } = await import('./stream3d-host.js');
 const { startFakeRelay } = await import('../match/relay-fake.test-support.js');
@@ -98,6 +98,9 @@ function table(o: { qualifies?: boolean } = {}) {
     w,
     gameStart: () => say({ kind: 'game_start', t: 0, players: 1 } as Feed),
     gameEnd: (score: number) => say({ kind: 'game_end', t: 0, scores: [score], players: 1 } as Feed),
+    /** The table's score while a ball is in play, and a ball draining with nothing else said (A17 step 4). */
+    score: (ball: number, score: number) => say({ kind: 'current_scores', t: 0, scores: [score], player: 1, ball } as Feed),
+    drain: (ball: number) => say({ kind: 'ball_end', t: 0, player: 1, ball, extraBalls: 0 } as Feed),
     /** One ball played to its end at `score`; `again`: the machine has an extra ball pending (shoot again). */
     ball(ball: number, score: number, again = false) {
       say({ kind: 'current_scores', t: 0, scores: [score], player: 1, ball } as Feed);
@@ -245,11 +248,15 @@ function seat(hub: Hub, name: string, o: SeatOptions = {}): Seat {
     witness: t.w,
     device: () => ({ deviceId: `dev-${name}`, deviceLabel: name }),
     appVersion: '0.2.46',
+    // A18: no grace: these tests are about what follows a dropped link, not the wait before it counts.
+    disconnectGraceMs: 0,
     log,
     publicIp: () => Promise.resolve('127.0.0.1'),
     lockFile: lock,
     listenAddress: '127.0.0.1',
     ephemeralPort: true,
+    // A17 step 7: every match is in a lobby, and every start of a lobby counts down (5 s in the app); here it is short.
+    lobby: { countdownMs: 20 },
     openPort: null,
     media: fakes.media,
     ...(vr ? { vrLayer: fakes.layer } : {}),
@@ -561,7 +568,7 @@ describe('the state stream inside a match (I11.4.2)', () => {
     await until(() => up(H, 2) && watching(C2) === H.id(), 8000, 'the restarted PC to watch the host');
   }, 60_000);
 
-  it('a client that loses the match for a moment (ArcAid drops the host) and reconnects by itself: called back for the pause, watching again after it', async () => {
+  it("A18: a client that loses the match for a moment in the host's ball (ArcAid drops the host) and reconnects by itself: it watches the host in 3D all the while; no pause, and its fork is never called back", async () => {
     const r = await startFakeRelay({ devices: { 'dev-Hosty': 'tok-h', 'dev-Krobs': 'tok-k' } });
     relays.push(r);
     const paired = (name: string, token: string): Partial<Opts> => ({ relay: () => ({ baseUrl: r.url, deviceId: `dev-${name}`, deviceToken: token }), relayTimeouts: { connectMs: 1500, ackMs: 1500 } });
@@ -576,15 +583,131 @@ describe('the state stream inside a match (I11.4.2)', () => {
     expect(K.mh.status().via).toBe('relay');
     await H.mh.start();
     await until(() => sees(K, fk, H));
+    const before = { play: fk!.count('play'), watch: fk!.count('watch') };
+    const krobsAway = (): boolean => (H.mh.status().panel?.players.find((p) => p.name === 'Krobs')?.flags ?? []).includes('disconnected');
+    const phases: string[] = [];
+    const offs = [H.mh.onStatus((s) => phases.push(s.phase)), K.mh.onStatus((s) => phases.push(s.phase))];
     r.dropDevice('dev-Hosty');
-    await until(() => K.mh.status().phase === 'paused' || fk!.count('play') === 1, 8000, 'the drop to be seen');
-    // Back by itself (RECONNECT, then its own RESUME): the grant is issued again and Krobs watches the host again.
-    await until(() => H.mh.status().phase === 'playing' && K.mh.status().phase === 'playing' && sees(K, fk, H) && fk!.count('watch') >= 2, 12_000, 'Krobs to watch again after the reconnect');
-    expect(fk!.count('play')).toBeGreaterThanOrEqual(1);
+    // With no grace in this harness the host does show Krobs as away for the moment; then Krobs is back by itself
+    // (RECONNECT). The host's ball was live throughout: nothing was paused and no grant was issued again.
+    await until(() => krobsAway(), 8000, 'the drop to be seen');
+    await until(() => !krobsAway() && !(K.mh.status().panel?.message ?? '').startsWith('The link to the host'), 12_000, 'Krobs to be back');
+    for (const off of offs) off();
+    expect(phases).not.toContain('paused');
+    // The 3D watch runs over the two companions' own connection: it never stopped.
+    expect(sees(K, fk, H)).toBe(true);
+    expect({ play: fk!.count('play'), watch: fk!.count('watch') }).toEqual(before);
     expect(K.modes.at(-1)).toBe('hidden');
     expect(existsSync(K.lock)).toBe(true);
     // The data connection between the companions never went through ArcAid: it is the same one.
     expect(hub.all).toHaveLength(2);
+  }, 40_000);
+
+  it('A17 step 4 (2026-11-24): a pause for the player up keeps the 3D watch; the re-issued grant does not start it over; no picture: the panel', async () => {
+    const r = await startFakeRelay({ devices: { 'dev-Hosty': 'tok-h', 'dev-Krobs': 'tok-k' } });
+    relays.push(r);
+    const paired = (name: string, token: string): Partial<Opts> => ({ relay: () => ({ baseUrl: r.url, deviceId: `dev-${name}`, deviceToken: token }), relayTimeouts: { connectMs: 1500, ackMs: 1500 }, upAwayPictureMs: 400 });
+    const hub = new TunnelHub();
+    const {
+      seats: [H, K],
+      forks: { Hosty: fh },
+    } = (await lobby(hub, [
+      ['Hosty', { extra: paired('Hosty', 'tok-h') }],
+      ['Krobs', { extra: paired('Krobs', 'tok-k') }],
+    ])) as { seats: [Seat, Seat]; forks: Record<string, Fork> };
+    await H.mh.start();
+    await endBall(H, 1, 1000);
+    // Krobs is up; the host watches him in 3D, its headset showing nothing over the table.
+    await until(() => up(K, 1) && sees(H, fh, K) && H.modes.at(-1) === 'hidden', 8000, 'the host to watch Krobs in 3D');
+    const before = { play: fh!.count('play'), watch: fh!.count('watch'), modes: H.modes.length };
+    // Every status of the host from here on: the phase, who the pause is for, who it watches, what the headset shows.
+    const seen: Array<{ phase: string; pausedFor: string | null; watching: string | null; mode: string | undefined }> = [];
+    const off = H.mh.onStatus((s) => seen.push({ phase: s.phase, pausedFor: s.panel?.pausedFor ?? null, watching: s.stream3d?.watching ?? null, mode: H.modes.at(-1) }));
+
+    // ---- Krobs' link to the host drops in the middle of his ball (ArcAid loses him), and he is back by himself ----
+    r.dropDevice('dev-Krobs');
+    await until(() => seen.some((x) => x.phase === 'paused'), 8000, 'the pause for Krobs');
+    await until(() => H.mh.status().phase === 'playing' && K.mh.status().phase === 'playing' && up(K, 1), 15_000, 'the resume');
+    // The pause was for the player who is up, and the grant was issued again after his RESUME.
+    const paused = seen.filter((x) => x.phase === 'paused');
+    expect(paused.length).toBeGreaterThan(0);
+    expect(paused.every((x) => x.pausedFor === K.id())).toBe(true);
+    // All through it the host went on watching Krobs' table in 3D: its fork was not called back at the pause and not
+    // sent to watch again at the re-issued grant, and its headset never showed the panel.
+    expect(seen.every((x) => x.watching === K.id())).toBe(true);
+    expect({ play: fh!.count('play'), watch: fh!.count('watch') }).toEqual({ play: before.play, watch: before.watch });
+    expect(H.modes.slice(before.modes)).toEqual([]);
+    expect(sees(H, fh, K)).toBe(true);
+    // Its table stayed locked (it is still Krobs' ball), and the data connection is the one made in the lobby.
+    expect(existsSync(H.lock)).toBe(true);
+    expect(hub.all).toHaveLength(2);
+
+    // ---- no picture: the panel ----
+    // Krobs is gone from the match for good this time (his pairing is revoked: he cannot come back), still playing:
+    // the pause stands, and the host keeps watching for as long as his stream arrives.
+    seen.length = 0;
+    r.revoke('dev-Krobs');
+    r.dropDevice('dev-Krobs');
+    await until(() => H.mh.status().phase === 'paused', 8000, 'the standing pause');
+    expect(H.mh.status().panel).toMatchObject({ phase: 'paused', pausedFor: K.id(), playerUp: K.id(), ball: 1 });
+    await sleep(900); // more than twice the time a missing picture is given
+    expect(watching(H)).toBe(K.id());
+    expect(H.modes.slice(before.modes)).toEqual([]);
+    expect(fh!.count('play')).toBe(before.play);
+    // His stream stops (his Castcade closes): the fork is called back, and with no 2D picture arriving either the
+    // panel comes, as at any pause before.
+    await K.stream3d.stop();
+    await until(() => fh!.count('play') === before.play + 1 && watching(H) === null, 8000, 'the fork called back');
+    await until(() => H.modes.at(-1) === 'panel', 4000, 'the panel');
+    expect(H.modes.slice(before.modes)).toEqual(['panel']);
+    // The log of the night has one line for each pause in which the picture was kept, and one for its end here.
+    expect(H.lines.filter((l) => l.includes('their picture still arrives on this PC, so what this PC shows of their table stays'))).toHaveLength(2);
+    expect(H.lines.filter((l) => l === "match: Krobs's picture no longer arrives on this PC (the match is still paused for them): the panel now")).toHaveLength(1);
+    expect(existsSync(H.lock)).toBe(true);
+    off();
+  }, 60_000);
+
+  it("A17 step 4 (the review of PR 131): a ball ended by hand in a 3D match: the fork holds that ball while the other player is watched and puts it back at the next grant; it is played out first under that grant, its drain reports nothing, and the ball after it is ball 2", async () => {
+    const hub = new TunnelHub();
+    const {
+      seats: [H, K],
+      forks: { Hosty: fh, Krobs: fk },
+    } = (await lobby(hub, [['Hosty'], ['Krobs']])) as { seats: [Seat, Seat]; forks: Record<string, Fork> };
+    const krobs = (): { score: number | null; ballsDone: number } | undefined => H.mh.status().panel?.players.find((p) => p.name === 'Krobs');
+    await H.mh.start();
+    await endBall(H, 1, 1000);
+    await until(() => up(K, 1) && sees(H, fh, K), 8000, 'the host to watch Krobs in 3D');
+    // Krobs plays his own table, and ends the ball by hand with it still in play.
+    K.t.gameStart();
+    K.t.score(1, 1200);
+    await until(() => K.mh.status().endBall?.score === 1200, 8000, "Krobs' score");
+    expect(K.mh.status().endBall).toMatchObject({ ball: 1, score: 1200, tableBall: true });
+    await K.mh.endMyBall(K.mh.status().endBall!.grantSeq);
+    // The host is up: Krobs' fork pauses his own game (the ball with it) and shows the host's table. Nothing drains.
+    await until(() => up(H, 2) && sees(K, fk, H), 8000, 'Krobs to watch the host in 3D');
+    await endBall(H, 2, 2000);
+    // Krobs' grant for ball 2: the fork puts his own game back, the old ball where it was.
+    await until(() => up(K, 2) && watching(K) === null && fk!.got.at(-1) === 'play', 8000, "Krobs' own game back for his ball 2");
+    expect(K.mh.status().panel?.message).toBe('Your last ball is still on the table: play it out, then ball 2 begins');
+    await until(() => sees(H, fh, K), 8000, 'the host to watch Krobs again');
+    // He plays it out: the points count as they come, and its drain is the end of nothing in the match.
+    K.t.score(1, 1700);
+    await until(() => krobs()?.score === 1700, 8000, 'the old ball\'s points');
+    K.t.drain(1);
+    K.t.score(1, 1750);
+    await until(() => K.lines.some((l) => l.startsWith('match: the ball that was ended by hand has ended on the table: nothing is reported for it')), 8000, 'the drain to be swallowed');
+    await sleep(300);
+    expect(up(K, 2)).toBe(true);
+    expect(existsSync(K.lock)).toBe(false);
+    expect(sees(H, fh, K)).toBe(true);
+    expect(krobs()).toMatchObject({ ballsDone: 1 });
+    expect(K.mh.status().panel?.message ?? '').not.toContain('still on the table');
+    expect(K.lines.filter((l) => l.includes('BALL_END ball'))).toEqual(['match: BALL_END ball 1 score 1200 (ended by hand: End my ball)']);
+    // The table's next ball is ball 2 of the match.
+    await endBall(K, 2, 2600);
+    await until(() => up(H, 3), 8000, "the host's ball 3");
+    expect(krobs()).toMatchObject({ score: 2600, ballsDone: 2 });
+    expect(K.lines.filter((l) => l.includes('BALL_END ball'))).toEqual(['match: BALL_END ball 1 score 1200 (ended by hand: End my ball)', 'match: BALL_END ball 2 score 2600']);
   }, 40_000);
 
   it('the initials hold (A16.2): a player whose finished game is on the high-score list keeps their own table; their fork is not sent to watch', async () => {
@@ -699,17 +822,20 @@ describe('the state stream inside a match (I11.4.2)', () => {
     const {
       seats: [H, K],
       forks: { Krobs: fk },
-    } = (await lobby(hub, [['Hosty'], ['Krobs', { extra: { hostWaitMs: 2500 } }]])) as { seats: [Seat, Seat]; forks: Record<string, Fork> };
+    } = (await lobby(hub, [['Hosty'], ['Krobs', { extra: { hostWaitMs: 2500, seriesOverLingerMs: 300 } }]])) as { seats: [Seat, Seat]; forks: Record<string, Fork> };
     await H.mh.start();
     await until(() => sees(K, fk, H) && K.modes.at(-1) === 'hidden');
     await crash(H);
     // The host's tunnel closed with it: nothing is known of its VPX any more, so there is no 3D to show.
     await until(() => fk!.count('play') === 1 && watching(K) === null, 8000, "Krobs's fork to be called back");
-    await until(() => (K.mh.status().panel?.message ?? '').startsWith("The host's Castcade closed or lost its connection."));
+    // A17 step 7: the lobby's PC is away, said in the lobby's words (design 11.8a), with how long it is waited for.
+    await until(() => (K.mh.status().panel?.message ?? '').startsWith("Hosty's PC is away. The match goes on when it is back"));
     expect(K.modes.at(-1)).not.toBe('hidden');
     expect(existsSync(K.lock)).toBe(true);
-    // The wait runs out: the match is over for this PC, its table unlocked, its stream closed, its fork still connected.
-    await until(() => K.mh.status().role === 'none', 15_000, 'the match to end for Krobs');
+    // The wait runs out: the lobby is over for this PC (it says so for a moment), its table unlocked, its stream
+    // closed, its fork still connected.
+    await until(() => K.mh.status().role === 'none', 15_000, 'the lobby to end for Krobs');
+    expect(K.mh.status().lastError).toMatch(/^The lobby is closed: /);
     expect(existsSync(K.lock)).toBe(false);
     expect(K.mh.status().stream3d).toBeNull();
     expect(K.tunnel()?.closed).toBe(true);
@@ -884,11 +1010,14 @@ describe('the first turn starts in 3D (I11.4.9)', () => {
     expect(K.lines.some((l) => /^stream3d: sent to the host: this PC's 3D connection is still being made, 4[345] s at most \(stream3dWaitMs \d+\)$/.test(l))).toBe(true);
     expect(lineFor(K, H)).toBe('Hosty: the 2D video (the 3D connection to their PC is not up yet)');
 
-    // The host starts a game on its table: no countdown, the lobby line says what is waited for and how to start now.
+    // The host starts a game on its table: no countdown; every panel says who asked, what is waited for and for how
+    // long at most. A17 step 7: the start waits in the lobby's PC (`lobby.start`), announced to everyone; it was an
+    // armed start of the host's own controller, and the client only read that a start would wait.
     H.t.gameStart();
-    await until(() => /^The match starts once the 3D connection to Krobs is up, or in \d+ s \(Start match on the Match tab starts it now; the first turn may then be the 2D video\)$/.test(message(H)), 5000, "the host's lobby line");
-    expect(H.mh.status().wait3d.armed).toBe('table');
-    expect(message(K)).toBe('Waiting for Hosty to start a game on the table · the 3D connection to Hosty is still being made (the start waits for it, 45 s at most)');
+    await until(() => H.mh.status().lobby?.start?.waitsFor === '3d' && K.mh.status().lobby?.start?.waitsFor === '3d', 5000, 'the start that waits for 3D, on both PCs');
+    expect(message(H)).toBe('You start the match once the 3D connection to Krobs is up (45 s at most; started without it, the first turn may be the 2D video)');
+    expect(message(K)).toBe('Hosty starts the match once the 3D connection to Hosty is up (45 s at most; started without it, the first turn may be the 2D video)');
+    expect(H.mh.status().lobby?.startWithout).toBe('Start without 3D');
     await sleep(400);
     expect(H.mh.status().phase).toBe('lobby');
     expect(H.mh.status().panel?.countdown ?? null).toBeNull();
@@ -899,8 +1028,7 @@ describe('the first turn starts in 3D (I11.4.9)', () => {
     await until(() => H.mh.status().wait3d.players.length === 0, 5000, 'nobody waited for');
     expect(H.lines.some((l) => /^stream3d: the match's start no longer waits for this PC: this PC's 3D connections are settled \(heard from, after this PC's data connections opened: Krobs \d+\.\d s\)$/.test(l))).toBe(true);
     expect(H.lines).toContain("stream3d: sent to the players: this PC's 3D connection is settled (stream3dWaitMs 0)");
-    expect(H.lines).toContain('match: the 3D connections are settled; the start from the table goes on');
-    await until(() => message(H).startsWith('Starting the match'), 5000, 'the countdown');
+    await until(() => K.mh.status().phase === 'playing' || message(H).startsWith('You start the match: you, Krobs'), 5000, 'the countdown');
     expect(fk.got).toEqual([]);
     await until(() => K.mh.status().phase === 'playing' && playerUp(K) === H.id(), 9000, 'the match');
     // The first turn: Krobs' VPX is sent to the host's table at once, and its headset never shows the theater picture.
@@ -913,15 +1041,14 @@ describe('the first turn starts in 3D (I11.4.9)', () => {
     const { hub, H, K, fk } = await slowLobby({ startWaitMs: 3000 });
     await until(() => H.mh.status().wait3d.players.length === 2, 5000, 'both PCs listed as waited for');
     const st = await H.mh.start();
-    // Held: still the lobby, and the line says a second press starts now.
+    // Held: still the lobby, and the tab offers the second press (A17 step 7: "Start without 3D").
     expect(st.phase).toBe('lobby');
-    expect(H.mh.status().wait3d.armed).toBe('tab');
-    expect(message(H)).toMatch(/^The match starts once the 3D connection to Krobs is up, or in \d+ s \(Start match again starts it now; the first turn may then be the 2D video\)$/);
-    // 3 s after each PC began connecting to the other they stop waiting, say so, and the held start happens: a start
-    // like any other (nothing is logged as confirmed by the host).
+    expect(st.lobby).toMatchObject({ start: { waitsFor: '3d', newMatch: true }, startWithout: 'Start without 3D' });
+    expect(message(H)).toBe('You start the match once the 3D connection to Krobs is up (45 s at most; started without it, the first turn may be the 2D video)');
+    // 3 s after each PC began connecting to the other they stop waiting, say so, and the start that waited begins:
+    // a start like any other (nothing is logged as confirmed by anybody).
     await until(() => K.mh.status().phase === 'playing' && playerUp(K) === H.id(), 9000, 'the match after the limit');
     expect(H.lines).toContain("stream3d: the match's start no longer waits for this PC: 3 s passed since this PC began connecting to Krobs and nothing was heard from that PC: the first turn may be the 2D video");
-    expect(H.lines).toContain('match: the held Start match comes due: the match starts now');
     expect(H.lines.filter((l) => l.includes('the host confirmed'))).toEqual([]);
     // The first turn begins in 2D on Krobs' PC: theater, nothing sent to its fork.
     await until(() => K.modes.at(-1) === 'theater', 5000, 'theater on the waiting PC');
@@ -935,40 +1062,40 @@ describe('the first turn starts in 3D (I11.4.9)', () => {
     expect(H.mh.status().panel?.ball).toBe(1);
   });
 
-  it('Start match pressed twice starts now, whatever is still connecting', async () => {
+  it('Start match pressed twice (A17 step 7: the second press is "Start without 3D") starts now, whatever is still connecting', async () => {
     const { H, K } = await slowLobby();
     await until(() => H.mh.status().wait3d.players.length === 2, 5000, 'both PCs listed as waited for');
     expect((await H.mh.start()).phase).toBe('lobby');
-    await H.mh.start();
+    // A press of plain Start while a start is announced changes nothing; the second press says what it gives up.
+    await H.mh.start({ now: true });
     await until(() => K.mh.status().phase === 'playing' && H.mh.status().phase === 'playing', 5000, 'the match at the second press');
     expect(H.lines).toContain("stream3d: the match's start no longer waits for this PC: the match started or the lobby is gone, with nothing heard yet from Krobs: they are shown in the 2D video until their PC is heard from");
     expect(H.mh.status().wait3d).toEqual({ players: [], seconds: 0, armed: null });
   });
 
-  it('D3: a held Start match that comes due when it cannot simply start (a player joined during the hold and has no table open) is dropped and said, not started as if the host had confirmed; the next press starts', async () => {
+  it('D3, as a lobby has it (A17 step 7): a player who joins while a start waits, with no table open, is not in that start: it begins with the people it was announced for, nothing is said to have been confirmed, and the newcomer watches', async () => {
     const { hub, H, K } = await slowLobby();
     await until(() => H.mh.status().wait3d.players.length === 2, 5000, 'both PCs listed as waited for');
     expect((await H.mh.start()).phase).toBe('lobby');
-    expect(H.mh.status().wait3d.armed).toBe('tab');
+    expect(H.mh.status().lobby?.start).toMatchObject({ waitsFor: '3d', players: [H.id(), K.id()] });
     // A third player joins during the hold, with no table open yet and no Castcade VPX build.
     const closed = { ...table().w, status: () => ({ paired: false, currentTable: null, currentIdentity: null, currentAttestation: null, captureMode: 'live', note: null }) } as unknown as WitnessHost;
     const C = seat(hub, 'Chuck', { fork: false, extra: { witness: closed } });
     await C.mh.join(H.mh.status().invite!, 'Chuck');
     await until(() => H.mh.status().participants.length === 3 && H.mh.status().panel?.players.find((x) => x.name === 'Chuck')?.flags.includes('loading') === true, 8000, 'Chuck in the lobby, loading');
-    // The connection of the two who were waited for comes up: the hold is due.
+    // A start is for the people it was announced with: who joins later comes in at a later start. (Until the lobby
+    // a held Start match was the whole roster's, so it was dropped here and the host told why: the newcomer's table
+    // was not open, and starting over it would have been a start nobody confirmed.)
+    expect(H.mh.status().lobby?.start?.players).toEqual([H.id(), K.id()]);
+    // The connection of the two who were waited for comes up: the start counts down and the match is theirs.
     hub.release();
-    await until(() => H.mh.status().wait3d.armed === null, 8000, 'the hold dropped');
-    expect(H.mh.status().phase).toBe('lobby');
-    expect(H.mh.status().lastError).toBe('The match did not start by itself: Chuck has no table open yet. Press Start match to start it now.');
-    await sleep(300);
-    // Once, not again and again; nothing started; nothing claims a confirmation.
-    expect(H.lines.filter((l) => l.includes('the held Start match came due and was not started: Chuck has no table open yet'))).toHaveLength(1);
-    expect(H.lines).toContain('match: the held Start match is off: Chuck has no table open yet; the next press of Start match is not held');
-    expect([...H.lines, ...K.lines].filter((l) => l.includes('the host confirmed') || l.includes('started with'))).toEqual([]);
-    expect(K.mh.status().phase).toBe('lobby');
-    // The host presses Start match: nobody is waited for any more, and it starts as a press always did.
-    await H.mh.start();
-    await until(() => K.mh.status().phase === 'playing' && C.mh.status().phase === 'playing', 5000, 'the match at the press');
+    await until(() => K.mh.status().phase === 'playing' && H.mh.status().phase === 'playing', 8000, 'the match of the two');
+    expect(H.mh.status().lobby?.match?.players).toEqual([H.id(), K.id()]);
+    expect([...H.lines, ...K.lines].filter((l) => l.includes('confirmed'))).toEqual([]);
+    // The newcomer is in the lobby, set to Play, and watches this match.
+    await until(() => C.mh.status().phase === 'playing', 5000, 'the newcomer watching');
+    expect(C.mh.status().lobby?.members.find((m) => m.me)).toMatchObject({ stance: 'play', inMatch: false });
+    expect(C.mh.status().panel?.players.map((x) => x.name)).toEqual(['Hosty', 'Krobs']);
   });
 
   it('a PC without the Castcade VPX build, and one with 3D watch off, are never waited for: the start is not held', async () => {
@@ -992,7 +1119,7 @@ describe('the first turn starts in 3D (I11.4.9)', () => {
 
 describe('a table that Castcade did not start in the Castcade VPX build (I11.4.12)', () => {
   const message = (s: Seat): string => s.mh.status().panel?.message ?? '';
-  const NOTE = 'Not in 3D: this table is not running in the Castcade VPX build. For 3D it has to be started again by Castcade: close VPX, then host or join again';
+  const NOTE = 'Not in 3D: this table is not running in the Castcade VPX build. For 3D it has to be started again by Castcade: close VPX, then open or join a lobby again';
 
   it('with the build beside VPX and 3D watch on, a table that is open and not on the control connection is said in the lobby, on the panel line and in the log, and no longer once Castcade has started the table', async () => {
     const hub = new TunnelHub();
@@ -1003,7 +1130,8 @@ describe('a table that Castcade did not start in the Castcade VPX build (I11.4.1
     await until(() => H.mh.status().participants.length === 2 && K.mh.status().participants.length === 2, 8000, 'both in the lobby');
     // Both tables are open (the witness says so) and neither was started by Castcade: nothing is on a control connection.
     await until(() => message(H).endsWith(NOTE) && message(K).endsWith(NOTE), 5000, 'the note on both lobby lines');
-    expect(message(K)).toBe(`Waiting for Hosty to start a game on the table · ${NOTE}`);
+    // A17 step 7: the note rides on the lobby's own line (design 11.9: the starter is named).
+    expect(message(K)).toBe(`Hosty starts the match from their table. To start it yourself: Start match in the menu · ${NOTE}`);
     expect(K.lines.filter((l) => l.includes('is not running in the Castcade VPX build (opened by hand'))).toHaveLength(1);
     // Krobs closes VPX and lets Castcade start the table: while it loads nothing is said, and nothing when it is up.
     await K.mh.tableLaunch();
@@ -1079,6 +1207,263 @@ describe('a table that Castcade did not start in the Castcade VPX build (I11.4.1
   });
 });
 
+describe('the table objects of the two tables, before the start (I11.4.15)', () => {
+  const message = (s: Seat): string => s.mh.status().panel?.message ?? '';
+  const CONGO = { editables: 769, hash: 'fc87ddefd36bdd13' };
+  const STD = '769 fc87ddefd36bdd13';
+  const MOD = '766 e4b9bf66f04cfcf9';
+  const NOT_3D = (who: string): string => `Not in 3D with ${who}: the two table files do not hold the same table objects, so their turns are shown as the flat video`;
+  /** A witness whose open table is this file (another file of the same table when `sha` is another). */
+  const fileOf = (sha: string, path: string | null): WitnessHost => {
+    const w = table().w;
+    return { ...w, status: () => ({ ...w.status(), currentIdentity: { sha256: sha, tableInfo: null, filePath: path } }) } as unknown as WitnessHost;
+  };
+  const both = async (H: Seat, K: Seat): Promise<void> => {
+    const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Hosty' });
+    await K.mh.join(hs.invite!, 'Krobs');
+    await until(() => H.mh.status().participants.length === 2 && K.mh.status().participants.length === 2, 8000, 'both in the lobby');
+  };
+
+  it("a host says what its table holds with its fingerprint: computed from the file while its VPX is not up, its VPX's own word once it is; the joining PC has it from HELLO_ACK; a host that cannot tell says nothing", async () => {
+    const hub = new TunnelHub();
+    const asked: string[] = [];
+    const H = seat(hub, 'Hosty', { extra: { witness: fileOf(SHA, String.raw`C:\vpx\tables\Congo.vpx`), tableObjects: async (p) => (asked.push(p), CONGO) } });
+    const K = seat(hub, 'Krobs');
+    await both(H, K);
+    await until(() => K.mh.hostTableObjects() !== null, 5000, "the host's table objects on the joining PC");
+    expect(K.mh.hostTableObjects()).toEqual(CONGO);
+    expect(H.mh.hostTableObjects()).toEqual(CONGO);
+    // Asked for this PC's own table file, once per file.
+    expect(asked).toEqual([String.raw`C:\vpx\tables\Congo.vpx`]);
+    expect(H.lines).toContain(`match: lobby update: table objects ${STD} (computed from the file); the players were told`);
+    expect(K.lines).toContain(`match: the host's table objects: ${STD}`);
+    // The host's VPX comes up in the Castcade build and names another identity (a file the computation got wrong, or
+    // another table opened since): that is what the other PC's VPX will be compared with, so that is what is said.
+    await H.mh.tableLaunch();
+    await forkOf(H, true, '738 512b43b0598d481c');
+    await until(() => K.mh.hostTableObjects()?.editables === 738, 5000, "the build's own word on the joining PC");
+    expect(K.mh.hostTableObjects()).toEqual({ editables: 738, hash: '512b43b0598d481c' });
+    expect(H.lines).toContain('match: lobby update: table objects 738 512b43b0598d481c (as the Castcade VPX build named them); the players were told');
+    expect(K.lines).toContain("match: the host's table objects: 738 512b43b0598d481c");
+    expect(asked).toHaveLength(1);
+    // The joining PC says nothing of its own (the host needs none), and a match that ended knows none.
+    await K.mh.leave();
+    expect(K.mh.hostTableObjects()).toBeNull();
+
+    // A host whose file cannot be told and whose VPX is not the build: nothing is said, and nothing breaks.
+    const hub2 = new TunnelHub();
+    const H2 = seat(hub2, 'Hosty', { fork: false, extra: { witness: fileOf(SHA, String.raw`C:\vpx\tables\Odd.vpx`), tableObjects: async () => null } });
+    const K2 = seat(hub2, 'Krobs');
+    await both(H2, K2);
+    await sleep(150);
+    expect(K2.mh.hostTableObjects()).toBeNull();
+    expect(H2.lines.filter((l) => l.includes('table objects'))).toEqual([]);
+  });
+
+  it("review of PR #125 (finding 1): a host on which 3D cannot run (no Castcade VPX build beside its VPX, or 3D watch off) says nothing of its table's objects and reads none; a joining PC is never told to import a copy for 3D with a host that has no build", async () => {
+    const REMEDY = 'For 3D: "Congo (Williams 1995)_VPW_V1.0" on this PC holds the same table objects as the host\'s file and is not imported. Import it in Castcade and rejoin';
+    const hub = new TunnelHub();
+    const asked: string[] = [];
+    // The host has no build. Its companion could compute its table's objects, and must not: no 3D can come of it.
+    const H = seat(hub, 'Hosty', { fork: false, extra: { witness: fileOf(SHA, String.raw`C:\vpx\tables\Congo.vpx`), tableObjects: async (p) => (asked.push(p), CONGO) } });
+    const K = seat(hub, 'Krobs', { extra: { witness: fileOf('cd'.repeat(32), null) } });
+    await both(H, K);
+    await sleep(250);
+    expect(K.mh.hostTableObjects()).toBeNull();
+    expect(H.mh.hostTableObjects()).toBeNull();
+    expect(asked).toEqual([]);
+    expect(H.lines.filter((l) => l.includes('table objects'))).toEqual([]);
+    // The joining PC has the build, an imported mod and a copy with other bytes. With nothing said by the host its
+    // one-step has no "other objects" word; a host that says its objects all the same (a build without this fix) would
+    // give it one, and the lobby must still not send the player to import a copy: the guard on this side.
+    await K.mh.tableLaunch();
+    K.mh.setLaunchNote(REMEDY, true);
+    await forkOf(K, true, MOD);
+    await until(() => lineFor(K, H) === 'Hosty: the 2D video (no Castcade VPX build runs the table on their PC)', 8000, "the joining PC to know the host has no build");
+    await sleep(200);
+    expect(message(K)).not.toContain('Not in 3D with');
+    expect(message(K)).not.toContain('For 3D:');
+    expect(message(K)).not.toContain('Import it in Castcade');
+    // I11.4.11's note about the host's identical file is a remedy for 3D too: not shown for such a host either.
+    K.mh.setLaunchNote('For 3D: the host\'s file is on this PC as "Congo", not imported. Import it in Castcade and rejoin', false);
+    await sleep(150);
+    expect(message(K)).not.toContain('For 3D:');
+    expect(K.lines.filter((l) => l.includes('do not hold the same table objects'))).toHaveLength(K.lines.filter((l) => l.includes('the lobby no longer says that the table objects differ')).length);
+
+    // The build is there and 3D watch is off on the host: nothing said, nothing read; turned on, it is said.
+    const hub2 = new TunnelHub();
+    const asked2: string[] = [];
+    const H2 = seat(hub2, 'Hosty', { extra: { witness: fileOf(SHA, String.raw`C:\vpx\tables\Congo.vpx`), tableObjects: async (p) => (asked2.push(p), CONGO) } });
+    const K2 = seat(hub2, 'Krobs');
+    await H2.mh.setSettings({ watch3d: 'off' });
+    await both(H2, K2);
+    await sleep(250);
+    expect(K2.mh.hostTableObjects()).toBeNull();
+    expect(asked2).toEqual([]);
+    await H2.mh.setSettings({ watch3d: 'auto' });
+    await until(() => K2.mh.hostTableObjects() !== null, 5000, "the host's table objects once 3D watch is on");
+    expect(K2.mh.hostTableObjects()).toEqual(CONGO);
+    expect(asked2).toHaveLength(1);
+    // And taken back when it is turned off again.
+    await H2.mh.setSettings({ watch3d: 'off' });
+    await until(() => K2.mh.hostTableObjects() === null, 5000, 'the word taken back');
+  });
+
+  it("over the wire, the night of 2026-11-23: the host says what its Congo holds, and the joining PC's Castcade starts its copy with those objects, not the mod that was played last; with only the mod there, its lobby says 2D before the table is up", async () => {
+    const { createOneStep } = await import('./one-step.js');
+    const { formatJoinLink } = await import('./deep-link.js');
+    type Known = Awaited<ReturnType<Parameters<typeof createOneStep>[0]['tables']>>[number];
+    const copy = (tableId: string, sha: string, lastPlayedAt: string): Known => ({ tableId, vpxPath: `C:\\vpx\\tables\\${tableId}.vpx`, infoName: null, rom: null, sha256: sha, imported: true, lastPlayedAt, patchedAt: null });
+    // Neither copy is the host's file; the mod was opened by hand a quarter of an hour ago, so it leads the list.
+    const mr = copy('Monster Bash (Williams 1998) MR mod', '6d'.repeat(32), '2026-11-23T23:55:00.000Z');
+    const std = copy('Monster Bash (Williams 1998) VPW', '34'.repeat(32), '2026-11-20T00:00:00.000Z');
+    const objects: Record<string, { editables: number; hash: string }> = { [mr.vpxPath]: { editables: 766, hash: 'e4b9bf66f04cfcf9' }, [std.vpxPath]: CONGO };
+    const join = async (tables: Known[]) => {
+      const hub = new TunnelHub();
+      const H = seat(hub, 'Hosty', { extra: { witness: fileOf(SHA, String.raw`C:\vpx\tables\Monster Bash.vpx`), tableObjects: async () => CONGO } });
+      const K = seat(hub, 'Krobs');
+      const launched: string[] = [];
+      // Krobs' VPX is closed (the seat's own witness has a table open for the turn tests): one-step sees none.
+      const one = createOneStep({
+        match: K.mh,
+        witness: { status: () => ({ currentTable: null }), onStatus: () => () => undefined },
+        launcher: {
+          async launch(path) {
+            launched.push(path);
+            return { ok: true, pid: 1 };
+          },
+        },
+        clipboard: { writeText: () => undefined },
+        tables: async () => tables,
+        tableObjects: async (p) => objects[p] ?? null,
+        hostHashWaitMs: 2000,
+        log: { info: (l) => void K.lines.push(l), warn: (l) => void K.lines.push(l) },
+      });
+      const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Hosty' });
+      await one.openLink(formatJoinLink(hs.invite!), { trusted: true });
+      await until(() => launched.length === 1, 8000, 'the table started on the joining PC');
+      one.stop();
+      return { K, launched };
+    };
+    const both = await join([mr, std]);
+    expect(both.launched).toEqual([std.vpxPath]);
+    expect(both.K.lines).toContain(`launch: Monster Bash (Williams 1998) VPW is not the host's file and holds the same table objects (table ${STD}): 3D works with it`);
+    expect(message(both.K)).not.toContain('Not in 3D with');
+    // Only the mod on this PC: it is started (the match can be played), and the lobby says what that means.
+    const only = await join([mr]);
+    expect(only.launched).toEqual([mr.vpxPath]);
+    await until(() => message(only.K).includes(NOT_3D('Hosty')), 5000, 'the word on the lobby line');
+    expect(only.K.lines.some((l) => l.startsWith(`launch: Monster Bash (Williams 1998) MR mod does not hold the host's table objects (table ${MOD} here, ${STD} on the host's PC): the 2D video, not 3D.`))).toBe(true);
+  });
+
+  it('two files with other bytes and the same table objects: once both VPX are up each lobby says 3D works all the same, and nothing warns; until then nothing is said of 3D', async () => {
+    const hub = new TunnelHub();
+    const H = seat(hub, 'Hosty');
+    const K = seat(hub, 'Krobs', { extra: { witness: fileOf('cd'.repeat(32), null) } });
+    await both(H, K);
+    await H.mh.tableLaunch();
+    await K.mh.tableLaunch();
+    await forkOf(H, true, STD);
+    // Only the host's VPX is up: the files differ, and nothing is known of 3D yet.
+    await until(() => view(H)?.fork === 'ready', 5000, "the host's fork");
+    await sleep(100);
+    expect(message(H)).toContain('same table, different file (a re-save or another download): Krobs');
+    expect(message(H)).not.toContain('3D works');
+    expect(message(H)).not.toContain('Not in 3D with');
+    await forkOf(K, true, STD);
+    await until(() => lineFor(H, K) === 'Krobs: 3D, on your own table' && lineFor(K, H) === 'Hosty: 3D, on your own table', 8000, '3D both ways');
+    await until(() => message(H).includes('3D works') && message(K).includes('3D works'), 5000, 'the word on both lobby lines');
+    // A17 step 7: after the lobby's own line (who starts, and how), which a lobby always has.
+    expect(message(H)).toBe("Everyone in? Start a game on your table (or Start match in the menu) · same table, different file (a re-save or another download): Krobs · 3D works all the same: the files hold the same table objects");
+    expect(message(K)).toBe("Hosty starts the match from their table. To start it yourself: Start match in the menu · same table, different file (a re-save or another download): you · 3D works all the same: the files hold the same table objects");
+    for (const s of [H, K]) expect(s.lines.filter((l) => l.includes('do not hold the same table objects'))).toEqual([]);
+  });
+
+  it('two tables that hold other objects: both lobbies say so before the start, with who it is about, once in each log; the word goes when it no longer applies', async () => {
+    const hub = new TunnelHub();
+    const H = seat(hub, 'Hosty');
+    const K = seat(hub, 'Krobs', { extra: { witness: fileOf('cd'.repeat(32), null) } });
+    await both(H, K);
+    await H.mh.tableLaunch();
+    await K.mh.tableLaunch();
+    await forkOf(H, true, STD);
+    const mod = await forkOf(K, true, MOD);
+    await until(() => message(H).endsWith(NOT_3D('Krobs')) && message(K).endsWith(NOT_3D('Hosty')), 8000, 'the word on both lobby lines');
+    expect(message(H)).toBe(`Everyone in? Start a game on your table (or Start match in the menu) · same table, different file (a re-save or another download): Krobs · ${NOT_3D('Krobs')}`);
+    expect(lineFor(H, K)).toBe('Krobs: the 2D video (theirs is another table file)');
+    expect(H.lines.filter((l) => l === "stream3d: this PC's table and Krobs's do not hold the same table objects (both VPX said so): the 2D video between them; the lobby says so")).toHaveLength(1);
+    expect(K.lines.filter((l) => l === "stream3d: this PC's table and Hosty's do not hold the same table objects (both VPX said so): the 2D video between them; the lobby says so")).toHaveLength(1);
+    // Krobs closes the mod and Castcade starts his other copy, which holds the host's objects.
+    mod.close();
+    await until(() => view(K)?.fork === 'none', 5000, 'the mod closed');
+    await K.mh.tableLaunch();
+    await forkOf(K, true, STD);
+    await until(() => message(H).includes('3D works') && message(K).includes('3D works'), 8000, '3D works on both lobby lines');
+    expect(message(H)).not.toContain('Not in 3D with');
+    expect(H.lines).toContain('stream3d: the lobby no longer says that the table objects differ (it does not apply any more)');
+  });
+
+  it("a joining PC whose table is still loading: the launch's word (the copy that was started holds other objects than the host said) is on its lobby line at once, with what to do when another copy would give 3D; it goes when the two VPX say 3D runs; never on a PC where 3D cannot run", async () => {
+    const hub = new TunnelHub();
+    const H = seat(hub, 'Hosty');
+    const K = seat(hub, 'Krobs', { extra: { witness: fileOf('cd'.repeat(32), null) } });
+    await both(H, K);
+    await H.mh.tableLaunch();
+    await forkOf(H, true, STD);
+    // one-step started Krobs' copy in the build and knows it holds other objects; its VPX has not said hello yet.
+    await K.mh.tableLaunch();
+    const REMEDY = 'For 3D: "Congo (Williams 1995)_VPW_V1.0" on this PC holds the same table objects as the host\'s file and is not imported. Import it in Castcade and rejoin';
+    K.mh.setLaunchNote(REMEDY, true);
+    await until(() => message(K).includes(NOT_3D('Hosty')), 5000, "the launch's word on the lobby line");
+    expect(message(K).endsWith(`${NOT_3D('Hosty')} · ${REMEDY}`)).toBe(true);
+    expect(K.lines).toContain("stream3d: this PC's table and Hosty's do not hold the same table objects (the host's word against the copy that was started here): the 2D video between them; the lobby says so");
+    // The host is not told by this (its own lobby speaks when both VPX are up).
+    expect(message(H)).not.toContain('Not in 3D with');
+    // Its VPX comes up and names the mod: the same word, now from both VPX, said once.
+    const mod = await forkOf(K, true, MOD);
+    await until(() => message(H).endsWith(NOT_3D('Krobs')), 8000, 'the word on the host');
+    expect(message(K).endsWith(`${NOT_3D('Hosty')} · ${REMEDY}`)).toBe(true);
+    expect(K.lines.filter((l) => l.includes("this PC's table and Hosty's do not hold the same table objects"))).toHaveLength(1);
+    // The player opens a copy with the host's objects after all: the launch's word no longer applies and is dropped.
+    mod.close();
+    await until(() => view(K)?.fork === 'none', 5000, 'the mod closed');
+    await K.mh.tableLaunch();
+    await forkOf(K, true, STD);
+    await until(() => message(K).includes('3D works'), 8000, '3D works');
+    expect(message(K)).not.toContain('Not in 3D with');
+    expect(message(K)).not.toContain('For 3D:');
+
+    // 3D watch off on the joining PC: the launch's word is not shown (2D is what that PC asked for).
+    const hub2 = new TunnelHub();
+    const H2 = seat(hub2, 'Hosty');
+    const K2 = seat(hub2, 'Krobs');
+    await both(H2, K2);
+    await K2.mh.setSettings({ watch3d: 'off' });
+    K2.mh.setLaunchNote(REMEDY, true);
+    await sleep(150);
+    expect(message(K2)).not.toContain('Not in 3D with');
+    expect(message(K2)).not.toContain('For 3D:');
+  });
+
+  it("A17 step 10 (review of PR 139): after a member's pick the early word names the person whose copy the picked table's objects are of, on the lobby's PC too, and nobody on the picker's own PC", async () => {
+    const hub = new TunnelHub();
+    const H = seat(hub, 'Hosty');
+    const K = seat(hub, 'Krobs', { extra: { witness: fileOf('cd'.repeat(32), null) } });
+    await both(H, K);
+    // Krobs picks another table, with what the Castcade VPX build says of his copy of it.
+    await K.mh.pickTable({ game: { kind: 'vpx', tableName: 'Attack from Mars', tableHash: 'ef'.repeat(32), romName: 'afm_113b', romHash: null, physicsHash: null, recipeVersion: null, sidecarHash: null, emulatorVersion: '' }, objects: { editables: 1203, hash: '00aa11bb22cc33dd' } });
+    await until(() => H.mh.status().lobby?.table.pickedByName === 'Krobs', 5000, 'the pick on the lobby PC');
+    // The lobby's PC started its own copy of it and knows that copy holds other objects than the picked one.
+    H.mh.setLaunchNote(null, true);
+    await until(() => message(H).includes(NOT_3D('Krobs')), 5000, "the picker's name on the lobby PC's line");
+    expect(H.lines).toContain("stream3d: this PC's table and Krobs's do not hold the same table objects (what its picker said of the lobby's table against the copy that was started here): the 2D video between them; the lobby says so");
+    // On the picker's own PC the same flag names nobody: the picked table's objects are those of its own copy.
+    K.mh.setLaunchNote(null, true);
+    await sleep(150);
+    expect(message(K)).not.toContain('Not in 3D with');
+  });
+});
+
 describe('the turn lock and a fork that answers at once (A8)', () => {
   it('whenPlaying that answers before it returns leaves no stale wait behind: the next lock and unlock work as ever', async () => {
     // A stream whose fork is "away" when asked and back by the time the wait is registered.
@@ -1116,30 +1501,118 @@ describe('the turn lock and a fork that answers at once (A8)', () => {
       witness: table().w,
       device: () => ({ deviceId: 'dev-a8', deviceLabel: 'a8' }),
       appVersion: '0.2.46',
+      // A18: no grace: these tests are about what follows a dropped link, not the wait before it counts.
+      disconnectGraceMs: 0,
       log: { info: push, warn: push, error: push, file: '' } as unknown as Logger,
       publicIp: () => Promise.resolve('127.0.0.1'),
       lockFile: lock,
       listenAddress: '127.0.0.1',
       ephemeralPort: true,
+      // A17 step 7: every start of a lobby counts down; long enough here for the start to be taken back while it does.
+      lobby: { countdownMs: 5000 },
       openPort: null,
       signalling: (role, id) => matchSignalling(role, id),
       stream3d: fake,
     });
     hosts.push(mh);
-    // A12: the host's table locked until someone joins, then free, then locked again: lock, unlock, lock, unlock.
-    mh.setSettings({ preMatchPlay: 'locked' });
-    await mh.host({ port: 0, ballsPerGame: 3, displayName: 'Hosty' });
+    // A17 step 7: lock, unlock, lock, unlock by what locks a table outside a turn in a lobby: a start that counts
+    // down (the tables of the people in it are locked), taken back (they are free again). Until the lobby this was
+    // done with A12's "Table locked until someone joins", which a lobby does not read.
+    const hs = await mh.host({ port: 0, ballsPerGame: 3, displayName: 'Hosty' });
+    const K = seat(new TunnelHub(), 'Krobs', { fork: false });
+    await K.mh.join(hs.invite!, 'Krobs');
+    await until(() => mh.status().participants.length === 2, 8000, 'both in the lobby');
+    expect(existsSync(lock)).toBe(false);
+    await mh.start();
     expect(existsSync(lock)).toBe(true);
-    mh.setSettings({ preMatchPlay: 'free' });
+    await mh.cancelStart();
     expect(asked).toBe(1);
     expect(existsSync(lock)).toBe(false);
     expect(mh.status().locked).toBe(false);
-    mh.setSettings({ preMatchPlay: 'locked' });
+    await mh.start();
     expect(existsSync(lock)).toBe(true);
-    mh.setSettings({ preMatchPlay: 'free' });
+    await mh.cancelStart();
     expect(asked).toBe(2);
     expect(existsSync(lock)).toBe(false);
     expect(lines.filter((l) => l === 'stream3d: the table is unlocked (VPX is back on its own table)')).toHaveLength(2);
     expect(lines.some((l) => l.includes('could not'))).toBe(false);
   }, 20_000);
+});
+
+describe('A17 step 2 (2026-11-24): what ends with a match, what ends with the lobby', () => {
+  it('the match half leaves the state stream as it is: the tunnel open, the fork told nothing, the other PC still watching in 3D; leaving closes the tunnel', async () => {
+    const hub = new TunnelHub();
+    const { seats, forks: f } = await lobby(hub, [['Hosty'], ['Krobs']]);
+    const [H, K] = seats as [Seat, Seat];
+    await H.mh.start();
+    await until(() => up(H, 1) && sees(K, f['Krobs'], H), 8000, 'Krobs to watch Hosty in 3D');
+    expect(H.tunnel()?.closed).toBe(false);
+    const told = f['Hosty']?.got.length;
+
+    // The match half alone (no caller in the app before step 7; a teardown runs both halves).
+    const endMatch = matchHalfOf(H.mh);
+    expect(endMatch).not.toBeNull();
+    endMatch!();
+    // The tunnel is the lobby's: open, its peers as they were, the fork on the control connection told nothing.
+    expect(H.tunnel()?.closed).toBe(false);
+    expect(H.tunnel()?.peers).toEqual([K.id()]);
+    expect(f['Hosty']?.got.length).toBe(told);
+    expect(H.mh.status().stream3d).not.toBeNull();
+    expect(lineFor(H, K)).toBe('Krobs: 3D, on your own table');
+    // The other PC goes on watching the player who is up, and a ball that ends still moves the turn.
+    await sleep(100);
+    expect(watching(K)).toBe(H.id());
+    expect(K.tunnel()?.closed).toBe(false);
+    await endBall(H, 1, 1000);
+    await until(() => up(K, 1), 8000, "Krobs's ball 1");
+    expect(H.tunnel()?.closed).toBe(false);
+
+    // Leave: the lobby's half closes the tunnel, as it always did.
+    const left = await H.mh.leave();
+    expect(left).toMatchObject({ role: 'none', stream3d: null });
+    expect(H.tunnel()?.closed).toBe(true);
+  }, 30_000);
+
+  it("A17 step 7 (2026-11-25): a member who only watches, with the build: their VPX shows whoever is up in 3D by turns and is on its own table whenever no game is played; the tunnels are the lobby's, made once and kept over the end of a match; in the next match the watcher plays and is watched", async () => {
+    const hub = new TunnelHub();
+    const { seats, forks: f } = await lobby(hub, [['Hosty'], ['Krobs'], ['Chuck']]);
+    const [H, K, C] = seats as [Seat, Seat, Seat];
+    C.mh.setStance('watch');
+    await until(() => H.mh.status().lobby?.members.find((m) => m.name === 'Chuck')?.stance === 'watch', 8000, 'Chuck set to Watch');
+    const tunnels = [H, K, C].map((x) => x.tunnel());
+    expect(f['Chuck']?.got).toEqual([]);
+
+    await H.mh.start();
+    await until(() => up(H, 1) && sees(K, f['Krobs'], H) && sees(C, f['Chuck'], H), 8000, 'both to watch Hosty in 3D');
+    // The watcher is in no roster and holds no turn; its table is locked while the game is played.
+    expect(C.mh.status().panel?.players.map((x) => x.name)).toEqual(['Hosty', 'Krobs']);
+    expect(existsSync(C.lock)).toBe(true);
+    await endBall(H, 1, 1000);
+    await until(() => up(K, 1) && sees(C, f['Chuck'], K) && sees(H, f['Hosty'], K), 8000, 'both to watch Krobs in 3D');
+    await endBall(K, 1, 500);
+    for (let ball = 2; ball <= 3; ball++) {
+      await endBall(H, ball, 1000 * ball);
+      await endBall(K, ball, 500 * ball);
+    }
+    await until(() => [H, K, C].every((x) => x.mh.status().phase === 'over'), 8000, 'the result');
+    // Between games nobody is watched: the watcher's VPX is on its own table again, and its table is its own.
+    await until(() => watching(C) === null && f['Chuck']?.got.at(-1) === 'play', 8000, "Chuck's fork back on its own table");
+    await until(() => existsSync(C.lock) === false, 8000, "Chuck's table unlocked");
+
+    // End match: back to the lobby. Not one tunnel was closed or made again.
+    await K.mh.endMatch({ everyone: false });
+    await until(() => [H, K, C].every((x) => x.mh.status().phase === 'lobby'), 8000, 'the lobby again');
+    expect([H, K, C].map((x) => x.tunnel())).toEqual(tunnels);
+    expect(tunnels.map((t) => t?.closed)).toEqual([false, false, false]);
+    expect(lineFor(C, H)).toBe('Hosty: 3D, on your own table');
+
+    // The next match: the watcher plays, the lobby's PC watches, and is shown the watcher's table in 3D.
+    C.mh.setStance('play');
+    H.mh.setStance('watch');
+    await until(() => K.mh.status().lobby?.members.find((m) => m.name === 'Hosty')?.stance === 'watch' && K.mh.status().lobby?.members.find((m) => m.name === 'Chuck')?.stance === 'play', 8000, 'the stances');
+    await C.mh.start();
+    await until(() => up(C, 1) && sees(H, f['Hosty'], C) && sees(K, f['Krobs'], C), 8000, 'both to watch Chuck in 3D');
+    expect(H.mh.status().panel?.players.map((x) => x.name)).toEqual(['Chuck', 'Krobs']);
+    expect([H, K, C].map((x) => x.tunnel())).toEqual(tunnels);
+  }, 60_000);
 });

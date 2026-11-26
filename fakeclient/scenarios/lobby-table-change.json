@@ -1,0 +1,24 @@
+{
+  "name": "lobby-table-change",
+  "description": "A17 step 10: the table changes in a lobby. Two people play a match on the lobby's table while a third watches; between its games a member picks another table, which ends that match at its tally (\"the table changed\"); every PC opens the picked table, and a new match is played on it. The pick carries the table's identity keys and the Castcade VPX build's identity of it, and the match's own fingerprint is the open table of its first player.",
+  "matchId": "TBLCHG",
+  "ballsPerGame": 2,
+  "lobby": { "countdownMs": 15 },
+  "host": "p1",
+  "players": [
+    { "playerId": "p1", "displayName": "Lobby PC", "stance": "play", "scores": [1000, 2000, 1100, 2100] },
+    { "playerId": "p2", "displayName": "Player Two", "stance": "play", "scores": [1500, 3000, 900, 1800] },
+    { "playerId": "p3", "displayName": "Player Three", "stance": "watch", "scores": [] }
+  ],
+  "matches": [
+    { "start": { "by": "p1" }, "closes": "pick" },
+    {
+      "pick": {
+        "by": "p2",
+        "game": { "tableName": "Attack from Mars (Bally 1995) VPW 1.1", "tableHash": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef", "romName": "afm_113b" },
+        "tableObjects": { "editables": 1203, "hash": "00aa11bb22cc33dd" }
+      },
+      "start": { "by": "p2" }
+    }
+  ]
+}

@@ -24,6 +24,7 @@
     "playfield-tags": "tsx scripts/playfield-tags.ts",
     "witness-games": "tsx scripts/witness-games.ts",
     "validate-original": "tsx scripts/validate-original.ts",
+    "vpx-close-check": "tsx scripts/vpx-close-check.ts",
     "fetch-ffmpeg": "node scripts/fetch-ffmpeg.mjs",
     "fetch-vr-overlay": "node scripts/fetch-vr-overlay.mjs",
     "fetch-vr-layer": "node scripts/fetch-vr-layer.mjs",

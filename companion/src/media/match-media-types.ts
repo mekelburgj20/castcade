@@ -29,7 +29,9 @@ export interface PanelState {
      * `table_mismatch`: their table differs from the host's (advisory, alpha-match.md §3); `build_mismatch` (D2.5,
      * 2026-10-31): their VPX build does (`emulatorVersion`), shown muted: the table may still be the same. `midnight`
      * (B26, 2026-11-16): Midnight Madness ran on one of their balls of this game (B26.4: the ROM's own audit of the
-     * mode went up on their table); a flag only.
+     * mode went up on their table); a flag only. `disconnected` (A18, 2026-11-24): the player is away from the match's
+     * control link (their link to the host dropped for longer than the engine's grace, or the match paused for them
+     * at their own turn); shown as AWAY. It says nothing about voice or video, which are connections of their own.
      */
     flags: Array<'table_mismatch' | 'build_mismatch' | 'disconnected' | 'loading' | 'midnight'>;
     /**
@@ -59,6 +61,34 @@ export interface PanelState {
   /** One line for the player: an error, "different table file", "waiting for <name>". Null when nothing to say. */
   message: string | null;
   mic: 'open' | 'muted' | 'unavailable';
+  /**
+   * A17 step 4 (2026-11-24): while `phase` is `paused` for a player whose link to the host dropped, that player; absent
+   * for any other pause and outside one. When it is the player who is up and their ball is still in play, the people
+   * watching keep their picture for as long as it arrives (`vrViewMode`'s `upAway`), and the scoreboard says who is away.
+   */
+  pausedFor?: MatchPlayerId | null;
+  /**
+   * A17 step 7 (2026-11-25, alpha-match.md section 11.9): the lobby's rows: every member, the lobby's PC first, with
+   * their choice (Play or Watch), what is wrong or special about their row, and whether they are in the open match.
+   * `players` stays the players of the match (the members while none is open), so the score strip, the scoreboard
+   * and the tally do not change. Absent when the match has no lobby. The panel page draws them from step 9 on.
+   */
+  members?: Array<{ id: MatchPlayerId; name: string; stance: 'play' | 'watch'; flags: Array<'away' | 'loading' | 'no_table' | 'other_table' | 'own_game' | 'close_table' | 'asked' | 'changing'>; inMatch: boolean }>;
+  /**
+   * A17 step 10 (alpha-match.md section 11.5): the lobby's table is being changed: its name, while some member's PC
+   * is on its way to it (closing a table, opening the new one, waiting for a game or for its person). The header
+   * reads `CHANGING TABLE · <NAME>`. Absent otherwise.
+   */
+  changingTable?: string;
+  /**
+   * The final review (2026-11-28, finding 7; alpha-match.md section 11.9): a match ended a moment ago: for the twenty
+   * seconds of the line that says how, and who won, the header reads `MATCH OVER`. Absent otherwise.
+   */
+  matchOver?: boolean;
+  /** A17 step 7: the one member whose Start on their own table asks for a game; null: nobody. Absent without a lobby. */
+  starter?: MatchPlayerId | null;
+  /** A17 step 7: this player's own choice at the next start. Absent without a lobby. */
+  stance?: 'play' | 'watch';
 }
 
 /**
@@ -103,8 +133,11 @@ export interface MediaStatus {
    * Per peer: ICE connection state as the browser names it (`new`, `checking`, `connected`, `failed`, …). D2.7
    * (2026-11-01): `signaling` (the connection's signalling state) and `reopens` (how often the page replaced that
    * connection after a `reset` or a stale offer), so a dead connection shows in companion.log. Absent before D2.7.
+   * I11.12 (2026-11-24): `quiet`: the page's scheduled ICE restarts for this peer are used up and one goes out every
+   * 30 s; its ICE and signalling states then change four times a round for as long as the match lasts, and
+   * `peerChanges` (rtc-host.ts) does not write them. Absent otherwise.
    */
-  peers: Record<MatchPlayerId, { ice: string; receivingVideo: boolean; receivingAudio: boolean; signaling?: string; reopens?: number; receivingTable?: boolean }>;
+  peers: Record<MatchPlayerId, { ice: string; receivingVideo: boolean; receivingAudio: boolean; signaling?: string; reopens?: number; receivingTable?: boolean; quiet?: boolean }>;
   mic: 'open' | 'muted' | 'unavailable';
   /** The capture source in use, for the Match tab: the window title, or null. */
   captureSource: string | null;
@@ -259,10 +292,15 @@ export interface PanelMenu {
 
 /** What the match controller drives (implemented by `media/rtc-host.ts`, D2). */
 export interface MatchMedia {
-  /** Called at MATCH_READY with every other participant; opens the mesh. */
+  /** Called at host / join time with no peers (the panel goes up before the match); opens the mesh. */
   attach(signalling: MediaSignalling, peers: MatchPlayerId[]): Promise<void>;
-  /** A peer joined late or reconnected (A3): open or re-open its connection. */
+  /**
+   * Open the connection to a peer: at the join, for everyone in the lobby (A17, 2026-11-24). A peer that is already
+   * held is left alone: no new connection. To make a connection again (A18: one that died while its player was
+   * away), `removePeer` first.
+   */
   addPeer(peer: MatchPlayerId): void;
+  /** Close the connection to a peer (it left the lobby, or its connection is dead and its player away). */
   removePeer(peer: MatchPlayerId): void;
   /** Video flows from this rig only while true (the player up); audio is unaffected. */
   setSending(on: boolean): void;
@@ -294,6 +332,13 @@ export interface MatchMedia {
    * size, fps, Mbps, rtt), from the match host; null clears it. Kept for the next attach. Absent in fakes before D10.5.
    */
   setVideoLine?(line: string | null): void;
+  /**
+   * I11.12 (2026-11-24): the players the native video holds a direct candidate pair to (`videoDirectPeers`,
+   * video-mesh.ts), from the match host; an empty list clears it. For such a player the panel never says a TURN relay
+   * is needed (it chooses the words only: the voice connection is retried for every player). Kept for the next
+   * attach. Absent in fakes before I11.12.
+   */
+  setVideoDirect?(peers: MatchPlayerId[]): void;
   /**
    * D8.10 (2026-11-14): the in-game menu over the panel (match/match-menu.ts), or null to take it away. Live only: a
    * new page starts without one. Absent in fakes before D8.10.

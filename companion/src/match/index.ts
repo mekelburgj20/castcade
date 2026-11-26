@@ -38,6 +38,7 @@ export {
 export { rankEntries, pickWinner, entryStatus, logSignBody, reconnectSignBody, type ResultEntry } from './result.js';
 export { Session, type SessionOptions } from './session.js';
 export { MemoryBus, type MemoryBusOptions, type Transport, type MessageHandler, type PeerHandler } from './transport.js';
+export { openCandidate, CANDIDATE_VERDICT_MS, type LinkCandidate, type CandidateLink } from './transport.js';
 export {
   WsHostTransport,
   WsClientTransport,
@@ -65,6 +66,7 @@ export {
   HostMatch,
   compareFingerprints,
   type HostOptions,
+  type LobbyOptions,
   type ResumeOptions,
   type HostEvents,
   type RejectInfo,

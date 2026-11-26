@@ -1,0 +1,17 @@
+{
+  "name": "lobby-long-log",
+  "description": "A17 step 5: a series of eleven ten-ball games by three players makes a log of more than 600 entries, more than one relay frame can hold. A fourth person joins near its end and is sent the whole log in pages of 100; the test runs it through the relay double with the server's 256 KB limit.",
+  "matchId": "LONGLG",
+  "ballsPerGame": 10,
+  "lobby": true,
+  "host": "p1",
+  "players": [
+    { "playerId": "p1", "displayName": "Lobby PC", "stance": "play", "scores": [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000] },
+    { "playerId": "p2", "displayName": "Player Two", "stance": "play", "scores": [110, 210, 310, 410, 510, 610, 710, 810, 910, 1010] },
+    { "playerId": "p3", "displayName": "Player Three", "stance": "play", "scores": [120, 220, 320, 420, 520, 620, 720, 820, 920, 1020] },
+    { "playerId": "p4", "displayName": "Latecomer", "stance": "watch", "scores": [1], "joinsAt": { "match": 1, "afterGrants": 312 } }
+  ],
+  "matches": [
+    { "games": 11 }
+  ]
+}

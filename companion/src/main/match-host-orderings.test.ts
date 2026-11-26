@@ -106,6 +106,15 @@ function make(name: string, w: WitnessHost): { mh: MatchHost; lock: string; logs
     publicIp: () => Promise.resolve('127.0.0.1'),
     lockFile: lock,
     listenAddress: '127.0.0.1',
+    // 2026-11-24: the host listens on a port the system picks (`host({ port: 0 })`, also through one-step, which
+    // hands the port on): a port picked here (47000 to 48999, at random) can sit in a range Windows has reserved
+    // since its last boot (EACCES), or be in use.
+    ephemeralPort: true,
+    // A17 step 7: every match is in a lobby, and every start of a lobby counts down (5 s in the app); here it is short.
+    lobby: { countdownMs: 20 },
+    // And no search of the network the tests run on (D10.8): left at its default, every hosted match here asked the
+    // router of whoever runs the tests to open a port.
+    openPort: null,
   });
   hosts.push(mh);
   return { mh, lock, logs };
@@ -118,7 +127,6 @@ const until = async (cond: () => boolean, ms = 4000): Promise<void> => {
     await new Promise((r) => setTimeout(r, 10));
   }
 };
-const port = (): number => 47000 + Math.floor(Math.random() * 2000);
 const row = (mh: MatchHost, name: string) => mh.status().participants.find((p) => p.name === name);
 const message = (mh: MatchHost): string | null => mh.status().panel?.message ?? null;
 
@@ -128,7 +136,7 @@ describe('any order works (A14 step 3)', () => {
     const cr = rig();
     const H = make('late-tables-host', hr.w);
     const C = make('late-tables-client', cr.w);
-    const hs = await H.mh.host({ port: port(), ballsPerGame: 3, displayName: 'Owner' });
+    const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
     // Hosted with no VPX at all: the host's game says so, and a client can read that it is not open yet.
     expect(isTableOpen(H.mh.hostGame()!)).toBe(false);
     await C.mh.join(hs.invite!, 'Krobs');
@@ -142,7 +150,8 @@ describe('any order works (A14 step 3)', () => {
     hr.open();
     await until(() => C.mh.hostGame()?.tableHash === SHA);
     await until(() => row(C.mh, 'Krobs')?.tableMatch === true && row(H.mh, 'Krobs')?.tableMatch === true);
-    await until(() => message(H.mh) === 'Everyone in? Start a game on your table (or press Start match)');
+    // A17 step 7: the lobby's words (design 11.9); the opener is the starter, so its Start on the table asks.
+    await until(() => message(H.mh) === 'Everyone in? Start a game on your table (or Start match in the menu)');
 
     hr.gameStart();
     await until(() => H.mh.status().phase === 'playing' && C.mh.status().phase === 'playing', 9000);
@@ -151,16 +160,20 @@ describe('any order works (A14 step 3)', () => {
     expect(existsSync(H.lock)).toBe(false);
   }, 20_000);
 
-  it("the host's Start pressed while the other table is still loading: the start is armed and fires when that table opens", async () => {
+  it("the host's Start pressed while the other table is still loading: the start waits, says so on every panel, and begins when that table opens", async () => {
     const hr = rig({ table: true });
     const cr = rig();
     const H = make('armed-host', hr.w);
     const C = make('armed-client', cr.w);
-    const hs = await H.mh.host({ port: port(), ballsPerGame: 3, displayName: 'Owner' });
+    const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
     await C.mh.join(hs.invite!, 'Krobs');
     await until(() => H.mh.status().participants.length === 2);
     hr.gameStart();
-    await until(() => H.logs.some((l) => l.includes("the match starts once Krobs's table is open")));
+    // A17 step 7: a start that waits is announced to everyone, with who asked and what it waits for (it was an
+    // armed start that only the host's own log knew of).
+    await until(() => H.mh.status().lobby?.start?.waitsFor === 'tables' && C.mh.status().lobby?.start?.waitsFor === 'tables');
+    expect(message(H.mh)).toBe("You start the match once Krobs' table is open");
+    expect(message(C.mh)).toBe('Owner starts the match once your table is open');
     expect(H.mh.status().phase).toBe('lobby');
     cr.open();
     await until(() => H.mh.status().phase === 'playing' && C.mh.status().phase === 'playing', 9000);
@@ -171,31 +184,37 @@ describe('any order works (A14 step 3)', () => {
     const cr = rig({ table: true });
     const H = make('ingame-host', hr.w);
     const C = make('ingame-client', cr.w);
-    const hs = await H.mh.host({ port: port(), ballsPerGame: 3, displayName: 'Owner' });
+    const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
     await C.mh.join(hs.invite!, 'Krobs');
-    await until(() => message(H.mh) === 'Everyone is in: finish the game on your table, then press Start on it to start the match');
+    // A17 step 7: that game is the opener's own, which every roster says (OWN GAME); the lobby's line is A12's.
+    await until(() => message(H.mh) === 'Everyone in? Finish the game on your table, then start a game on it (or Start match in the menu)');
+    await until(() => C.mh.status().lobby?.members.find((m) => m.name === 'Owner')?.flags.includes('own_game') === true);
     expect(existsSync(H.lock)).toBe(false);
     hr.gameEnd(1200);
-    await until(() => message(H.mh) === 'Everyone in? Start a game on your table (or press Start match)');
+    await until(() => message(H.mh) === 'Everyone in? Start a game on your table (or Start match in the menu)');
     hr.gameStart();
     await until(() => H.mh.status().phase === 'playing' && C.mh.status().phase === 'playing', 9000);
   }, 20_000);
 
-  it('Host while a game is running, with "Table locked until someone joins": the running game keeps its flippers; the lock goes on when it ends and off when the lobby is complete', async () => {
+  it('A17 step 7: "Table locked until someone joins" is retired in a lobby (the key stays in match.json and is not read): outside a match every table is its owner\'s, whatever is running on it', async () => {
     const hr = rig({ table: true, inGame: true });
     const cr = rig({ table: true });
     const H = make('locked-host', hr.w);
     const C = make('locked-client', cr.w);
     H.mh.setSettings({ preMatchPlay: 'locked' });
-    const hs = await H.mh.host({ port: port(), ballsPerGame: 3, displayName: 'Owner' });
+    const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
     // Before A14 the lock went on here, in the middle of the ball.
     expect(H.mh.status().locked).toBe(false);
     expect(existsSync(H.lock)).toBe(false);
+    // Until the lobby (A12, A14) the lock went on when that game ended, and off when somebody had joined. In a lobby
+    // the table of a person who waits for others is theirs: free play, and only a start that counts down locks it.
     hr.gameEnd(900);
-    expect(H.mh.status().locked).toBe(true);
-    expect(existsSync(H.lock)).toBe(true);
+    expect(H.mh.status().locked).toBe(false);
+    expect(existsSync(H.lock)).toBe(false);
+    expect(H.mh.status().settings.preMatchPlay).toBe('locked');
     await C.mh.join(hs.invite!, 'Krobs');
-    await until(() => H.mh.status().participants.length === 2 && !H.mh.status().locked);
+    await until(() => H.mh.status().participants.length === 2);
+    expect(H.mh.status().locked).toBe(false);
     expect(existsSync(H.lock)).toBe(false);
   }, 15_000);
 
@@ -204,7 +223,7 @@ describe('any order works (A14 step 3)', () => {
     const cr = rig({ table: true });
     const H = make('reopen-lobby-host', hr.w);
     const C = make('reopen-lobby-client', cr.w);
-    const hs = await H.mh.host({ port: port(), ballsPerGame: 3, displayName: 'Owner' });
+    const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
     await C.mh.join(hs.invite!, 'Krobs');
     await until(() => H.mh.status().participants.length === 2);
     const loading = (mh: MatchHost, name: string): boolean => mh.status().panel?.players.find((p) => p.name === name)?.flags.includes('loading') === true;
@@ -224,7 +243,7 @@ describe('any order works (A14 step 3)', () => {
     const cr = rig({ table: true });
     const H = make('reopen-host', hr.w);
     const C = make('reopen-client', cr.w);
-    const hs = await H.mh.host({ port: port(), ballsPerGame: 3, displayName: 'Owner' });
+    const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
     await C.mh.join(hs.invite!, 'Krobs');
     await until(() => H.mh.status().participants.length === 2);
     await H.mh.start();
@@ -248,10 +267,14 @@ describe('any order works (A14 step 3)', () => {
     expect(C.mh.status()).toMatchObject({ role: 'client', phase: 'over', locked: true });
     hr.open();
     cr.open();
-    // A client's Start starts nothing (its table is locked anyway); the host's starts game 2 for everyone.
+    // A client's Start starts nothing (its table is locked anyway); the host's starts game 2 for everyone. A17
+    // step 7: the host is the starter here because it went first in game 1. The game that began on the other
+    // player's locked table is not a game of their own (the review of PR 136): nothing says OWN GAME, and the
+    // starter's start does not wait for it.
     cr.gameStart();
     await new Promise((r) => setTimeout(r, 50));
     expect(H.mh.status().series?.game).toBe(1);
+    expect(H.mh.status().lobby?.members.flatMap((m) => m.flags)).not.toContain('own_game');
     hr.gameStart();
     await until(() => H.mh.status().series?.game === 2 && C.mh.status().series?.game === 2 && C.mh.status().phase === 'playing');
     expect(H.mh.status().panel).toMatchObject({ myTurn: true, ball: 1 });
@@ -302,7 +325,7 @@ describe('one step to a match over real match hosts (A14 steps 1 and 2)', () => 
     const co = oneStepOn(C.mh, cr, friendTables);
 
     // Host: one press. The match is hosted, the link is on the clipboard, VPX is asked for the picked table.
-    const hs = await ho.one.host({ tablePath: hostTables[0]!.vpxPath, startTable: true, port: port(), ballsPerGame: 3, displayName: 'Owner' });
+    const hs = await ho.one.host({ tablePath: hostTables[0]!.vpxPath, startTable: true, port: 0, ballsPerGame: 3, displayName: 'Owner' });
     expect(hs).toMatchObject({ role: 'host', phase: 'lobby' });
     const link = ho.one.status().link!;
     expect(link).toMatch(/^castcade:\/\/join\/castcade%3Aws%3A%2F%2F127\.0\.0\.1%3A\d+%23[A-Z]{6}$/);
@@ -342,14 +365,14 @@ describe('one step to a match over real match hosts (A14 steps 1 and 2)', () => 
     const C = make('gone-client', cr.w);
     const ho = oneStepOn(H.mh, hr, []);
     const co = oneStepOn(C.mh, cr, [known('Monster Bash', SHA)]);
-    await ho.one.host({ tablePath: null, port: port(), ballsPerGame: 3, displayName: 'Owner' });
+    await ho.one.host({ tablePath: null, port: 0, ballsPerGame: 3, displayName: 'Owner' });
     const link = ho.one.status().link!;
     // It waits for the click (the app was not showing the Match tab); meanwhile the host leaves.
     await co.one.openLink(link, { trusted: false });
     expect(co.one.status().pending).not.toBeNull();
     await H.mh.leave();
     const after = await co.one.confirm();
-    expect(after.notice).toMatch(/^That match is gone or cannot be reached: ask the host for a new link\./);
+    expect(after.notice).toMatch(/^That lobby is gone or cannot be reached: ask for a new link./);
     expect(C.mh.status().role).toBe('none');
     expect(co.launched).toEqual([]);
     ho.one.stop();

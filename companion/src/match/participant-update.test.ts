@@ -47,7 +47,8 @@ async function lobby(opts: { hostGame?: GameFingerprint; policy?: 'refuse' | 'ad
   host.on('reject', (r) => rejects.push(r));
   const clients: Record<string, ClientMatch> = {};
   const seen: Record<string, Seen> = {};
-  for (const c of opts.clients) {
+  /** One more player joins the lobby (also after it was set up). */
+  const join = async (c: { id: string; game: GameFingerprint; rig?: ParticipantInfo['rig'] }): Promise<ClientMatch> => {
     const k = generateKeys();
     const cm = new ClientMatch({ transport: bus.transport(c.id), keys: k, participant: participant(c.id, k, c.rig ?? 'pc'), game: c.game, throwdownCode: 'M', hostId: 'h', clock });
     const s: Seen = { mismatch: [], rosters: [] };
@@ -57,8 +58,10 @@ async function lobby(opts: { hostGame?: GameFingerprint; policy?: 'refuse' | 'ad
     seen[c.id] = s;
     cm.join();
     await flush();
-  }
-  return { host, clients, seen, hostSeen, updated, rejects };
+    return cm;
+  };
+  for (const c of opts.clients) await join(c);
+  return { host, clients, seen, hostSeen, updated, rejects, join };
 }
 
 const rigOf = (roster: ParticipantInfo[], id: string): string | undefined => roster.find((p) => p.playerId === id)?.rig;
@@ -314,6 +317,55 @@ describe('PARTICIPANT_UPDATE (A6, 2026-10-31)', () => {
     expect(r.rejects).toEqual([]);
     expect(r.host.log.head()).toEqual(log);
     expect(third.state.phase).toBe('running');
+  });
+
+  it("I11.4.15: the host's table objects: said to every client in a re-sent HELLO_ACK (and to one that joins later in its first), raised only on a change, taken back with null; lobby only, never logged, and not part of the fingerprint", async () => {
+    const r = await lobby({ clients: [{ id: 'krobs', game: OTHER }] });
+    const krobs = r.clients['krobs']!;
+    const said: Array<string | null> = [];
+    krobs.on('hostTableObjects', (o) => said.push(o ? `${o.editables} ${o.hash}` : null));
+    // Nothing yet: the host's table is not known (or the host is a build from before I11.4.15).
+    expect(krobs.hostTableObjects()).toBeNull();
+    const CONGO = { editables: 769, hash: 'fc87ddefd36bdd13' };
+    const acks = r.seen['krobs']!.rosters.length;
+    expect(r.host.setHostTableObjects(CONGO)).toBe(true);
+    await flush();
+    expect(krobs.hostTableObjects()).toEqual(CONGO);
+    expect(r.seen['krobs']!.rosters.length).toBe(acks + 1);
+    expect(r.seen['krobs']!.rosters.at(-1)!.hostTableObjects).toEqual(CONGO);
+    // The same again: nothing is sent. Another HELLO_ACK for another reason: no event, the value stays.
+    expect(r.host.setHostTableObjects({ ...CONGO })).toBe(false);
+    r.host.updateLocal({ rig: 'vr_headset' });
+    await flush();
+    expect(said).toEqual(['769 fc87ddefd36bdd13']);
+    expect(krobs.hostTableObjects()).toEqual(CONGO);
+    // What a client holds is its own copy.
+    krobs.hostTableObjects()!.editables = 1;
+    expect(krobs.hostTableObjects()).toEqual(CONGO);
+    // The table objects are not a field of the fingerprint: what differs between the two files is still only the hash.
+    expect(r.seen['krobs']!.mismatch.at(-1)).toEqual({ playerId: 'krobs', fields: ['tableHash'] });
+    expect(Object.keys(krobs.hostGame()!)).not.toContain('hostTableObjects');
+    // The host's table closes: taken back.
+    expect(r.host.setHostTableObjects(null)).toBe(true);
+    await flush();
+    expect(krobs.hostTableObjects()).toBeNull();
+    expect(said).toEqual(['769 fc87ddefd36bdd13', null]);
+    // Another table; a player who joins now hears it in the first HELLO_ACK.
+    const CC = { editables: 738, hash: '512b43b0598d481c' };
+    r.host.setHostTableObjects(CC);
+    await flush();
+    const late = await r.join({ id: 'third', game: MB });
+    expect(late.hostTableObjects()).toEqual(CC);
+    // After MATCH_READY nothing more is said (the roster is final), and nothing of it is in the log.
+    const logBefore = r.host.log.length;
+    r.host.start();
+    await flush();
+    expect(r.host.setHostTableObjects(CONGO)).toBe(false);
+    await flush();
+    expect(krobs.hostTableObjects()).toEqual(CC);
+    expect(JSON.stringify(r.host.log.entries())).not.toContain('512b43b0598d481c');
+    expect(r.host.log.length).toBeGreaterThan(logBefore);
+    expect(r.rejects).toEqual([]);
   });
 
   it('a refusing host rejects an update whose fingerprint differs and keeps the old one; a rig-only update goes through', async () => {

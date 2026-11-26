@@ -76,9 +76,9 @@ describe('the join link (A14)', () => {
   });
 
   it('the chat line says the table and what to do with a link that is not clickable', () => {
-    expect(inviteMessage('castcade://join/JHDFEF', 'Monster Bash')).toBe('Castcade match on Monster Bash: castcade://join/JHDFEF (copy the link, then in Castcade press Match, Paste, Join)');
-    expect(inviteMessage('https://arcaid.app/castcade/join/JHDFEF', 'Monster Bash')).toBe('Castcade match on Monster Bash: https://arcaid.app/castcade/join/JHDFEF');
-    expect(inviteMessage('castcade://join/JHDFEF', null)).toBe('Castcade match: castcade://join/JHDFEF (copy the link, then in Castcade press Match, Paste, Join)');
+    expect(inviteMessage('castcade://join/JHDFEF', 'Monster Bash')).toBe('Castcade lobby on Monster Bash: castcade://join/JHDFEF (copy the link, then in Castcade press Match, Paste, Join)');
+    expect(inviteMessage('https://arcaid.app/castcade/join/JHDFEF', 'Monster Bash')).toBe('Castcade lobby on Monster Bash: https://arcaid.app/castcade/join/JHDFEF');
+    expect(inviteMessage('castcade://join/JHDFEF', null)).toBe('Castcade lobby: castcade://join/JHDFEF (copy the link, then in Castcade press Match, Paste, Join)');
   });
 });
 

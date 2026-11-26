@@ -415,7 +415,11 @@ describe('journal pipe: the host and its worker thread (the real worker, from so
   });
 
   it('the drain bound: a write stuck on the disk makes drain() give up after the bound and say so; the default bound waits for it', async () => {
-    const h = host('bound', { entry: './journal-pipe-test-worker.test-support.ts', workerData: { stallMs: 1_500, stallWrites: 1 } });
+    // The write stays stuck until this test has asked for the drain a second time, and 150 ms more (2026-11-24). It was
+    // stuck for 1.5 s from the write, whatever the test did meanwhile: a first drain asked more than 1.3 s after the
+    // write (the hook's pipe is slow to close on a busy PC) found it done and answered true, and a second one asked
+    // late had under 100 ms left to wait and logged nothing. Neither can happen now, on any PC.
+    const h = host('bound', { entry: './journal-pipe-test-worker.test-support.ts', workerData: { stallMs: 150, stallWrites: 1, stallUntilDrains: 2 } });
     expect(await h.pipe.ready(15_000)).toBe(true);
     const c = hook(h.pipe.pipeName);
     await c.send(header('Bound_Table.jsonl'), '{"event":"table_exit"}\r\n');

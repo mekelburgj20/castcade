@@ -119,6 +119,14 @@ function make(extra: Partial<Opts>): { mh: MatchHost; dir: string } {
     publicIp: () => Promise.resolve('127.0.0.1'),
     lockFile: join(dir, 'lock', 'turn.lock'),
     listenAddress: '127.0.0.1',
+    // 2026-11-24: the host listens on a port the system picks (`host({ port: 0 })`): a port picked here (45000 to
+    // 46999, at random) can sit in a range Windows has reserved since its last boot (EACCES), or be in use.
+    ephemeralPort: true,
+    // A17 step 7: every match is in a lobby, and every start of a lobby counts down (5 s in the app); here it is short.
+    lobby: { countdownMs: 20 },
+    // And no search of the network the tests run on (D10.8): left at its default, every hosted match here asked the
+    // router of whoever runs the tests to open a port.
+    openPort: null,
     ...extra,
   });
   hosts.push(mh);
@@ -127,7 +135,6 @@ function make(extra: Partial<Opts>): { mh: MatchHost; dir: string } {
 
 const VD_RIG = async () => ({ rig: 'vr_headset' as const, reason: 'test: VPX in VR on Virtual Desktop', runtime: 'virtual-desktop' as const });
 const PC_RIG = async () => ({ rig: 'pc' as const, reason: 'test: the monitor', runtime: null });
-const port = (): number => 45000 + Math.floor(Math.random() * 2000);
 
 describe('the VR test bench in the match host (D7.6)', () => {
   it('own table live on a VR rig: theater through the layer, Theater size live, the direct view to compare; Stop gives VPX its view back and detaches', async () => {
@@ -215,7 +222,7 @@ describe('the VR test bench in the match host (D7.6)', () => {
     const layer = fakeLayer();
     const { mh } = make({ media: m.media, vrLayer: layer.overlay, rig: VD_RIG });
     await mh.startBench({ source: 'live' });
-    await mh.host({ port: port(), ballsPerGame: 3, displayName: 'Owner' });
+    await mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
     expect(m.calls.slice(0, 4)).toEqual(['setCameraView whole', 'startBench live direct headset', 'stopBench', 'attach']);
     expect(lines).toContain("bench: stopped (a match is hosted); VPX's own view is back");
     expect(mh.status().bench).toBeNull();

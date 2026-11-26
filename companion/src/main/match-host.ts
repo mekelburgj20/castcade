@@ -51,26 +51,67 @@
  * (`syncVrMode`), the 2D video keeps flowing underneath and comes back the moment 3D does not work. At the grant the
  * turn lock is lifted once the fork is back on its own table (`lock.unlock`, 2 s at most). `tableLaunch()` is how a
  * match table is started (`one-step.ts`): in the fork when it is there and `watch3d` is `auto`.
+ *
+ * A18 (2026-11-24, the owner: "We never want another player's disconnect to cause the active player to have a messed
+ * up session"; match ECVYGP, 2026-11-23: ArcAid dropped the match for one second in the owner's ball; the match paused
+ * for 2.3 s, the native video stopped and its encoder started again, the other player's 3D watch closed and opened
+ * again, and the voice connection was closed and made again). The engines do most of it (`match/host.ts`: a grace
+ * before a dropped link is a disconnect, and no pause for a player who is not up; `match/client.ts`; the controller
+ * keeps a media connection that never dropped). Here: the native video of the player whose ball is live goes on
+ * through a pause (`syncNativeVideo`: the others may be told to wait, the picture is not cut), and a client says its
+ * link to the host is down only once the engine does, after the grace (`watchHost`).
+ *
+ * A17 step 7 (2026-11-25, docs/design/alpha-match.md section 11; the owner, 2026-11-23: "keep our audio session live,
+ * even between matches ... 'join lobby'. Anyone in the lobby can all chat. Then we start and end matches without
+ * leaving the lobby."). **Every match this app hosts or joins is a match in a lobby**, and the protocol is 7 because
+ * of it. The engines are made with their `lobby` option (`match/host.ts`, `match/client.ts`), so:
+ * - `Active` lives from Open lobby / Join lobby to Leave / Close, across any number of matches. A match's end
+ *   (`matchEnded`) runs `endMatchHalf` and nothing else: the voice, the video helper's connections, the state
+ *   stream's tunnels, the overlay, the menu keys, the link and the ArcAid room stay. `closeLobbyHalf` runs only when
+ *   the lobby is over for this PC (Leave lobby, Close lobby, `lobbyClosed`, quit).
+ * - `start()` asks for a start (`requestStart`; anybody may, and it counts down), `cancelStart()`, `endMatch()`,
+ *   `setStance()` (Play or Watch), `giveUp()`, and for the lobby's PC the answers about a player who is away
+ *   (`answerAway`, `playOnWithout`). `leave()` is Leave lobby on a client (LEAVE_LOBBY first, so the place is free at
+ *   once) and Close lobby on the lobby's PC (LOBBY_CLOSED to everyone).
+ * - the relay: the room is never locked (a lobby takes people in every phase); the lobby's PC tells its engine when
+ *   its own connection to ArcAid is away and back (`setCutOff`), and closes the lobby when ArcAid will not have the
+ *   room again; a member keeps asking for a room that is gone, slowly, for the whole wait (`LOBBY_REJOIN`).
+ * - every engine starts its `seq` at the wall clock (`Session.seqStart`), so a Castcade that started again is heard.
+ * - a member who is not in the game that is played (a watcher; the lobby's PC that only watches) is locked while it
+ *   is played, shown the player who is up (the theater, or 3D), hears their table, and reports nothing; in a game of
+ *   their own they keep their table, their view and their sound until it ends (the controller's `ownGame`).
+ * - a restart of Castcade in a lobby (A17 step 8, 2026-11-26; match-resume.ts says what is saved): a record of the
+ *   lobby is written from the moment it is opened or joined until it ends for this PC. A member (a player, a
+ *   watcher, with a match open or none) is offered the lobby again and comes back by its own signed HELLO; a player
+ *   of the match that is still open has the turn and what the table said meanwhile (A15's rules). The lobby's PC
+ *   opens the same code again and is the same lobby (`HostMatch.restoreLobby`): the members with their places, the
+ *   table, the match where it stood, and the counters it must not fall behind (`SeqGuard`). Only a record that does
+ *   not read in full opens the code again empty, with a match that was open lost, which every panel then says.
+ *   Quitting Castcade on the lobby's PC with others in the lobby keeps the lobby; Close lobby is what ends it.
  */
 import { BrowserWindow, ipcMain } from 'electron';
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { networkInterfaces } from 'node:os';
 import { dirname, join } from 'node:path';
-import type { GameFingerprint, ParticipantInfo, PayloadOf } from '@castcade/protocol';
-import { ClientMatch } from '../match/client.js';
-import { MatchController, TABLE_BY_HAND_NOTE, TABLE_FORK_FAILED_NOTE, lobbyLineKey, mismatchWords, vrViewMode, type ControllerStatus, type CueKind } from '../match/controller.js';
-import { MENU_CLOSED, menuItems, menuPress, menuView, readMenuKey, shortcutWords, type MenuEffect, type MenuFacts, type MenuKey, type MenuState } from '../match/match-menu.js';
-import { HostMatch, STREAM3D_WAIT_MAX_MS } from '../match/host.js';
+import type { GameFingerprint, ParticipantInfo, PayloadOf, Stance, TableChange } from '@castcade/protocol';
+import { tableWords } from '../match/table-identity.js';
+import { ClientMatch, LOBBY_HOST_WAIT_MS } from '../match/client.js';
+import { MatchController, TABLE_BY_HAND_NOTE, TABLE_FORK_FAILED_NOTE, lobbyLineKey, mismatchWords, tableObjectsNote, vrViewMode, type ControllerStatus, type CueKind, type LobbyStatus } from '../match/controller.js';
+import { awayQuestionLine, menuDrawn, menuLobbyOf, menuSettle, MENU_CLOSED, menuItems, menuPress, menuView, readMenuKey, shortcutWords, type MenuEffect, type MenuFacts, type MenuKey, type MenuState } from '../match/match-menu.js';
+import { HostMatch, STREAM3D_WAIT_MAX_MS, type LobbyOptions } from '../match/host.js';
 import { MatchLog } from '../match/log.js';
 import { Session } from '../match/session.js';
-import { replayLog, type MatchState } from '../match/state.js';
+import { initialState, replayLog, type MatchState } from '../match/state.js';
+import { forkIdentityText, parseForkIdentityText, type ForkIdentity } from '../launch/fork-identity.js';
 import type { ForkLaunch } from '../launch/vpx-launch.js';
 import type { GameEvent } from '../witness/journal-detector.js';
 import type { JournalMark } from '../witness/types.js';
-import { HOST_WAIT_MS, RESUME_FILE, RESUME_HEARTBEAT_MS, TableBacklog, createResumeStore, resumeFreshness, turnEndsOf, type ResumeRecord } from './match-resume.js';
+import { HOST_WAIT_MS, RESUME_FILE, RESUME_HEARTBEAT_MS, TableBacklog, createResumeStore, oldRecordSentence, resumeFreshness, turnEndSeqsOf, turnEndsOf, type ResumeRecord, type SavedLobbyPart } from './match-resume.js';
 import type { Transport } from '../match/transport.js';
-import { CompositeTransport, RelayClientTransport, RelayError, RelayHostTransport, type RejoinPolicy } from '../match/transport-relay.js';
-import { WsPeerTransport, type ErrorHandler } from '../match/transport-ws.js';
+import { CompositeTransport, LOBBY_REJOIN, LOBBY_RETURN_ALLOW_MS, RelayClientTransport, RelayError, RelayHostTransport, type RejoinPolicy, type RelayHostState } from '../match/transport-relay.js';
+import { ForeignVersionError, WsPeerTransport, type ErrorHandler } from '../match/transport-ws.js';
+// A17 step 4: on a line of its own, away from the controller's other names above (another branch edits that line).
+import { pausedForPlayerUp } from '../match/controller.js';
 import type { MatchMedia, MediaSignalling, MediaStatus, PanelState, PanelVolume, VrOverlay, VrOverlayStatus, VrViewMode } from '../media/match-media-types.js';
 import { DEFAULT_MEDIA_SETTINGS, iceServers, type MediaSettingsStore, type TurnServer, type VideoPath } from '../media/media-settings.js';
 import type { MicDevice } from '../media/panel-page.js';
@@ -79,7 +120,7 @@ import { previewAdvice } from '../media/preview-stereo.js';
 import type { NativeVideoHook, RtcHost } from '../media/rtc-host.js';
 import { splitSignalling } from '../media/rtc-signaling.js';
 import type { VideoHelper, VideoSink } from '../media/video-helper.js';
-import { clampMaxKbps, clampPin, createVideoMesh, headsetVideoLine, THEATER_ON_RING, THEATER_RING_BACK_MS, THEATER_RING_EMPTY_MS, theaterPathStep, type TheaterPathState, type VideoMesh, type VideoRungs } from '../media/video-mesh.js';
+import { clampMaxKbps, clampPin, createVideoMesh, headsetVideoLine, THEATER_ON_RING, THEATER_RING_BACK_MS, THEATER_RING_EMPTY_MS, theaterPathStep, videoDirectPeers, type TheaterPathState, type VideoMesh, type VideoRungs } from '../media/video-mesh.js';
 import { clipFolderName, listClips, loadClip, type ClipSummary, type SaveFramesResult } from '../media/frame-clip.js';
 import { benchHint, benchRequestFrom, benchStep, liveRefusal, type BenchState, type BenchStatus, type BenchView } from '../media/bench.js';
 import { tuneWords, VR_LAYER_SCOREBOARD_ROOM_PROTOCOL } from '../media/vr-layer.js';
@@ -90,6 +131,10 @@ import { openPort, portMappingLine, type PortMapping, type PortMapResult } from 
 import type { MatchStream3d, Stream3dHost, Stream3dView } from './stream3d-host.js';
 import type { Logger } from './log.js';
 import { describeError } from './log.js';
+import { typingReason, type VpxForeground } from './vpx-foreground.js';
+
+/** I11.4.18: the panel's and the Match tab's line while this PC's turn waits for VPX to be the active window. */
+export const CLICK_TABLE_HINT = 'Your turn: click the table to play (VPX holds the table still while another window is the active one)';
 import {
   cleanName,
   cleanPort,
@@ -132,7 +177,7 @@ export interface MatchStatus {
   phase: MatchPhase;
   /** This companion's listener (host), e.g. `ws://0.0.0.0:27401`. */
   endpoint: string | null;
-  /** D10.8: the code alone when the match goes through ArcAid, else the address invite. */
+  /** D10.8: the code alone when the match goes through ArcAid, else the address invite. A17 step 9: a member of a lobby through ArcAid has the code too; a member of one reached by address has null. */
   invite: string | null;
   /**
    * D10.8: the address invite of a host whose invite is the code (its listener still serves LAN players, forwarded
@@ -173,6 +218,20 @@ export interface MatchStatus {
     ballEnds: boolean | null;
   }>;
   /**
+   * A17 step 7 (2026-11-25): the lobby: its members with their choice (Play or Watch) and what their row says, the
+   * starter, the open match, the start that is announced, what the start button does, and for the lobby's PC the
+   * player the game waits for and the question about one who is up and out of reach. Null with no lobby.
+   * `participants` above is the same members, with their table notes.
+   */
+  lobby:
+    | (LobbyStatus & {
+        /** The lobby's PC only: the player the game is paused for at their own turn, with the minutes waited. */
+        waitedFor: { player: string; name: string; minutes: number } | null;
+        /** The lobby's PC only: that player holds the turn, is out of reach and still seen playing: the owner decides (`answerAway`). */
+        awayQuestion: { player: string; name: string; minutes: number; score: number } | null;
+      })
+    | null;
+  /**
    * A13 (2026-11-12): in the lobby, one line per player whose table cannot report ball ends. Not empty: the host's
    * Start match needs `start({ anyway: true })` (the tab's Start anyway).
    */
@@ -193,6 +252,19 @@ export interface MatchStatus {
   advisories: string[];
   /** A13: for the host while a turn is held: whose ball Pass the turn would end, and at what score. Else null. */
   pass: { name: string; ball: number; score: number } | null;
+  /**
+   * The final review (2026-11-28, finding 3): on the lobby's PC, a pause that a press of Resume ends. False for a
+   * pause that waits for a member who is away (`HostMatch.resumeBlocker`), where the press did nothing or took the
+   * turn of the player who is up: the tab offers Resume only while this is true.
+   */
+  canResume: boolean;
+  /**
+   * A17 step 4 (2026-11-24): for the player who is up, while they can end their own ball by hand (End my ball): the
+   * ball and the score it would end at. Else null (not this player's ball, the match paused, no match). The review of
+   * PR 131: `grantSeq`, the grant the question is about (`endMyBall` takes it back and refuses another), and
+   * `tableBall`: the ball on this table would still be in play, and is played out first at this player's next turn.
+   */
+  endBall: { grantSeq: number; ball: number; score: number; tableBall: boolean } | null;
   /** A8 (2026-10-31): a host transfer under way (proposed, not committed yet), with names; the engine acks it by itself. */
   transfer: { proposer: string; newHost: string | null; reason: 'host_left' | 'host_requested' } | null;
   /**
@@ -270,30 +342,88 @@ export interface MatchStatus {
    * none, or while a match is on. `auto`: Castcade was in it under a minute ago or restarted itself for an update, so
    * the shell rejoins without asking.
    */
-  resume: { code: string; role: 'host' | 'client'; names: string[]; auto: boolean } | null;
+  /**
+   * A15, A17 step 8: the lobby Castcade was in when it last closed, while it can still be gone back into. `match`: a
+   * match was open in it then. `lost` (the lobby's PC only): the record's own part did not read or failed its
+   * check, so the lobby can only be opened again empty under its code, and a match that was open is lost.
+   */
+  resume: { code: string; role: 'host' | 'client'; names: string[]; auto: boolean; match: boolean; lost: boolean } | null;
 }
 
+/** The step 9 last pass: what the lobby's PC made of one pick of its table (`MatchHost.pickTable`). */
+export type PickAnswer = { kind: 'taken'; status: MatchStatus } | { kind: 'refused'; sentence: string } | { kind: 'none' };
+/** How long a joined PC waits for the lobby PC's answer to its pick when the caller names no wait. */
+const PICK_WAIT_MS = 8_000;
+
 export interface MatchHost {
+  /** A17 step 7: Open a lobby (it was "Host a match"): this PC arbitrates every match in it, also one its owner only watches. */
   host(opts: { port?: number; ballsPerGame: 3 | 5; displayName: string }): Promise<MatchStatus>;
+  /** A17 step 7: Join a lobby, by its code or its address invite, in any phase (a match that is being played is watched). */
   join(invite: string, displayName: string): Promise<MatchStatus>;
   /**
-   * Host only: Start match in the lobby; A10: Next game between games (the same as a game started on the host's table).
-   * A13: in the lobby, while `startWarnings` is not empty, it throws unless `anyway` is true (the host confirmed).
-   * I11.4.9: in the lobby, while a PC's 3D connection is still being made (`wait3d.players`), the first call holds the
-   * start (the status comes back still in the lobby, `wait3d.armed: 'tab'`) and the match starts by itself once
-   * nobody is waited for (or 45 s have passed); a second call, or `anyway`, starts it now. `held` is the shell's own
-   * call when a held start comes due: a start like any other, never held again.
+   * A17 step 7 (design 11.4): ask for a start, as any member: the match with everyone set to Play, or the open
+   * match's next game (the same as a game the starter begins on their table). It counts down 5 s for everyone, or
+   * waits and says for what (`lobby.start`); anybody can cancel it. `newMatch`: end the open match and start one
+   * with everyone set to Play; `now`: a second press while a start waits: start without what it waits for.
+   * A13: while `startWarnings` is not empty it throws unless `anyway` is true (the asker confirmed).
+   * Throws with the sentence when the lobby's PC refuses at once; a client's refusal comes a moment later as
+   * `lastError` (and on the panel).
    */
-  start(opts?: { anyway?: boolean; held?: boolean }): Promise<MatchStatus>;
+  start(opts?: { anyway?: boolean; newMatch?: boolean; now?: boolean; without?: string | null }): Promise<MatchStatus>;
+  /** A17 step 7: take back the start that counts down or waits. Anybody in the lobby may. */
+  cancelStart(): Promise<MatchStatus>;
+  /**
+   * A17 step 7 (design 11.2): End match. Between games, anyone: the tally is final, everyone stays in the lobby.
+   * During a game, the lobby's PC only: End match for everyone, and the game being played gets no result (the Match
+   * tab and the menu confirm first). The review of PR 136: the two are two requests. `everyone` says which one the
+   * press was (false: End match, between games; true: End match for everyone, during a game), and the other is
+   * never done in its place: an End match pressed as a countdown runs out is refused, it does not end the game that
+   * has just begun. `about` (`lobby.gameKey` when the press, or its question, was made): refused when the match or
+   * its game is another by now.
+   */
+  endMatch(o: { everyone: boolean; about?: string | null }): Promise<MatchStatus>;
+  /** A17 step 7 (design 11.3): this person's own choice for the next start, Play or Watch (saved in match.json). */
+  setStance(stance: Stance): MatchStatus;
+  /**
+   * A17 step 7 (design 11.2): Give up this game: this player's own game ends (FORFEIT); they stay in the lobby and
+   * watch. `about` (`lobby.gameKey` at the press): refused when another game is being played by now.
+   */
+  giveUp(o?: { about?: string | null }): Promise<MatchStatus>;
+  /**
+   * A17 step 7 (design 11.8): the lobby's PC, about the player `lobby.awayQuestion` names: keep waiting, end their
+   * ball at the score as it stands (Pass the turn), or play on without them. Throws when no question is open, and
+   * when `player` (whom the press was about) is not the one asked about now.
+   */
+  answerAway(answer: 'wait' | 'end_ball' | 'play_on', o?: { player?: string | null }): Promise<MatchStatus>;
+  /**
+   * A17 step 7: the lobby's PC: Play on without the player the game waits for (`lobby.waitedFor`): they are
+   * forfeited now. `player`: whom the press was about; refused when the game waits for somebody else by now.
+   */
+  playOnWithout(o?: { player?: string | null }): Promise<MatchStatus>;
   /**
    * A13 (2026-11-12): host only, during a game: end the turn holder's ball at its last known score and grant the next
    * turn, as if its BALL_END had arrived (TURN_PASS in the match log). The Match tab confirms first.
    */
   passTurn(): Promise<MatchStatus>;
+  /**
+   * A17 step 4 (2026-11-24): End my ball. The player who is up, host or client, ends their own ball at the score as
+   * it stands (the last one their table reported) and the turn passes: their own BALL_END, `manual`, an ordinary ball
+   * end to every host since protocol 1. For a table whose ball ends cannot be read and for a stuck ball. The Match
+   * tab and the in-game menu confirm first. Throws when this player has no ball to end (`status().endBall` is null).
+   * The review of PR 131: `grantSeq` is the grant the player was asked about (`status().endBall.grantSeq`); when the
+   * ball is played under another grant by now, nothing is ended and it throws: a confirmation is for one grant.
+   */
+  endMyBall(grantSeq: number): Promise<MatchStatus>;
   /** A8 (2026-10-31): host only: end a pause nobody resumed (a dropped player that is not coming back reconnects never). */
   resume(): Promise<MatchStatus>;
-  /** Leave the match; A10: the host's leave between games is End match (MATCH_END to everyone first). */
+  /**
+   * A17 step 7: Leave lobby (a client: LEAVE_LOBBY first, so the place is free at once and a game this player plays
+   * is given up) or, on the lobby's PC, Close lobby: a game being played is ended for everyone, every PC is told
+   * (LOBBY_CLOSED) and tears down. The voice, the video and the state stream to and from this PC close here.
+   */
   leave(): Promise<MatchStatus>;
+  /** A17 step 7 (design 11.3): this PC has no copy of the lobby's table (`one-step.ts` knows): said to the lobby, which then counts this person out of a start. */
+  setNoCopy(noCopy: boolean): void;
   setSettings(patch: Partial<MatchSettings>): MatchStatus;
   /** Null: the Windows default. Saved in media.json, and switched live while a match runs. */
   setMicrophone(deviceId: string | null): MatchStatus;
@@ -336,8 +466,60 @@ export interface MatchHost {
   tableLaunch(): Promise<ForkLaunch | null>;
   /** I11.4.11: 3D can run on this PC: the Castcade VPX build is beside VPX and 3D watch is on. */
   wants3d(): boolean;
-  /** I11.4.11: the launch's word for this match's lobby line (the host's identical file is on this PC, not imported); null takes it away. */
-  setLaunchNote(note: string | null): void;
+  /**
+   * I11.4.11: the launch's word for this match's lobby line (the host's identical file is on this PC, not imported);
+   * null takes it away. I11.4.15: `not3d` says the copy that was started is known not to hold the host's table objects:
+   * the lobby then says so before the start, with the note's remedy when there is one.
+   */
+  setLaunchNote(note: string | null, not3d?: boolean): void;
+  /**
+   * I11.4.15: the table objects of the host's table (`launch/fork-identity.ts`): a client's from HELLO_ACK
+   * (`hostTableObjects`), the host's own as it last announced them; null: not known, or no match.
+   */
+  hostTableObjects(): ForkIdentity | null;
+  /**
+   * A17 step 3: this PC's table is held for the high-score initials of this player's finished game (the controller's
+   * A16.2 hold). `one-step.ts` closes no table while it is: the lobby's new table waits for the initials.
+   */
+  tableHeld(): boolean;
+  /**
+   * A17 step 3: the lobby's table, which since step 6 is a pick (`HELLO_ACK.hostGame`, its identity keys) and not a
+   * PC's open VPX: on the lobby's PC the engine's own, on a joined PC the last HELLO_ACK's. Null with no lobby. It is
+   * what `one-step.ts` follows; `hostGame()` is a match's own table once one has started. `joined` names this PC's
+   * stay in the lobby: it is another value after every join, every join again (a lobby opened again under its code, a
+   * place that ran out), every reconnect and every resume. Only a table named under the same `joined` as the one
+   * before it was changed while this PC was there.
+   */
+  lobbyTable(): { game: GameFingerprint; joined: string } | null;
+  /**
+   * A17 step 10 (design 11.5): pick the lobby's table. `game` is the pick (only its identity keys count), `objects`
+   * the Castcade VPX build's identity of this PC's copy of it, when known. Anyone in the lobby may, outside a game
+   * and while no start is announced; between games the open match ends at its tally (the Match tab asked first, and
+   * says what the press was about: `about`, the lobby's `gameKey`).
+   *
+   * The step 9 last pass: the answer is this request's own. `taken` (the lobby's table is the picked one), `refused`
+   * with the sentence (the lobby PC's REJECT that names this very TABLE_PICK, or what this PC can say at once: no
+   * lobby, the lobby's PC is away, a game or a start, a lobby that is not as it was at the press), or `none` when
+   * neither came within `waitMs` (a client; the lobby's own PC answers at once). It was read from the tab's one
+   * sentence (`lastError`), where another refusal that arrived in the same moment was taken for the pick's. Never
+   * throws for a refusal, and leaves `lastError` alone: the pick's answer is said where the pick was made.
+   */
+  pickTable(o: { game: GameFingerprint; objects: ForkIdentity | null; about?: string | null; waitMs?: number }): Promise<PickAnswer>;
+  /** A17 step 10: this PC's own open table as it says it to the lobby (for "Make <table> the lobby's table"); null: none is open, or no lobby. */
+  ownTable(): GameFingerprint | null;
+  /**
+   * A17 step 10: where this PC stands on its way to the lobby's table after a change of it (`one-step.ts` knows),
+   * and the sentence for this PC's own panel while it waits: said to the lobby, so every row and header says it.
+   */
+  setTableChange(state: TableChange | null, line: string | null): void;
+  /**
+   * A17 step 10 (review of PR 139, finding 1): the table open on this PC (`open`, as the witness names it) is this
+   * PC's own copy of the lobby's table named `pick`, or is not (null). One step says it: it finds this PC's copies,
+   * by the ROM its lists know where the names share nothing, and a row carries no ROM. The lobby is told with the
+   * table as this PC's row names it, and again whenever that row changes while the same table stands open (its hash
+   * comes a moment after its name); the lobby then never calls that table another game.
+   */
+  setPickCopy(word: { pick: string; open: string } | null): void;
   /**
    * D7.6.3 (2026-11-03): the Match tab's Save 2 s of frames: the layer camera's frames and the theater frames handed to
    * the layer, into `<logs>/frames/<yyyy-mm-dd-hhmmss>/` (media/frame-clip.ts). Throws without the media layer.
@@ -365,7 +547,24 @@ export interface MatchHost {
    * On quit: leave any match and close the cue window. A15: `keepForRestart` (Castcade restarts to install an update):
    * a started match is not left; it is closed here and rejoined at the next start.
    */
-  stop(opts?: { keepForRestart?: boolean }): Promise<void>;
+  /**
+   * Castcade is closing. `keepForRestart`: it restarts itself for an update: nothing is left, and the next start goes
+   * back in. A17 step 8 (the review of PR 138), on the lobby's PC with somebody else present in the lobby: `lobby`
+   * is the owner's answer to `quitQuestion()`: `close` closes the lobby for everyone; `keep`, or no answer (a quit
+   * that could not ask), keeps it: the others are told that Castcade was closed here and the lobby is kept, and it is
+   * offered at the next start. With nobody else present the lobby is closed, as a member's quit is a leave.
+   */
+  stop(opts?: { keepForRestart?: boolean; lobby?: 'close' | 'keep' }): Promise<void>;
+  /**
+   * A17 step 8 (the review of PR 138): Castcade is about to be closed on the lobby's PC while others are present in
+   * its lobby: who they are, for the question "Close the lobby for everyone / Keep the lobby". Null: nothing to ask.
+   */
+  quitQuestion(): { code: string; names: string[]; away: string[] } | null;
+  /**
+   * The final review (finding 8): this PC is a member (not the lobby's PC) and a player of the game being played, so
+   * a quit of Castcade, which leaves the lobby, gives that game up: there is a question to ask first. Null otherwise.
+   */
+  quitGameQuestion(): { code: string } | null;
 }
 
 export interface MatchHostOptions {
@@ -397,6 +596,12 @@ export interface MatchHostOptions {
    * the tunnel and the 3D-or-2D decision. Absent → every match is 2D, as before.
    */
   stream3d?: Stream3dHost;
+  /**
+   * I11.4.15: the table objects of a table file on this PC (`launch/table-objects.ts`: what the Castcade VPX build
+   * reported for it, else computed from the file; kept by path, size and time). A host announces its own table's with
+   * its fingerprint until its VPX has said them itself. Absent → nothing is announced before that `hello`.
+   */
+  tableObjects?(vpxPath: string): Promise<ForkIdentity | null>;
   appVersion: string;
   log: Logger;
   /**
@@ -432,23 +637,70 @@ export interface MatchHostOptions {
   now?: () => number;
   /** A15: the saved match. Default `match-resume.json` beside `file`. */
   resumeFile?: string;
+  /** A17 step 4 test seam: `UP_AWAY_PICTURE_MS`, how long a picture may be missing in a pause for the player who is up before the panel comes. */
+  upAwayPictureMs?: number;
+  /** Test seam: `SERIES_OVER_LINGER_MS`, how long a client's panel stays after the series, or the lobby, is over. */
+  seriesOverLingerMs?: number;
   /** A15 test seams: how long a client waits for a host that is gone, and how long a rejoin waits for the host's answer. */
   hostWaitMs?: number;
   rejoinTimeoutMs?: number;
   /** A15 test seam: how a relay client asks again for a room that is gone. Default `HOST_WAIT_REJOIN`. */
   relayRejoin?: Partial<RejoinPolicy>;
+  /**
+   * A17 step 8 (the review of PR 138): ArcAid's own authenticated answer on whether this device is still paired
+   * (the Witness heartbeat): `unpaired` only when ArcAid said so (401); `unknown` when it could not be asked. The
+   * relay's `unauthorized` alone never closes a lobby as unpaired: it is also what the relay says when it could not
+   * read the device. Absent: never confirmed, so the room is asked for until it is there.
+   */
+  pairingCheck?: () => Promise<'paired' | 'unpaired' | 'unknown'>;
+  /** A18 test seam: the engines' grace before a dropped link is a disconnect (ms). Default: theirs (5 s). */
+  disconnectGraceMs?: number;
+  /** A17 step 7 test seam: the lobby's clocks (the countdown of a start, the place and the turn of a member who is away, the 3D wait). Default: the engine's. */
+  lobby?: Pick<LobbyOptions, 'countdownMs' | 'placeMs' | 'turnMs' | 'start3dMaxMs' | 'returnAllowMs'>;
+  /**
+   * I11.4.18 (2026-11-24): how VPX gets the foreground back from a Castcade window (`vpx-foreground.ts`); absent: it is
+   * never tried (the tests that are not about it, a build without it).
+   */
+  foreground?: VpxForeground;
+}
+
+// A17 step 7: how a member asks ArcAid for a lobby's room that is gone is `LOBBY_REJOIN` (match/transport-relay.ts).
+export { LOBBY_REJOIN };
+/** A15: how long a rejoin waits for the lobby's answer (and the open match's log) before it gives up (the saved match is kept). */
+const REJOIN_TIMEOUT_MS = 20_000;
+/** A17 step 8 (the review of PR 138): the lobby PC's own note while it asks ArcAid for its room again. */
+// ---- sentences of the shell, each one function, so that what is shown of them elsewhere (the story pages of the
+// lobby's screens, renderer/story) is held against them word for word (A17 step 9, 2026-11-27).
+
+/** The lobby's record cannot be written: said on the Match tab while it lasts. */
+export function cannotSaveSentence(folder: string, why: string): string {
+  return `Castcade cannot save this lobby (the folder ${folder}: ${why}). The lobby goes on. If Castcade closes before it can be saved again, it comes back as it was last saved, or not at all.`;
+}
+
+/** The lobby's PC is no longer paired with ArcAid, and its lobby was closed on it. */
+export function unpairedClosedSentence(code: string | null): string {
+  return `The lobby ${code} is closed on this PC: this PC is no longer paired with ArcAid, so the others cannot reach it. Pair it again in Settings (Pair with ArcAid), then open a new lobby and send the new code.`;
+}
+
+/** Castcade started again on the lobby's PC and opened its lobby as it was; `waiting`: ArcAid does not carry it yet. */
+export function reopenedSentence(code: string, open: 'game' | 'between' | null, waiting: boolean): string {
+  return `Castcade on this PC started again: the lobby ${code} is open again as it was${open ? `, with ${open === 'game' ? 'the game' : 'the match'} where it stood` : ''}. ${
+    waiting ? 'Castcade is waiting for ArcAid to carry it again: the others can come back once it does.' : 'The others come back by themselves.'
+  }`;
 }
 
 /**
- * A15: a relay client's asks for a room that is gone, while it waits for its host (`HOST_WAIT_MS`): five asks, the
- * first two soon (ArcAid restarted and the host opened the room again within seconds), the last 88 s after the first
- * miss (a host whose Castcade restarted). Five misses stay under the server's lockout (eight in ten minutes).
+ * What a PC shows when a lobby did not take it in. The lobby's own sentence, as it is, where it is written to be
+ * shown so (another version; a full lobby: step 9, it stood behind "The lobby did not take this PC in:" although
+ * the sentence says it all).
  */
-export const HOST_WAIT_REJOIN: RejoinPolicy = { gapsMs: [2_000, 6_000, 20_000, 60_000], maxMisses: 5, windowMs: 10 * 60_000 };
-/** A15: how long a rejoin waits for the host's RECONNECT_ACK before it gives up (the saved match is kept). */
-const REJOIN_TIMEOUT_MS = 20_000;
-/** A15: a host that opened its relay room again lets its players back in for this long before it locks the room again. */
-const REHOST_LOCK_MS = 60_000;
+export function refusalShown(refuse: { code: string; message: string }): string {
+  return refuse.code === 'protocol_version' || refuse.code === 'match_full' ? refuse.message : `The lobby did not take this PC in: ${refuse.message}`;
+}
+
+export const RELAY_WAITING = 'ArcAid is not carrying this lobby yet (it did not answer when Castcade started again). Castcade keeps asking; the others can come back once it does';
+/** A17 step 7 (the review of PR 136): what a member is told who asks the lobby's PC for something while it is away. */
+const LOBBY_PC_AWAY = "The lobby's PC is away: this has to wait until it is back.";
 
 /** D2.10: what `globalShortcut` offers: `register` is false when another app holds the key. */
 export interface ShortcutRegistrar {
@@ -484,6 +736,24 @@ const SERIES_OVER_LINGER_MS = 20_000;
 const BENCH_HIDE_MS = 300;
 /** D10.3.8: the theater-path watch's own tick (the helper's stats come once a second too, but not when nothing arrives). */
 const THEATER_WATCH_MS = 1_000;
+/**
+ * A17 step 4: in a pause for the player who is up, how long their picture may be missing on this PC before the panel
+ * comes: the Castcade VPX build ends a 3D watch after as long without a frame.
+ */
+const UP_AWAY_PICTURE_MS = 3_000;
+/**
+ * The review of PR 131, finding 4: a choose that would confirm a question of the in-game menu is ignored this long
+ * after the question came up: a key held past the keyboard's repeat delay must not ask and answer in one press.
+ */
+const MENU_CONFIRM_MIN_MS = 400;
+/**
+ * The same finding, for the keyboards that rule alone does not cover. A held key repeats: Windows sends the first
+ * repeat 250 ms to 1 s after the press (500 ms as installed) and the next ones about 33 ms apart. That first repeat
+ * can come after `MENU_CONFIRM_MIN_MS`, and when it arrives nothing tells it from a press of its own; what gives it
+ * away is the next repeat right behind it. So a choose that would answer a question waits this long before it does,
+ * and one more choose inside that time means the key is held: nothing is answered then, nor by any repeat after it.
+ */
+const MENU_HELD_KEY_MS = 150;
 /** D10.8: how long teardown waits for the router to drop the port mapping. */
 const UNMAP_TIMEOUT_MS = 2_000;
 /** D10.8: a code the relay says is in use is replaced this many times before the match goes direct. */
@@ -533,6 +803,8 @@ interface Active {
    * under way. Krobs joined before his table loaded and read "PC · different table file" for the whole match.
    */
   sent: { rig: Rig; game: GameFingerprint; ballEnds: boolean | null };
+  /** A17 step 10: one step's word that the table open here (`open`) is this PC's copy of the lobby's table (`pick`); null: it is not. */
+  pickCopy?: { pick: string; open: string } | null;
   lobbyKey: string;
   refreshing: boolean;
   refreshAgain: boolean;
@@ -544,6 +816,14 @@ interface Active {
   /** D10.3.8: theater's picture source while the sink is the layer's ring (`syncNativeVideo`), and its 1 s clock. */
   theater: TheaterPathState;
   theaterTimer: ReturnType<typeof setInterval> | null;
+  /**
+   * A17 step 4: in a pause for the player who is up: when that player's picture was last seen to arrive on this PC
+   * (`upAwayNow`), and the timer that looks again once it could have run out. Both cleared outside such a pause.
+   */
+  upSeenAt?: number | null;
+  upAwayTimer?: ReturnType<typeof setTimeout> | null;
+  /** A17 step 4: that picture is being kept (said once in the log when it begins, once when it stops arriving). */
+  upKept?: boolean;
   /** I11.4.2: the state stream of this match (`openStream`), null without `stream3d`. */
   stream: MatchStream3d | null;
   /**
@@ -551,12 +831,20 @@ interface Active {
    * waited for until `until` (null: no limit runs yet). Undefined: nothing told yet.
    */
   wait3dSent?: { until: number | null } | null;
-  /** I11.4.9: a Start match that was held for the 3D connections is being started now that they are settled. */
-  heldStartQueued?: boolean;
   /** I11.4.12: the lobby says that this PC's table was not started by Castcade (logged when it begins and ends). */
   byHandSaid?: boolean;
   /** I11.4.11: the launch's word for the lobby line (the host's identical file is on this PC, not imported), or null. */
   launchNote?: string | null;
+  /** I11.4.18: this PC held the turn at the last look (`emit`), so the next look knows a turn that has just come. */
+  turnSeen?: boolean;
+  /** I11.4.15: the copy the launch started is known not to hold the host's table objects (`setLaunchNote`'s `not3d`). */
+  launchNot3d?: boolean;
+  /** I11.4.15: a host: where the table objects it last announced came from (its VPX's `hello`, or a file), so each is announced once. */
+  objectsKey?: string;
+  /** I11.4.15: a host: the table objects it last announced (`hostTableObjects`). */
+  objectsSent?: ForkIdentity | null;
+  /** I11.4.15: the lobby's word about table objects, as last logged (one line when it changes). */
+  objectsSaid?: string;
   /** A15: the invite a client joined with (saved for a rejoin); null on a host. */
   joinInvite: string | null;
   /** A15: the table's events the log has not answered yet (`TableBacklog`), and the witness's mark when it last was. */
@@ -568,18 +856,43 @@ interface Active {
   reconcileDue: boolean;
   /** A15: this player's turn ends in the saved log, and VPX closed while the saved match waited. */
   savedTurnEnds: number;
+  /** The review of PR 131: the grants of those turn ends (`turnEndSeqsOf`), and what was last saved of the table's owed ball ends. */
+  savedEndSeqs: number[];
+  owedSaved?: string;
   pendingExit: boolean;
   heartbeat: ReturnType<typeof setInterval> | null;
   /** A15: no (more) record for this match: it ended, or it changed hands. */
   recordOff: boolean;
+  /** A17 step 8 (the review of PR 138): the lobby was opened through ArcAid (kept in its record while ArcAid is not carrying it). */
+  relayWanted?: boolean;
+  /** A record write failed and was said; cleared by the next one that works. */
+  recordFailed?: boolean;
+  /** The engines and the links were closed already (a kept teardown closes them first). */
+  linksClosed?: boolean;
+  /** The sentence about a match that went back to an earlier state was said (once per restore). */
+  aheadSaid?: boolean;
+  /** A17 step 7: a client: a `stale_seq` answer was seen since the last return (a second one for the same drop is final). */
+  staleSeen?: boolean;
+  /** A17 step 7: a client: its place was gone and it is joining again as a newcomer (`rejoining`). */
+  rejoiningNow?: boolean;
+  /** A17 step 7: a client: the open match's log did not chain once already (a second time the link is opened again, once). */
+  desyncMatch?: string | null;
+  /** A17 step 7: `reconnectFailed` came this often since the link dropped (one log line for the first and every twentieth). */
+  failedAttempts?: number;
+  /** A17 step 7: what the lobby was last told about this PC having no copy of the table (`setNoCopy`). */
+  noCopySaid?: boolean;
+  /** A17 step 7: members the native video and the state stream are opened to (a newcomer waits for the end of a ball in play). */
+  mediaPeers?: Set<string>;
+  /** A17 step 7: members whose video and state stream connections wait for the end of the ball in play (`mediaPeersOf`). */
+  mediaWaiting?: Set<string>;
 }
 
-/** A6 (2026-10-31): the witness facts a lobby refresh follows: the table's fingerprint and the VR sample. */
 /** D2.9: the saved TURN relay as the Match tab sees it: never the credential itself. */
 export function turnView(t: TurnServer | null): MatchStatus['turn'] {
   return t ? { url: t.url, username: t.username, credentialSet: t.credential !== '' } : null;
 }
 
+/** A6 (2026-10-31): the witness facts a lobby refresh follows: the table's fingerprint and the VR sample. */
 function lobbyKey(s: WitnessStatus): string {
   const vr = s.currentAttestation?.vr;
   return JSON.stringify([gameFingerprintFrom(s, RECIPE_VERSION), vr?.sampledAt ?? null, vr?.inVr ?? null, ballEndsFrom(s).ready]);
@@ -632,6 +945,16 @@ function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
   });
 }
 
+/**
+ * A17 step 2 (2026-11-24): the match half of a teardown by itself (`endMatchHalf`), for the tests that pin which half
+ * closes what. Kept off `MatchHost` on purpose: nothing in the app may end a match and keep its lobby before step 7
+ * gives that a meaning. Null for a `MatchHost` this module did not make.
+ */
+const MATCH_HALF = new WeakMap<MatchHost, () => void>();
+export function matchHalfOf(mh: MatchHost): (() => void) | null {
+  return MATCH_HALF.get(mh) ?? null;
+}
+
 export function createMatchHost(opts: MatchHostOptions): MatchHost {
   const { log, witness } = opts;
   const listeners = new Set<(s: MatchStatus) => void>();
@@ -669,6 +992,12 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   let bench: Bench | null = null;
   const framesRoot = (): string => opts.framesDir ?? join(dirname(opts.file), 'logs', 'frames');
   let lastError: string | null = null;
+  /**
+   * A17 step 7 (the review of PR 136): every time ArcAid answered this PC that a code names no room, since Castcade
+   * started (a mistyped code as much as an ask for a lobby whose PC is away): ArcAid counts them per device, so the
+   * asks of a member that waits for its lobby are held back by all of them (`RelayOptions.missLog`).
+   */
+  const relayMisses: number[] = [];
   let busy = false;
 
   // ---- the turn lock (the hook checks it at each key press) ----
@@ -721,21 +1050,33 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   };
   // ---- A15: the match Castcade was in when it last closed (match-resume.ts) ----
   const resumeStore = createResumeStore(opts.resumeFile ?? join(dirname(opts.file), RESUME_FILE), (l) => log.warn(l));
-  const hostWaitMs = opts.hostWaitMs ?? HOST_WAIT_MS;
+  // A17 step 7 (design 11.8a): a member waits twenty minutes for the lobby's PC (it was three for a match's host).
+  const hostWaitMs = opts.hostWaitMs ?? LOBBY_HOST_WAIT_MS;
   const waitWords = `${Math.max(1, Math.round(hostWaitMs / 60_000))} minute${Math.round(hostWaitMs / 60_000) > 1 ? 's' : ''}`;
   let pendingResume: ResumeRecord | null = resumeStore.read();
   if (pendingResume && resumeFreshness(pendingResume, Date.now()) === 'stale') {
-    log.info(`match: the saved match ${pendingResume.code} is too old to go back to (last seen ${new Date(pendingResume.aliveAt).toISOString()}); dropped`);
+    log.info(`match: the saved lobby ${pendingResume.code} is too old to go back to (last seen ${new Date(pendingResume.aliveAt).toISOString()}); dropped`);
     pendingResume = null;
   }
-  if (!pendingResume) resumeStore.remove();
-  else log.info(`match: Castcade closed during the match ${pendingResume.code} (${pendingResume.role}); it can be rejoined`);
+  if (!pendingResume) {
+    // A17 step 8: a record of version 1 (Castcade 0.2.50 or older) is of a match on protocol 6, which this build
+    // cannot go back into. It is said, on the Match tab and in the log, and then removed: never offered, never
+    // tried, and never dropped without a word.
+    const old = resumeStore.readOld();
+    if (old) {
+      // Said on the tab only while it is news (the time a record is good for); an old file is removed with a log line.
+      const recent = old.aliveAt !== null && Date.now() - old.aliveAt >= 0 && Date.now() - old.aliveAt <= HOST_WAIT_MS;
+      if (recent) lastError = oldRecordSentence(old);
+      log.warn(`match: ${oldRecordSentence(old)} (the saved record is of version 1${recent ? '' : ', and old'}; removed)`);
+    }
+    resumeStore.remove();
+  } else log.info(`match: Castcade closed in the lobby ${pendingResume.code} (${pendingResume.role === 'host' ? 'its own PC' : 'a member'}${pendingResume.matchId ? `, ${pendingResume.matchId} open` : ', no match open'}${pendingResume.damaged ? '; the record did not read in full' : ''}); it can be gone back into`);
   /** The table's events while the saved match waits for its rejoin, and whether VPX closed meanwhile. */
   let pendingBacklog: TableBacklog<GameEvent> | null = pendingResume ? new TableBacklog<GameEvent>(pendingResume.mark, true) : null;
   let pendingExit = false;
   const forget = (why: string): void => {
     if (!pendingResume) return;
-    log.info(`match: the saved match ${pendingResume.code} is dropped: ${why}`);
+    log.info(`match: the saved lobby ${pendingResume.code} is dropped: ${why}`);
     pendingResume = null;
     pendingBacklog = null;
     pendingExit = false;
@@ -831,7 +1172,10 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       role: a ? a.role : 'none',
       phase,
       endpoint: a?.ws?.endpoint ?? null,
-      invite: a?.invite ?? null,
+      // A17 step 9 (2026-11-27, design 11.9): the invite is on every member's tab, not only the opener's: a member of
+      // a lobby that goes through ArcAid has its code (what they joined with) to pass on. A member of a lobby reached
+      // by address has none here: that invite is the opener's own address, and stays the opener's to give.
+      invite: a ? (a.invite ?? (a.role === 'client' && a.via === 'relay' ? a.code : null)) : null,
       directInvite: a?.directInvite ?? null,
       ipSource: a?.ipSource ?? null,
       via: a?.via ?? null,
@@ -854,10 +1198,13 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
           ballEnds: c?.ballEnds[p.playerId] ?? null,
         };
       }),
+      lobby: lobbyView(a, c),
       startWarnings: c?.startWarnings ?? [],
       wait3d: c?.wait3d ?? { players: [], seconds: 0, armed: null },
       advisories: c?.advisories ?? [],
       pass: c?.pass ? { name: c.pass.name, ball: c.pass.ball, score: c.pass.score } : null,
+      canResume: canResume(a),
+      endBall: c?.endBall ? { ...c.endBall } : null,
       transfer: c?.transfer
         ? {
             proposer: nameIn(c, c.transfer.proposer),
@@ -891,11 +1238,24 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       resume: resumeView(),
     };
   };
+  /**
+   * A17 step 7: the lobby for the Match tab: what the controller knows of it, and, on the lobby's PC, the player the
+   * game is paused for at their own turn (`HostMatch.waitedFor`), with the question when one is open.
+   */
+  const lobbyView = (a: Active | null, c: ControllerStatus | null): MatchStatus['lobby'] => {
+    if (!a || !c?.lobby) return null;
+    const role = a.engine;
+    const w = role instanceof HostMatch ? role.waitedFor() : null;
+    const waitedFor = w ? { player: w.player, name: nameIn(c, w.player), minutes: Math.max(0, Math.floor((Date.now() - w.since) / 60_000)) } : null;
+    // "End their ball" ends it at the score as it stands: the last one that player's STATE said.
+    const awayQuestion = w && w.asked && waitedFor ? { ...waitedFor, score: c.panel.players.find((x) => x.id === w.player)?.score ?? 0 } : null;
+    return { ...c.lobby, waitedFor, awayQuestion };
+  };
   const resumeView = (): MatchStatus['resume'] => {
     const rec = pendingResume;
     if (!rec || active) return null;
     const fresh = resumeFreshness(rec, Date.now());
-    return fresh === 'stale' ? null : { code: rec.code, role: rec.role, names: [...rec.names], auto: fresh === 'auto' };
+    return fresh === 'stale' ? null : { code: rec.code, role: rec.role, names: [...rec.names], auto: fresh === 'auto', match: rec.matchId !== null, lost: rec.role === 'host' && rec.lobby === null };
   };
   /** D7.6: the bench for the Match tab: the media layer's readout, plus the layer's own state while it is not showing. */
   const benchView = (): BenchStatus | null => {
@@ -925,7 +1285,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   const lobbyQuiet = (p: PanelState): boolean => {
     // I11.4.9: a start held for the 3D connections keeps the panel up, as the countdown that follows it does.
     const w = active?.controller.status().wait3d;
-    const held = !!w && w.armed !== null && w.players.length > 0;
+    // A17 step 7: so does a start that is announced and waits (for a table, a game of one's own, a 3D connection).
+    const held = (!!w && w.armed !== null && w.players.length > 0) || (active?.controller.status().lobby?.start ?? null) !== null;
     if (p.phase !== 'idle' || locked || typeof p.countdown === 'number' || held) {
       peekKey = '';
       return false;
@@ -944,13 +1305,108 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     }
     return now >= peekUntil;
   };
+  /**
+   * A17 step 4 (2026-11-24, alpha-match.md §11.6): the match is paused for the player who is up (their link to the
+   * host dropped past the grace; they may well be playing on, and nothing of their picture ever crossed the host), and
+   * their picture still arrives on this PC. Then this PC keeps what it was looking at (`vrViewMode`'s `upAway`).
+   *
+   * "Arrives" is read where each picture is already read: the native video's recv stats for that player (frames per
+   * second above 0: the theater path's own source, `syncNativeVideo`), the panel page's video track from them
+   * (`receivingVideo`: live and not muted), and for 3D the watch itself (`showing3d`: the fork ends a watch that has
+   * had no frame for 3 s, state-stream-in-match.md §3 rule 12). A picture that stops is given `UP_AWAY_PICTURE_MS`
+   * (the fork's own 3 s) before the panel comes, so one empty second of statistics does not flip the headset; a
+   * timer looks again when that time is up, because nothing else may change to bring `emit` round.
+   */
+  const upAwayNow = (a: Active): boolean => {
+    const p = a.controller.panel();
+    const up = pausedForPlayerUp(p) ? p.playerUp : null;
+    if (up === null) {
+      a.upSeenAt = null;
+      a.upKept = false;
+      if (a.upAwayTimer) clearTimeout(a.upAwayTimer);
+      a.upAwayTimer = null;
+      return false;
+    }
+    const now = clock();
+    const graceMs = opts.upAwayPictureMs ?? UP_AWAY_PICTURE_MS;
+    const arrives =
+      (a.stream?.showing3d() ?? false) || (a.video?.status().peers[up]?.recv?.fps ?? 0) > 0 || opts.media?.status().peers?.[up]?.receivingVideo === true;
+    if (arrives) a.upSeenAt = now;
+    const kept = a.upSeenAt !== null && a.upSeenAt !== undefined && now - a.upSeenAt < graceMs;
+    if (kept && !arrives && !a.upAwayTimer) {
+      a.upAwayTimer = setTimeout(
+        () => {
+          a.upAwayTimer = null;
+          if (active === a) emit();
+        },
+        Math.max(20, graceMs - (now - (a.upSeenAt ?? now)) + 20),
+      );
+    }
+    // One line when it begins and one when it ends, for the log of a night: the pause itself is the engine's line.
+    if (kept !== (a.upKept ?? false)) {
+      a.upKept = kept;
+      const who = nameIn(a.controller.status(), up);
+      log.info(
+        kept
+          ? `match: the match is paused for ${who}, who is up and away from the host; their picture still arrives on this PC, so what this PC shows of their table stays`
+          : `match: ${who}'s picture no longer arrives on this PC (the match is still paused for them): the panel now`,
+      );
+    }
+    return kept;
+  };
+  /** A17 step 7: a game the match does not own runs on this PC's table while a game of the match is played. */
+  const ownGameNow = (a: Active): boolean => {
+    const st = a.controller.status();
+    return st.ownGame && (st.phase === 'playing' || st.phase === 'paused');
+  };
+  /**
+   * A17 step 7 (design 11.3, 11.6): who this PC holds a `video` and a `stream` connection with: the members of the
+   * lobby, from the moment two are in it together until one of them leaves. One exception, so that nothing is set
+   * up on the PC of a person who is playing (an encoder in their video helper, a tunnel beside their VPX): a
+   * connection that does not exist yet between a member and the player who is on a ball waits for that ball's end.
+   * On that player's PC this holds every newcomer back; on a newcomer's PC it holds the player who is up (and, until
+   * the open match's log has arrived and says who that is, every player of the match). With everyone else the
+   * connections open at once. The voice (`rtc`) is not held: a newcomer hears everyone at once.
+   */
+  const mediaPeersOf = (a: Active): string[] => {
+    const c = a.controller.status();
+    const me = a.engine.localId;
+    const open = (a.mediaPeers ??= new Set<string>());
+    const members = c.participants.map((x) => x.playerId).filter((id) => id !== me);
+    const p = c.panel;
+    const ballOn = (p.phase === 'playing' || p.phase === 'paused') && p.ball !== null && p.playerUp !== null;
+    const role = a.engine;
+    const catchingUp = role instanceof ClientMatch && !role.holdsOpenLog;
+    const players = c.lobby?.match?.players ?? [];
+    const waiting = (a.mediaWaiting ??= new Set<string>());
+    for (const id of members) {
+      if (open.has(id)) continue;
+      const held = catchingUp ? players.includes(id) : ballOn && (p.playerUp === me || p.playerUp === id);
+      if (held) {
+        if (!waiting.has(id)) {
+          waiting.add(id);
+          log.info(`match: the video and state stream connections to ${nameIn(c, id)} wait for the end of the ball that is in play (nothing is set up on the PC of a person who is playing); the voice is connected at once`);
+        }
+        continue;
+      }
+      open.add(id);
+      if (waiting.delete(id)) log.info(`match: the video and state stream connections to ${nameIn(c, id)} open now: the ball that was in play when they came together has ended`);
+    }
+    for (const id of [...open]) if (!members.includes(id)) open.delete(id);
+    for (const id of [...waiting]) if (!members.includes(id)) waiting.delete(id);
+    return members.filter((id) => open.has(id));
+  };
   const syncVrMode = (a: Active): void => {
     const to = a.overlay;
     if (!to) return;
     syncWindowTune(to);
     const p = a.controller.panel();
     // A16.2: while this player enters high-score initials the headset stays on their own table.
-    const turn = vrViewMode(p, settings, { menuOpen: menu.open, lobbyQuiet: lobbyQuiet(p), initialsHold: a.controller.status().initialsHold });
+    // A17 step 4: a pause for the player who is up leaves a watcher's picture where it is, while it arrives.
+    const upAway = upAwayNow(a);
+    // A17 step 7 (design 11.3): a member who is in a game of their own while a game of the match is played keeps
+    // their own table in the headset until it ends, as during an initials hold.
+    const turn = vrViewMode(p, settings, { menuOpen: menu.open, lobbyQuiet: lobbyQuiet(p), initialsHold: a.controller.status().initialsHold || ownGameNow(a), upAway });
     // I11.4.2 (§4.3): while this PC's VPX shows the player up on its own table there is no theater picture: nothing
     // over the table (the corner scoreboard stays: `syncScoreboard`). The panel (the setting, the menu) is untouched.
     const in3d = turn === 'theater' && (a.stream?.showing3d() ?? false);
@@ -973,23 +1429,33 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     const c = a.controller.status();
     const me = a.engine.localId;
     s.setSetting(settings.watch3d);
-    s.setPeers(c.participants.filter((x) => x.playerId !== me).map((x) => ({ id: x.playerId, name: x.displayName })));
+    // A17 step 7: the tunnels are the lobby's: one per other member, whatever is played (`mediaPeersOf`).
+    const peers = mediaPeersOf(a);
+    s.setPeers(c.participants.filter((x) => peers.includes(x.playerId)).map((x) => ({ id: x.playerId, name: x.displayName })));
     const p = c.panel;
-    const waiting = p.phase === 'playing' && !p.myTurn && p.playerUp !== null && p.playerUp !== me && c.locked && !c.initialsHold;
+    // A17 step 4 (alpha-match.md §11.6): a pause for the player who is up is no reason to call the fork back: that
+    // player may be playing on, and the stream never crossed the host. The watch ends by the fork's own rule when no
+    // frame comes for 3 s (then 2D, or the panel). Until 0.2.50 every pause sent `play`, and the re-issued grant after
+    // the RESUME sent `watch` again: the watcher saw their own table for the length of the pause.
+    const waiting = (p.phase === 'playing' || pausedForPlayerUp(p)) && !p.myTurn && p.playerUp !== null && p.playerUp !== me && c.locked && !c.initialsHold;
     // The turn is the grant: a new one to the same player (shoot again, the last player with balls left) is a new
-    // turn, and a watch that failed in the last one is tried again.
+    // turn, and a watch that failed in the last one is tried again. A grant issued again after a RESUME is a new
+    // number too: a watch that runs is left as it is by it (the machine re-aims only at another player), and one that
+    // failed while the player was away is tried again, which is wanted.
     const grant = (a.controller.currentRole as HostMatch | ClientMatch).state.currentGrant?.grant ?? null;
     s.setTarget(waiting ? p.playerUp : null, waiting && grant ? String(grant.grantSeq) : null);
-    // I11.4.9: only the match's first start waits for the 3D connections: the lobby before game 1 (a next game and a
-    // rejoin are never in that phase).
-    s.setStartGate(c.phase === 'lobby');
+    // I11.4.9: a start waits for the 3D connections. A17 step 7 (design 11.4): every start of a lobby, not only the
+    // first: whenever no game is being played (the lobby, and between games).
+    s.setStartGate(c.phase === 'lobby' || c.phase === 'over');
     const tableOpen = isTableOpen(gameFingerprintFrom(witness.status(), RECIPE_VERSION));
     s.setTableOpen(tableOpen);
     announceWait3d(a);
-    // I11.4.11: the lobby's table line says what a different file costs only where the identical file would give 3D:
-    // this PC's VPX is ready in the Castcade build, and some other PC is not known to have none.
+    // I11.4.15 (it was I11.4.11's "what a different file costs"): what the 3D view needs is the same table objects in
+    // both VPX, not the same bytes, and the stream's own decision says which it is once both are up. Where this PC
+    // shows every other player in 3D, the lobby's table line says a different file costs nothing; where a player's
+    // table is known to hold other objects, the lobby says so before the start (below); else nothing is said of 3D.
     const v = s.status();
-    a.controller.set3dInPlay(settings.watch3d === 'auto' && v.fork === 'ready' && v.players.some((x) => x.why !== 'no_fork_there'));
+    a.controller.setFilesGive3d(settings.watch3d === 'auto' && v.fork === 'ready' && v.players.length > 0 && v.players.every((x) => x.mode === '3d'));
     // I11.4.12: the Castcade VPX build is here and 3D is wanted, and the table that is open was not started in it by
     // Castcade (opened by hand, or open before the match): said in the lobby, where the player looks, for as long as
     // it is so. Not while a table Castcade started is still loading, and not for a build that never connects.
@@ -1006,8 +1472,95 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     // What is true in each case: the table is not in the build. When Castcade itself tried the build for this match
     // and it did not start, starting the table again would only go round the same loop: that is said instead.
     // I11.4.11: and the word of the launch (the host's identical file is on this PC, not imported), while 3D is wanted.
-    const notes = [byHand ? (v.forkFailed ? TABLE_FORK_FAILED_NOTE : TABLE_BY_HAND_NOTE) : null, c.phase === 'lobby' && settings.watch3d === 'auto' && v.forkInstalled === true ? (a.launchNote ?? null) : null].filter((x): x is string => x !== null);
+    const lobby3d = c.phase === 'lobby' && settings.watch3d === 'auto' && v.forkInstalled === true;
+    // I11.4.15: other table objects, said before the start with who it is about. Known two ways: both VPX are up in
+    // the Castcade build and name different tables (either PC, any player), or, on a joining PC whose table is still
+    // loading, the host said its table's objects and the copy that was started has others (`launchNot3d`). The
+    // launch's word is dropped once the two VPX themselves say 3D runs (the player opened another copy since).
+    const role = a.controller.currentRole as HostMatch | ClientMatch;
+    // A17 step 10 (review of PR 139): in a lobby the table objects a copy is ranked by are the picked table's, which
+    // are those of its picker's copy: the note names that person, on the lobby's PC too, and nobody when this PC made
+    // the pick itself. Without a lobby it is the host, as before.
+    const picker = c.lobby ? c.lobby.table.pickedBy : null;
+    const hostId = c.lobby ? (picker !== null && picker !== me ? picker : null) : role instanceof ClientMatch ? role.hostId : null;
+    /** The table objects this PC's copy was ranked by came with a member's pick, not from the lobby's PC. */
+    const pickersWord = c.lobby !== null && picker !== null && picker !== (role instanceof ClientMatch ? role.hostId : me);
+    const hostIn3d = hostId !== null && v.fork === 'ready' && v.players.some((x) => x.id === hostId && x.mode === '3d');
+    // Review of PR #125 (finding 1): a host that cannot do 3D at all (its PC said no Castcade VPX build runs its
+    // table) is never the subject of "import this copy for 3D": the player would import, rejoin and still get 2D.
+    // A host of this build says no table objects then (`syncObjects`), so the launch has no such word; this guard is
+    // for a host that says them all the same, and for I11.4.11's note about the host's identical file.
+    const hostNo3d = hostId !== null && v.fork === 'ready' && v.players.some((x) => x.id === hostId && x.why === 'no_fork_there');
+    const early = lobby3d && a.launchNot3d === true && !hostIn3d && !hostNo3d;
+    const who = lobby3d && v.fork === 'ready' ? v.players.filter((x) => x.why === 'other_table').map((x) => ({ id: x.id, name: x.name })) : [];
+    const bothSaid = who.length > 0;
+    if (early && hostId !== null && !who.some((x) => x.id === hostId)) who.push({ id: hostId, name: c.participants.find((x) => x.playerId === hostId)?.displayName ?? 'the host' });
+    const objectsNote = who.length > 0 ? tableObjectsNote(who.map((x) => x.name)) : null;
+    const said = who.map((x) => x.name).join(', ');
+    if (said !== (a.objectsSaid ?? '')) {
+      a.objectsSaid = said;
+      log.info(
+        said
+          ? `stream3d: this PC's table and ${said}'s do not hold the same table objects (${bothSaid ? 'both VPX said so' : pickersWord ? "what its picker said of the lobby's table against the copy that was started here" : "the host's word against the copy that was started here"}): the 2D video between them; the lobby says so`
+          : 'stream3d: the lobby no longer says that the table objects differ (it does not apply any more)',
+      );
+    }
+    const launchNote = lobby3d && !hostNo3d && !(a.launchNot3d === true && hostIn3d) ? (a.launchNote ?? null) : null;
+    const notes = [byHand ? (v.forkFailed ? TABLE_FORK_FAILED_NOTE : TABLE_BY_HAND_NOTE) : null, objectsNote, launchNote].filter((x): x is string => x !== null);
     a.controller.setLobbyNote(notes.length > 0 ? notes.join(' · ') : null);
+  };
+  /**
+   * I11.4.15 (2026-11-24): a host says what its table's objects are (HELLO_ACK `hostTableObjects`), so a joining PC
+   * picks, among its copies of the table, one the 3D view works with. What the host's own VPX named in its `hello`
+   * when it is up in the Castcade build (that is what the other PC's VPX is compared with); before that, and on a
+   * host whose table was opened by hand, what the file computes to (`opts.tableObjects`), so a joiner need not wait
+   * for the host's table to load. Lobby only; each source is announced once.
+   *
+   * Review of PR #125 (finding 1): only a host on which 3D can run says (and reads) anything from the file: the
+   * Castcade VPX build is beside its VPX and 3D watch is on, the test of `wants3d()`. A host without the build told a
+   * joining PC what its table holds, and that PC's lobby then said "Not in 3D with the host … import this copy and
+   * rejoin" for a 3D that could never come. A host whose build is installed and not connected yet still says it. The
+   * build's own word is said whenever a VPX of it is on the control connection, whatever the setting: the others can
+   * watch that table in 3D.
+   */
+  const syncObjects = (a: Active): void => {
+    const role = a.controller.currentRole;
+    if (!(role instanceof HostMatch) || role.state.phase !== 'lobby') return;
+    const tell = (objects: ForkIdentity | null, from: string): void => {
+      let done: boolean;
+      try {
+        done = role.setHostTableObjects(objects);
+      } catch (e) {
+        log.warn(`match: the table objects did not go out: ${describeError(e)}`);
+        return;
+      }
+      a.objectsSent = objects;
+      if (done) log.info(`match: lobby update: table objects ${objects ? `${forkIdentityText(objects)} (${from})` : 'not known'}; the players were told`);
+    };
+    const said = parseForkIdentityText(a.stream?.status().table ?? null);
+    if (said) {
+      const key = `fork|${forkIdentityText(said)}`;
+      if (key === a.objectsKey) return;
+      a.objectsKey = key;
+      tell(said, 'as the Castcade VPX build named them');
+      return;
+    }
+    const id = witness.status().currentIdentity;
+    const can3d = !!a.stream && settings.watch3d === 'auto' && a.stream.status().forkInstalled === true;
+    const key = id?.filePath && can3d ? `file|${id.filePath}|${id.sha256 ?? ''}` : 'none';
+    if (key === a.objectsKey) return;
+    a.objectsKey = key;
+    const read = opts.tableObjects;
+    if (!id?.filePath || !read || !can3d) {
+      tell(null, '');
+      return;
+    }
+    void read(id.filePath).then(
+      (objects) => {
+        if (active === a && a.objectsKey === key && a.controller.currentRole === role && role.state.phase === 'lobby') tell(objects, 'computed from the file');
+      },
+      () => undefined,
+    );
   };
   /**
    * I11.4.9: the host is told whether this PC's 3D connection is still being made (PARTICIPANT_UPDATE
@@ -1017,7 +1570,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   const announceWait3d = (a: Active): void => {
     const s = a.stream;
     const role = a.controller.currentRole as HostMatch | ClientMatch;
-    if (!s || role.state.phase !== 'lobby') return;
+    // A17 step 7: the lobby's PC counts it whenever no game is being played (every start waits for it).
+    if (!s || role.state.phase === 'running') return;
     const w = s.startWait();
     const next = w.pending ? { until: w.until } : null;
     const was = a.wait3dSent;
@@ -1048,41 +1602,6 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     );
   };
   /**
-   * I11.4.9: a Start match that was held for the 3D connections (`MatchController.holdTabStart`) comes due once nobody
-   * is waited for any more (they settled, or the hold's limit is reached). It then goes the way of a press of Start
-   * match now, and no further: with a table that cannot report ball ends, or one that is still loading (somebody
-   * joined during the hold), the hold is dropped and the host is told what Start match would have told them; a start
-   * that fails drops it too. Never `anyway`: nothing here is the host's confirmation. Not from inside `emit`: the
-   * start emits.
-   */
-  const startHeld = (a: Active): void => {
-    const w = a.controller.status().wait3d;
-    if (a.heldStartQueued || w.armed !== 'tab' || w.players.length > 0) return;
-    a.heldStartQueued = true;
-    setTimeout(() => {
-      a.heldStartQueued = false;
-      if (active !== a) return;
-      const st = a.controller.status();
-      if (st.wait3d.armed !== 'tab' || st.wait3d.players.length > 0) return;
-      const loading = st.panel.players.filter((x) => x.flags.includes('loading')).map((x) => x.name);
-      if (st.startWarnings.length > 0 || loading.length > 0) {
-        const why = st.startWarnings.length > 0 ? st.startWarnings.join(' · ') : `${loading.join(', ')} ${loading.length > 1 ? 'have' : 'has'} no table open yet`;
-        a.controller.dropTabHold(why);
-        // The next press is not held again (the controller's word); with a warning it asks for the usual confirmation.
-        lastError = `The match did not start by itself: ${why}. Press Start match to start it now${st.startWarnings.length > 0 ? ' (it asks you to confirm)' : ''}.`;
-        log.warn(`match: the held Start match came due and was not started: ${why}`);
-        emit();
-        return;
-      }
-      log.info('match: the held Start match comes due: the match starts now');
-      void api.start({ held: true }).catch((e: unknown) => {
-        a.controller.dropTabHold(`the start failed (${describeError(e)})`);
-        log.warn(`match: the held start did not happen: ${describeError(e)}`);
-        emit();
-      });
-    }, 0);
-  };
-  /**
    * D2.8: the table sound the panel state calls for (`tableAudioPlan`), on the VPX the match uses (the capture's window,
    * else the witness's launch). The helper and the page each act only on a change. A16.2.2: an initials hold keeps
    * this rig's own table audible (the controller's status change reaches here through `emit`).
@@ -1091,17 +1610,21 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   const syncTableAudio = (): void => {
     const a = active;
     const panel = a ? a.controller.panel() : null;
-    const hold = a ? a.controller.status().initialsHold : false;
-    const plan = tableAudioPlan(panel, settings, { initialsHold: hold });
+    // A17 step 7: a member in a game of their own while the match is played keeps their own table's sound and is
+    // not played the table of the player who is up.
+    const own = a ? ownGameNow(a) : false;
+    const hold = a ? a.controller.status().initialsHold || own : false;
+    const plan = tableAudioPlan(panel, settings, { initialsHold: hold, ownGame: own });
     // For the log: the hold is what keeps this table unmuted right now.
     const heldOpen = hold && !plan.muteMine && tableAudioPlan(panel, settings).muteMine;
+    const why = own ? "a game of this player's own" : 'initials hold';
     const pid = a ? tableAudioPid(opts.media?.capturePid?.(), witness.vpxPid?.()) : null;
     opts.tableAudio?.apply({ mutePid: plan.muteMine ? pid : null, tapPid: plan.tapMine ? pid : null });
     // D2.10: my table under my voice while I am up; back to its own volume the moment I am not.
     if (plan.levelMine !== null && pid !== null) opts.tableAudio?.level(pid, plan.levelMine);
     else opts.tableAudio?.unlevel();
     opts.media?.setTableAudio?.({ send: plan.tapMine && pid !== null, hear: plan.playTableOf !== null });
-    const words = `mute ${plan.muteMine ? 'on' : heldOpen ? 'off (initials hold)' : 'off'}, send ${plan.tapMine ? 'on' : 'off'}, play ${plan.playTableOf ?? 'nobody'}, mine at ${plan.levelMine ?? 100} %, VPX pid ${pid ?? 'unknown'}`;
+    const words = `mute ${plan.muteMine ? 'on' : heldOpen ? `off (${why})` : 'off'}, send ${plan.tapMine ? 'on' : 'off'}, play ${plan.playTableOf ?? 'nobody'}, mine at ${plan.levelMine ?? 100} %, VPX pid ${pid ?? 'unknown'}`;
     if (opts.tableAudio && a && words !== tableLogged) {
       tableLogged = words;
       log.info(`match: table sound: ${words}`);
@@ -1134,28 +1657,149 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     const protocol = to.layerProtocol?.() ?? null;
     return protocol === null ? 'not_connected' : protocol < VR_LAYER_SCOREBOARD_ROOM_PROTOCOL ? 'old_layer' : 'ready';
   };
-  /** A10: a client whose series is over closes the match after the linger (the host's End match tears down at once). */
+  /**
+   * A17 step 7: the lobby is over for this PC without its owner's doing (the lobby's PC closed it, or did not come
+   * back; `series.over` means that in a lobby). The voice is let go already (the controller); the panel says why for
+   * the linger, then everything of the lobby closes here (the page with the microphone, the video mesh, the tunnels,
+   * the link), every table is its owner's, and the Match tab keeps the reason. A match's end is no longer a reason
+   * to close anything (until 0.2.50 a client closed 20 s after MATCH_END). The lobby's PC tears down in `leave`.
+   */
   const scheduleSeriesEnd = (a: Active): void => {
-    if (a.endTimer || active !== a || a.controller.currentRole instanceof HostMatch || !a.controller.status().series.over) return;
-    log.info(`match: the series is over; closing the match in ${Math.round(SERIES_OVER_LINGER_MS / 1000)} s`);
+    const st = a.controller.status();
+    if (a.endTimer || active !== a || a.controller.currentRole instanceof HostMatch || !st.series.over) return;
+    const lingerMs = opts.seriesOverLingerMs ?? SERIES_OVER_LINGER_MS;
+    const why = st.panel.message ?? 'The lobby is over.';
+    log.info(`match: the lobby ${a.code} is over on this PC (${why}); closing it in ${Math.round(lingerMs / 1000)} s`);
     a.endTimer = setTimeout(() => {
       if (active !== a) return;
       void teardown(a).then(() => {
-        log.info(`match: closed ${a.code} after the series ended`);
+        lastError = why;
+        log.info(`match: closed the lobby ${a.code} on this PC`);
         emit();
       });
-    }, SERIES_OVER_LINGER_MS);
+    }, lingerMs);
+  };
+  /**
+   * I11.4.18 (2026-11-24): VPX holds a table still while its window is not the active one. When this PC's table is the
+   * one to play (Start match was pressed here; a grant reached this PC) and a Castcade window is the active one, the
+   * foreground is handed on to VPX, so the ball moves without a click in VPX first. Never from a third program the
+   * player has switched to (`castcadeActive` is false then, and the helper looks again before it acts), and never
+   * while the in-game menu is open. One log line when it was done, one when it could not be.
+   */
+  let givingFocus = false;
+  /**
+   * A17 step 7: when Start was last pressed on this PC and the table was handed the foreground for it. The start now
+   * counts down, so the grant it brings comes seconds later and not in the same moment: it is still the same press,
+   * and makes no second handover (and asks nobody what they are typing).
+   */
+  let pressFocusAt: number | null = null;
+  const PRESS_FOCUS_MS = 20_000;
+  /** The review of PR 136: the start that press asked for has been seen announced (it then counts for that start alone). */
+  let pressStartSeen = false;
+  /** A handover that was skipped because the in-game menu was open on a Castcade window: tried again when it closes. */
+  let focusOwed = false;
+  /** The match whose panel line carries `CLICK_TABLE_HINT` now (it comes off when the turn or the window changes). */
+  let hintOn: Active | null = null;
+  const castcadeInFront = (): boolean => {
+    try {
+      return opts.foreground?.castcadeActive() ?? false;
+    } catch {
+      return false;
+    }
+  };
+  /**
+   * VPX did not get the foreground and it is this PC's turn: the Match tab and the panel say what to do. It is the
+   * player's only word of it, so a line that is already up (ball 1's "Press Start on the table", a table-file note)
+   * keeps its place and the hint follows it.
+   */
+  let hintText: string | null = null;
+  const showClickHint = (): void => {
+    const a = active;
+    if (!a || !a.controller.status().myTurn) return;
+    const line = a.controller.status().panel.message;
+    if (line !== null && line.includes(CLICK_TABLE_HINT)) return;
+    hintOn = a;
+    hintText = line === null ? CLICK_TABLE_HINT : `${line} · ${CLICK_TABLE_HINT}`;
+    a.controller.setMessage(hintText);
+  };
+  /**
+   * `atGrant` (review 2 of PR 126, A): nobody clicked for this one, so it must not take the keyboard from a player who
+   * is typing in Castcade: asked first (`VpxForeground.typing`), and left alone, with one log line, when they are.
+   */
+  const giveVpxFocus = (why: string, atGrant = false): void => {
+    const fg = opts.foreground;
+    if (!fg || givingFocus) return;
+    // VPX itself, or a third program the player switched to, is in front: nothing to hand on, nothing touched.
+    if (!castcadeInFront()) return;
+    if (menu.open) {
+      focusOwed = true;
+      return;
+    }
+    givingFocus = true;
+    void (async () => {
+      if (atGrant && fg.typing) {
+        const busy = typingReason(await fg.typing().catch(() => null));
+        if (busy !== null) {
+          log.info(`match: VPX was not given the foreground (${why}): ${busy}, and what the player types must not go to the table. Click the table to play`);
+          showClickHint();
+          return;
+        }
+      }
+      // The match's own VPX, when it is known (the pid its table sound goes by): with two VPX open, not the other one.
+      const pid = tableAudioPid(opts.media?.capturePid?.(), witness.vpxPid?.());
+      const r = await fg.give(pid).catch(() => ({ ok: false, title: null, why: 'the window helper failed' }));
+      if (r.ok) log.info(`match: gave VPX the foreground (${why}; a Castcade window was the active one, and VPX holds the table still while its own window is not)`);
+      else {
+        log.warn(`match: could not give VPX the foreground (${why}): ${r.why ?? 'no reason given'}. Click the table to play`);
+        showClickHint();
+      }
+    })().finally(() => {
+      givingFocus = false;
+    });
   };
   const emit = (): void => {
     if (active) {
-      // A15: a match that is over for good leaves nothing to go back to; a reconnect's replay runs once the grant is settled.
+      // A15: a lobby that is over leaves nothing to go back to; a reconnect's replay runs once the grant is settled.
       if (!active.recordOff && active.controller.status().series.over) dropRecord(active);
+      // The review of PR 131: what the table owes is saved the moment it changes (a ball ended by hand, its drain).
+      if (active.owedSaved !== undefined && active.owedSaved !== JSON.stringify(owed(active))) saveResume(active);
       tryReconcile(active);
+    }
+    if (active) {
+      // I11.4.18: a grant has just reached this PC: its table is the one to play now.
+      const mine = active.controller.status().myTurn;
+      // The review of PR 136: the start that was pressed here was announced and is gone again with no game begun
+      // (somebody cancelled it, or it fell through): the press is over, and a turn that another start brings within
+      // the same seconds hands the table the foreground as any turn does.
+      if (pressFocusAt !== null) {
+        const cs = active.controller.status();
+        if (cs.lobby?.start) pressStartSeen = true;
+        else if (pressStartSeen && (cs.phase === 'lobby' || cs.phase === 'over')) pressFocusAt = null;
+      }
+      const pressed = pressFocusAt !== null && clock() - pressFocusAt < PRESS_FOCUS_MS;
+      if (mine && !active.turnSeen) pressFocusAt = null;
+      if (mine && !active.turnSeen && !pressed) giveVpxFocus('the turn came to this PC', true);
+      else if (mine && focusOwed && !menu.open) {
+        // The in-game menu was open on a Castcade window when the turn came, and has closed since.
+        focusOwed = false;
+        giveVpxFocus('the in-game menu closed on this PC\'s turn', true);
+      }
+      // Not while the start that was pressed here still counts down: the handover it owes is for the turn it brings.
+      if (!mine && !pressed) focusOwed = false;
+      active.turnSeen = mine;
+      // The hint comes off when it is no longer true: the turn is over, or the Castcade window is not in front any more.
+      if (hintOn === active && (!mine || !castcadeInFront())) {
+        const a = hintOn;
+        hintOn = null;
+        if (a.controller.status().panel.message === hintText) queueMicrotask(() => a.controller.setMessage(null));
+        hintText = null;
+      }
     }
     if (active) {
       // I11.4.2: the fork follows the turn first: the headset mode reads whether the player up is shown in 3D.
       syncStream(active);
-      startHeld(active);
+      // I11.4.15: a host says what its table's objects are (its VPX's own word once it is up, the file's before).
+      syncObjects(active);
       syncVrMode(active);
       // D10.3: the native sender follows the turn beside the headset mode.
       syncNativeVideo(active);
@@ -1210,10 +1854,28 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       a.controller.feed(ev);
       return;
     }
+    // A17 step 7: while no match is open in the lobby there is no log for the table's events to be answered by:
+    // they go to the controller as they come (a game on this table then is the starter's request, or a game of
+    // one's own) and nothing is kept for a replay. (Kept, a `game_start` from minutes ago would be fed again at the
+    // next reconnect and ask for a start.) A PC that is being picked up after a restart holds them as before.
+    if (!a.hold && a.engine.state.phase === 'lobby') {
+      a.controller.feed(ev, meta?.backlog === true);
+      return;
+    }
     if (!a.backlog.take(ev, meta)) return;
     if (a.hold) return;
+    // 2026-11-24: the mark is taken when the log grows, and the witness has none before it delivered a first game
+    // event. So through a player's whole first ball (the log last grew at the grant, when the table had said nothing
+    // yet) the saved record named no table load, and a table closed and opened again while Castcade was closed could
+    // not be told from the same table: the fresh game on it was taken for the match's. The first event after such a
+    // log entry now names its table load, with nothing of it delivered (`offset` at the end of its `table_loaded`
+    // line), and the record is saved at once; the next log entry sets the mark as ever.
+    if (a.mark === null && meta?.mark) {
+      a.mark = { ...meta.mark, offset: meta.mark.loaded };
+      saveResume(a);
+    }
     if (a.backlog.tableReopened()) a.controller.feed({ kind: 'table_exit' });
-    a.controller.feed(ev);
+    feedTable(a, ev, meta?.backlog === true);
   });
   // A16.2: the machine wrote its high-score list: the end of an initials hold. Not a game event (no backlog).
   witness.onHighScores?.((ev) => active?.controller.feed(ev));
@@ -1226,33 +1888,100 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     a.recordOff = true;
     resumeStore.remove();
   };
-  const saveResume = (a: Active, restart: 'update' | null = null): void => {
-    if (a.recordOff || active !== a) return;
+  /**
+   * A17 step 8: the record of the lobby this PC is in, written whole (match-resume.ts says what it holds). From the
+   * moment the lobby is opened or joined, for everybody: a player, a watcher, the lobby's PC, with a match open or
+   * none. True when it was written.
+   */
+  const saveResume = (a: Active, restart: 'update' | 'quit' | null = null): boolean => {
+    if (a.recordOff || active !== a) return false;
     const role = a.controller.currentRole as HostMatch | ClientMatch;
     const st = role.state;
-    if (st.phase === 'lobby') return;
     // A match that changed hands (a host transfer) is not one this file can bring back.
-    if (role instanceof HostMatch !== (a.role === 'host')) return dropRecord(a);
+    if (role instanceof HostMatch !== (a.role === 'host')) {
+      dropRecord(a);
+      return false;
+    }
+    // A member that is not in yet has nothing to go back to.
+    if (role instanceof ClientMatch && !role.isJoined) return false;
     const me = role.localId;
-    resumeStore.write({
-      version: 1,
+    // The open match's log, when this PC holds all of it (a member that is still being sent it saves it once it has).
+    const open = st.phase !== 'lobby' && st.matchId !== null && (role instanceof HostMatch || role.holdsOpenLog);
+    const members = a.controller.status().participants;
+    let lobby: SavedLobbyPart | null = null;
+    if (role instanceof HostMatch) {
+      try {
+        lobby = { ...role.savedLobby(), seq: role.session.seqCeilings() };
+      } catch (e) {
+        log.warn(`match: the lobby could not be read for its record: ${describeError(e)}`);
+        return false;
+      }
+    }
+    const done = resumeStore.write({
+      version: 2,
       role: a.role,
       code: a.code,
       invite: a.joinInvite,
       port: a.role === 'host' ? a.port : null,
-      relay: a.role === 'host' ? a.relay !== null : a.via === 'relay',
+      // The review of PR 138: a lobby that was opened through ArcAid stays one in its record, also while ArcAid is
+      // not carrying it at this moment: the next start asks for its room again.
+      relay: a.role === 'host' ? a.relay !== null || a.relayWanted === true : a.via === 'relay',
       playerId: me,
-      displayName: st.participants.find((p) => p.playerId === me)?.displayName ?? defaultName(),
-      names: st.participants.filter((p) => p.playerId !== me).map((p) => p.displayName),
-      log: role.log.toJSON(),
+      displayName: members.find((x) => x.playerId === me)?.displayName ?? st.participants.find((x) => x.playerId === me)?.displayName ?? defaultName(),
+      publicKey: matchIdentity().keys.publicKeyB64,
+      stance: settings.stance,
+      names: members.filter((x) => x.playerId !== me).map((x) => x.displayName),
+      matchId: open ? st.matchId : null,
+      log: open ? role.log.toJSON() : [],
+      lobby,
       mark: a.mark,
       aliveAt: Date.now(),
       restart,
+      owed: owed(a),
     });
+    a.owedSaved = JSON.stringify(owed(a));
+    // The review of PR 138: a record that cannot be written is said on this PC, once, and tried again at the next
+    // change; nothing else changes. (A record that is behind is restored as the truth after a crash.)
+    if (!done && !a.recordFailed) {
+      a.recordFailed = true;
+      const why = resumeStore.writeError() ?? 'unknown error';
+      // The panel's short line first (a notice is also the tab's last word); then the tab's own, with the folder.
+      a.controller.notify('Castcade cannot save this lobby on this PC: see the Match tab');
+      lastError = cannotSaveSentence(dirname(opts.resumeFile ?? join(dirname(opts.file), RESUME_FILE)), why);
+      log.warn(`match: ${lastError} It is tried again at every change.`);
+    } else if (done && a.recordFailed) {
+      a.recordFailed = false;
+      log.info(`match: the lobby ${a.code} is saved again`);
+    }
+    return done;
   };
-  /** Every entry of the match log is saved as it is made (before anything is sent), and the record is touched every 15 s. */
+  /** The review of PR 131: the table ball ends the controller says this table still owes the match. */
+  const owed = (a: Active): number[] => a.controller.status().owedTableEnds;
+  /**
+   * The review of PR 131, finding 2: a table event goes to the controller, and a ball end the controller says the
+   * match will never take (swallowed as owed, or come with no grant held) is taken out of the backlog. When no other
+   * end waits there, the journal mark moves past it and the record is saved, so that neither a reconnect nor a
+   * restart of Castcade feeds it again: it used to end the ball the player was on by then. `replay`: the event is
+   * fed again, or comes from the journal's backlog after a restart (`MatchController.feed`).
+   */
+  const feedTable = (a: Active, ev: GameEvent, replay: boolean): void => {
+    if (!a.controller.feed(ev, replay)) return;
+    a.backlog.forget(ev);
+    if (!a.hold && !a.backlog.holdsEnd()) {
+      a.backlog.clear();
+      a.mark = witness.journalMark?.() ?? null;
+    }
+    saveResume(a);
+  };
+  /**
+   * Every entry of the match log is saved as it is made (before anything is sent), and the record is touched every 15 s.
+   * A17 step 8: armed at Open / Join (and harmlessly again at every MATCH_READY); it is the lobby's, and ends with
+   * the lobby (`endRecord`), not with a match.
+   */
   const followLog = (a: Active): void => {
     const me = a.engine.localId;
+    if (a.heartbeat) clearInterval(a.heartbeat);
+    a.recordOff = false;
     a.engine.session.onCommit = (entry) => {
       if (active !== a) return;
       const m = entry.message;
@@ -1295,8 +2024,11 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     a.reconcileDue = false;
     if (a.hold) {
       a.hold = false;
-      // Ball ends the host already had (reported just before Castcade closed, or passed by the host meanwhile).
-      a.backlog.skipEnds(turnEndsOf(role.log.entries(), me) - a.savedTurnEnds);
+      // Ball ends the host already had (reported just before Castcade closed, or passed by the host meanwhile). The
+      // review of PR 131: less the ones that were ended by hand with the table's ball still in play: the controller
+      // holds those as owed and swallows their end itself, whether it is in the journal already or still to come.
+      const byHand = a.controller.settledOwed().filter((seq) => !a.savedEndSeqs.includes(seq)).length;
+      a.backlog.skipEnds(turnEndsOf(role.log.entries(), me) - a.savedTurnEnds - byHand);
       if (a.pendingExit || a.backlog.tableReopened()) {
         a.pendingExit = false;
         log.warn('match: the table was closed while Castcade was closed');
@@ -1305,10 +2037,10 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     }
     const events = a.backlog.pending();
     if (events.length > 0) log.info(`match: ${events.length} table event(s) since the log last grew go to the match now (${events.filter((e) => e.kind === 'ball_end').length} ball end(s))`);
-    for (const ev of events) a.controller.feed(ev);
+    for (const ev of events) feedTable(a, ev, true);
   };
   /** A fresh match's share of `Active`; `rec`: one picked up from the saved record. */
-  const tracking = (invite: string | null, rec: ResumeRecord | null): Pick<Active, 'joinInvite' | 'backlog' | 'mark' | 'hold' | 'reconcileDue' | 'savedTurnEnds' | 'pendingExit' | 'heartbeat' | 'recordOff' | 'stream'> => ({
+  const tracking = (invite: string | null, rec: ResumeRecord | null): Pick<Active, 'joinInvite' | 'backlog' | 'mark' | 'hold' | 'reconcileDue' | 'savedTurnEnds' | 'savedEndSeqs' | 'pendingExit' | 'heartbeat' | 'recordOff' | 'stream'> => ({
     stream: null,
     joinInvite: invite,
     backlog: rec ? (pendingBacklog ?? new TableBacklog<GameEvent>(rec.mark, true)) : new TableBacklog<GameEvent>(null, false),
@@ -1316,43 +2048,287 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     hold: rec !== null,
     reconcileDue: rec !== null,
     savedTurnEnds: rec ? turnEndsOf(rec.log, rec.playerId) : 0,
+    savedEndSeqs: rec ? turnEndSeqsOf(rec.log, rec.playerId) : [],
     pendingExit: rec !== null && pendingExit,
     heartbeat: null,
     recordOff: false,
   });
-  /** The match is over for this PC without its doing: closed, with the reason on the Match tab. */
-  const endMatch = async (a: Active, why: string): Promise<void> => {
-    if (active !== a) return;
-    await teardown(a);
-    lastError = why;
-    log.warn(`match: ${why}`);
-    emit();
+  /**
+   * A17 step 7: what the shell does about a lobby's engine, host or client, beyond what the controller shows:
+   * a match's beginning and end (`followLog` at MATCH_READY; `endMatchHalf` at MATCH_END, and nothing more: the
+   * lobby stays), and the engine's own errors, which are raised nowhere else.
+   */
+  const watchLobby = (a: Active, engine: HostMatch | ClientMatch): void => {
+    const on = engine.on.bind(engine) as (name: string, cb: (x: never) => void) => () => void;
+    a.offs.push(
+      on('engineError', ((x: { where: string; error: Error }) => {
+        log.warn(`match: the match engine reported an error (${x.where}): ${describeError(x.error)}`);
+      }) as (x: never) => void),
+    );
+    // A17 step 8: the record follows the lobby: who is in it, their choices, the table, a result.
+    for (const name of ['lobby', 'roster', 'result', 'caughtUp'] as const) a.offs.push(on(name, (() => void (active === a && saveResume(a))) as (x: never) => void));
+    a.offs.push(
+      on('ready', ((p: PayloadOf<'MATCH_READY'>) => {
+        if (active !== a) return;
+        // A new match, a new log: what the table said before it is no match's, and the record is this match's.
+        a.backlog = new TableBacklog<GameEvent>(null, false);
+        a.mark = witness.journalMark?.() ?? null;
+        a.desyncMatch = null;
+        followLog(a);
+        log.info(`match: ${p.matchId} started in the lobby ${a.code}: ${p.playerOrder.map((id) => nameIn(a.controller.status(), id)).join(', ')}${p.playerOrder.includes(engine.localId) ? '' : '; this PC watches'}`);
+      }) as (x: never) => void),
+    );
+    a.offs.push(
+      on('matchEnded', ((p: PayloadOf<'MATCH_END'>) => {
+        if (active !== a) return;
+        // Step 2's match half, alone: the saved match, the table's backlog, the table sound, the lock. The voice, the
+        // video helper's connections, the tunnels, the overlay, the menu keys and the link are the lobby's and stay.
+        endMatchHalf(a);
+        // The record goes on, with no match open.
+        saveResume(a);
+        log.info(`match: the match in ${a.code} is over (${p.games} game${p.games === 1 ? '' : 's'} with a result${p.abandoned ? `; game ${p.abandoned} was ended for everyone and has none` : ''}: ${p.reason}); the lobby stays open`);
+        emit();
+      }) as (x: never) => void),
+    );
   };
   /**
-   * A client and its host's link. While the host is gone the panel says so and for how long it is waited for; when the
-   * wait runs out the match ends here (a client has no listener the others could come to, so it never takes over).
+   * A17 step 7: a member's link to the lobby's PC. The panel says when the lobby's PC is away and for how long it is
+   * waited for (the controller); nothing closes for it, and a ball in play goes on. What only the shell can do: end
+   * the wait cleanly when it cannot succeed (the engine does not, by itself), follow a relay room that is gone for
+   * good, and feed the table's backlog after a return (A15).
    */
   const watchHost = (a: Active, engine: ClientMatch): void => {
     a.offs.push(
       engine.on('peerLeft', (peer) => {
-        if (active !== a || peer !== engine.hostId || engine.state.phase === 'lobby' || engine.matchEnded) return;
+        if (active !== a || peer !== engine.hostId || engine.matchEnded) return;
+        a.failedAttempts = 0;
+        // A18: said only once the engine's grace is over (a link that is back sooner raises nothing). A ball in play on
+        // this PC goes on: the table stays as it is, and its end is reported when the link is back.
         log.warn(`match: the link to the host dropped; waiting up to ${waitWords} for it`);
-        a.controller.setMessage(`The host's Castcade closed or lost its connection. The match is paused: waiting up to ${waitWords} for it to come back.`);
       }),
     );
     a.offs.push(
-      engine.on('reconnected', () => {
+      engine.on('reconnected', (r) => {
         if (active !== a) return;
-        a.controller.setMessage(null);
+        a.staleSeen = false;
+        a.failedAttempts = 0;
+        // A18: a drop the player never saw still leaves one line here, for whoever reads the log afterwards.
+        if (r.quiet) log.info(`match: the link to the host was away for a moment and is back (${r.entries} entr${r.entries === 1 ? 'y' : 'ies'} of the match log missed and caught up); nothing was shown`);
+        else log.info(`match: the link to the host is back (${r.entries} entr${r.entries === 1 ? 'y' : 'ies'} of the match log caught up)`);
         a.reconcileDue = true;
         tryReconcile(a);
+        emit();
       }),
     );
-    a.offs.push(engine.on('hostLost', () => void endMatch(a, `The host did not come back within ${waitWords}: the match is over.`)));
-    a.offs.push(engine.on('reconnectRejected', (r) => void endMatch(a, `The host did not take this PC back into the match ${a.code}${r.code ? ` (${r.code.replace(/_/g, ' ')})` : ''}: the match is over for this PC.`)));
+    // In a lobby an attempt can fail for twenty minutes: one line for the first and every twentieth, never each.
+    a.offs.push(
+      engine.on('reconnectFailed', (f) => {
+        if (active !== a) return;
+        const n = (a.failedAttempts = (a.failedAttempts ?? 0) + 1);
+        if (n === 1 || n % 20 === 0) log.info(`match: the lobby's PC cannot be reached yet (attempt ${n}: ${f.error instanceof Error ? f.error.message : String(f.error)}); ${f.nextInMs == null ? 'no further attempt' : `next attempt in ${Math.round(f.nextInMs / 1000)} s`}`);
+        if (n === 1 || n % 20 === 0) emit();
+      }),
+    );
+    // I11.4.15: the host said (or took back) what its table's objects are: nothing on the panel changes by it, so the
+    // status is raised here for whoever picks this PC's table by it (`one-step.ts`).
+    a.offs.push(
+      engine.on('hostTableObjects', (objects) => {
+        if (active !== a) return;
+        log.info(`match: the host's table objects: ${objects ? forkIdentityText(objects) : 'not known'}`);
+        emit();
+      }),
+    );
+    /** The lobby is over for this PC for a reason only the shell knows: the engine says `lobbyClosed` once, the controller shows it, `scheduleSeriesEnd` closes. */
+    const over = (why: string): void => {
+      if (active !== a) return;
+      log.warn(`match: ${why}`);
+      if (!engine.hostLeft(why)) emit();
+    };
+    a.offs.push(
+      engine.on('reconnectRejected', (r) => {
+        if (active !== a) return;
+        // The place was gone: the engine joins again by itself (`rejoining`, then `joined` or `refused`).
+        if (r.code === 'unknown_player') return;
+        // The counter fell behind: the engine goes on above the number the lobby named and tries once more. A second
+        // one for the same drop is final.
+        // Step 8 (the review of PR 138): `willRetry`: the engine goes on above the number and returns by itself,
+        // also a second time when the lobby's PC started again before it had answered the first.
+        if (r.code === 'stale_seq' && (r.willRetry === true || !a.staleSeen)) {
+          a.staleSeen = true;
+          return;
+        }
+        over(
+          r.code === 'protocol_version'
+            ? "The lobby's PC runs another version of Castcade now: both need the same. Update, then join the lobby again."
+            : `The lobby is over for this PC: its PC did not take this PC back${r.code ? ` (${r.code.replace(/_/g, ' ')})` : ''}. Join the lobby again by its code.`,
+        );
+      }),
+    );
+    // The review of PR 138: the lobby's PC came back with an earlier state of the match than this PC held (its
+    // Castcade closed before it could save the last moves). Said, never passed over: what was played since is gone.
+    a.offs.push(
+      engine.on('wentBack', (x) => {
+        if (active !== a) return;
+        const who = nameIn(a.controller.status(), engine.hostId ?? '');
+        const said = `${who || "The lobby's PC"} came back with an earlier state of this match (its Castcade closed before the last moves were saved): the match goes on from there, and what was played since does not count.`;
+        // What this PC's table said for the log that is gone belongs to no log any more.
+        a.backlog = new TableBacklog<GameEvent>(null, false);
+        a.hold = false;
+        a.reconcileDue = false;
+        lastError = said;
+        a.controller.notify(said);
+        log.warn(`match: ${said} (${x.had} log entries were held here)`);
+        emit();
+      }),
+    );
+    a.offs.push(
+      engine.on('rejoining', () => {
+        if (active !== a) return;
+        a.rejoiningNow = true;
+        // The others were told this PC had gone: what was held of a match is put away, and it is a newcomer again.
+        endMatchHalf(a);
+        log.warn("match: this PC's place in the lobby had run out while it was away; joining again as a newcomer");
+        emit();
+      }),
+    );
+    a.offs.push(
+      engine.on('joined', () => {
+        if (active !== a || !a.rejoiningNow) return;
+        a.rejoiningNow = false;
+        log.info(`match: back in the lobby ${a.code} as a newcomer${engine.lobby()?.match ? '; a match is open, and its log follows' : ''}`);
+        emit();
+      }),
+    );
+    a.offs.push(
+      engine.on('refused', (r) => {
+        if (active !== a || !a.rejoiningNow) return;
+        a.rejoiningNow = false;
+        over(`The lobby did not take this PC back: ${r.message} Join the lobby again by its code.`);
+      }),
+    );
+    // A page of the open match's log did not chain. The engine asks for the whole log once per match; a second time
+    // the shell opens the link again, once, so that the log is asked for as any returning member asks for it.
+    a.offs.push(
+      engine.on('desync', (d) => {
+        if (active !== a || d.context !== 'matchlog.entries') return;
+        const match = engine.lobby()?.match?.matchId ?? null;
+        if (a.desyncMatch !== match) {
+          a.desyncMatch = match;
+          log.warn("match: a page of the open match's log did not fit; the whole log is asked for again");
+          return;
+        }
+        log.warn("match: the open match's log did not fit a second time; opening the link to the lobby's PC again");
+        a.desyncMatch = null;
+        const host = engine.hostId;
+        try {
+          if (host !== null) engine.relinkTo(host);
+        } catch (e) {
+          log.warn(`match: the link could not be opened again: ${describeError(e)}`);
+        }
+      }),
+    );
+    a.offs.push(
+      engine.on('lobbyClosed', (x) => {
+        if (active !== a) return;
+        log.info(`match: the lobby ${a.code} is over for this PC: ${x.reason}`);
+      }),
+    );
+    // The relay said the room is gone for good (its PC left, or another device hosts the code now): nobody is coming
+    // back to it, so the wait ends now and not after the rest of the twenty minutes.
+    a.offs.push(
+      a.transport.onError((err) => {
+        if (active !== a || !(a.transport instanceof RelayClientTransport) || a.transport.roomEnded === null || !(err instanceof RelayError) || err.code !== 'closed') return;
+        over("The lobby is closed: its PC left it.");
+      }),
+    );
   };
-  /** A15: a client's reconnect budget: by the clock, and never a take-over. */
-  const clientLink = { reconnect: { attempts: 1_000_000, delayMs: 1000, maxMs: hostWaitMs }, hostLeftTransfer: false } as const;
+  /**
+   * A17 step 7: the lobby's PC and its members' links: the log's lines for a member who is away, back, gone; the
+   * question about a player who is up, out of reach and still playing (`awayQuestion`); what a member asked.
+   */
+  const watchPlayers = (a: Active, engine: HostMatch): void => {
+    const name = (id: string): string => nameIn(a.controller.status(), id);
+    // The review of PR 138: a member came back holding more of the open match than this PC had saved (it was
+    // restored from a record that was behind): the match goes on from what this PC holds, and that is said here.
+    a.offs.push(
+      engine.on('memberAhead', (x) => {
+        if (active !== a || a.aheadSaid) return;
+        a.aheadSaid = true;
+        const said = `This PC came back with an earlier state of the match than ${name(x.playerId)} had (Castcade closed before the last moves were saved): the match goes on from what was saved, and what was played since does not count.`;
+        lastError = said;
+        a.controller.notify(said);
+        log.warn(`match: ${said}`);
+        emit();
+      }),
+    );
+    a.offs.push(
+      engine.on('peerLeft', (id) => {
+        if (active !== a) return;
+        const up = engine.state.currentGrant?.grant.player ?? null;
+        const playing = engine.state.phase === 'running' && engine.state.players[id]?.status === 'playing';
+        log.warn(
+          `match: ${name(id)} is away (its link to this host dropped and did not come back within the grace); ${
+            up === id ? 'it holds the turn, so the match waits for it' : playing ? 'nothing is paused for it: the match waits for it when its own turn comes' : 'its place in the lobby is kept for a few minutes'
+          }`,
+        );
+      }),
+    );
+    a.offs.push(
+      engine.on('reconnected', (r) => {
+        if (active !== a) return;
+        log.info(r.quiet ? `match: ${name(r.playerId)}'s link to this host was away for a moment and is back; nothing was paused or shown` : `match: ${name(r.playerId)} is back on the match (${r.entries} entr${r.entries === 1 ? 'y' : 'ies'} of the match log sent)`);
+      }),
+    );
+    a.offs.push(engine.on('memberLeft', (id) => void (active === a && log.info(`match: ${id} left the lobby`))));
+    a.offs.push(engine.on('memberRemoved', (id) => void (active === a && log.info(`match: ${id} was away for too long: the place in the lobby is free again`))));
+    a.offs.push(engine.on('joined', (x) => void (active === a && log.info(`match: ${x.displayName} joined the lobby ${a.code}${engine.state.phase !== 'lobby' ? ' while a match is open: its log goes to that PC' : ''}`))));
+    a.offs.push(engine.on('startOff', (x) => void (active === a && log.info(`match: the announced start is off: ${x.reason}`))));
+    a.offs.push(
+      engine.on('awayQuestion', (q) => {
+        if (active !== a) return;
+        log.warn(`match: ${name(q.player)} holds the turn, has been out of this PC's reach for ${Math.round(q.waitedMs / 60_000)} minute(s) and is still seen playing: nothing is done by itself; the Match tab and the menu ask (keep waiting, end their ball, play on without them)`);
+        cue.play('opponent_turn');
+        // The final review (finding 9): said on the panel too, with the key that opens the menu.
+        a.controller.setAwayAsk(awayQuestionLine(name(q.player), shortcutWords(settings.menuKey)));
+        emit();
+      }),
+    );
+    a.offs.push(
+      engine.on('awayQuestionOff', (q) => {
+        if (active !== a) return;
+        a.controller.setAwayAsk(null);
+        log.info(`match: the question about ${name(q.player)} is off (they are back, or the game went on another way)`);
+        emit();
+      }),
+    );
+    a.offs.push(engine.on('pause', () => void (active === a && emit())));
+    a.offs.push(engine.on('resume', () => void (active === a && emit())));
+  };
+  /**
+   * A17 step 7 (the handoff's `stillSeen`): does that player's picture or state stream still reach THIS PC? Read
+   * where step 4 reads it (`upAwayNow`): a 3D watch of that player that runs, the native video's frames from them,
+   * the panel page's video track from them. Asked by the engine, once, when the turn clock of a player who holds
+   * the grant runs out: true, the owner of this PC is asked; false, the player is forfeited by the clock.
+   */
+  const stillSeen = (player: string): boolean => {
+    const a = active;
+    if (!a) return false;
+    try {
+      const up = a.controller.panel().playerUp;
+      return (up === player && (a.stream?.showing3d() ?? false)) || (a.video?.status().peers[player]?.recv?.fps ?? 0) > 0 || opts.media?.status().peers?.[player]?.receivingVideo === true;
+    } catch {
+      return false;
+    }
+  };
+  /**
+   * A17 step 7: a member's link to the lobby's PC: the engine's own budget (twenty minutes, by the clock, the gap
+   * between attempts growing), unless a test names a shorter wait; the grace; and its choice at the join.
+   */
+  const clientLink = (): { reconnect?: { maxMs: number }; disconnectGraceMs?: number; lobby: { stance: Stance } } => ({
+    ...(opts.hostWaitMs !== undefined ? { reconnect: { maxMs: opts.hostWaitMs } } : {}),
+    disconnectGraceMs: opts.disconnectGraceMs,
+    lobby: { stance: settings.stance },
+  });
   // A6 (2026-10-31): the witness samples VR when a table opens and again when its player starts (`table_loaded`). A
   // player who hosted on the monitor reading (before opening the table, or before the player started) is switched
   // to the headset then: the panel moves offscreen and the overlay starts. The reverse is logged and ignored. D7.3
@@ -1395,7 +2371,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     controller.setLocalMidnightMode(mode);
   };
 
-  const makeController = (engine: HostMatch | ClientMatch, ballsPerGame?: number, resumed = false): MatchController => {
+  const makeController = (engine: HostMatch | ClientMatch, ballsPerGame?: number, resumed = false, owedTableEnds: readonly number[] = []): MatchController => {
     // D10.3: the match signalling split by channel: the panel page's mesh gets `rtc`, the native video mesh `video`.
     const sig = opts.signalling?.(engine, engine.localId);
     const split = sig ? splitSignalling(sig) : null;
@@ -1412,9 +2388,19 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       log: (line) => log.info(line),
       ballsPerGame,
       // A12 (2026-11-05): the host's table before the match, and whether a game is already running on it.
+      // A17 step 7: `preMatchPlay` is retired in a lobby (outside a match every table is its owner's); the key stays
+      // in match.json and the lobby's controller does not read it.
       preMatchPlay: settings.preMatchPlay,
       tableGameRunning: liveGameRunning(),
       resumed,
+      // The review of PR 131: what the table still owed the match when Castcade closed.
+      owedTableEnds,
+      // A17 step 7: this person's choice (Play or Watch) until the lobby says what it holds, and the lobby's
+      // sentences for this player (a start that was refused or taken away), kept for the Match tab.
+      stance: settings.stance,
+      onNotice: (sentence) => {
+        lastError = sentence;
+      },
       // A16.2: the witness knows the machine's high-score list (a test witness may not).
       highScoreQualifies: (score) => witness.highScoreQualifies?.(score) ?? false,
     });
@@ -1455,6 +2441,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   /** D10.5: the headset panel's one line about the native video, from the mesh status; null clears it. */
   const syncVideoLine = (a: Active): void => {
     opts.media?.setVideoLine?.(a.video ? headsetVideoLine(a.video.status()) : null);
+    // I11.12 (2026-11-24): and who the native video reaches directly: the panel does not ask for a TURN relay for them.
+    opts.media?.setVideoDirect?.(a.video ? videoDirectPeers(a.video.status()) : []);
   };
   /** Where decoded frames go on this rig: the layer's `recv` ring on an OpenXR rig (theater draws it), the helper's own window elsewhere. */
   const videoSink = (a: RigRuntime): VideoSink => (usesLayer(a) && opts.nativeVideo ? { kind: 'ring', token: opts.nativeVideo.recvRing } : { kind: 'window' });
@@ -1522,7 +2510,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   };
   /** D10.3.8: this rig is in theater with the layer's ring as the sink: the only place the theater path means anything. */
   const theaterOnRing = (a: Active): boolean =>
-    a.video !== null && videoSink(a).kind === 'ring' && vrViewMode(a.controller.panel(), settings) === 'theater' && !(a.stream?.showing3d() ?? false); // I11.4.2: not while the player up is shown in 3D
+    a.video !== null && videoSink(a).kind === 'ring' && vrViewMode(a.controller.panel(), settings, { upAway: upAwayNow(a) }) === 'theater' && !(a.stream?.showing3d() ?? false); // I11.4.2: not while the player up is shown in 3D; A17 step 4: theater also through a pause for the player up
   /**
    * The mesh follows the match: a helper peer per other participant; `send` on exactly when the headset would be
    * hidden for this rig's own ball (the same panel state `syncVrMode` reads: playing and my turn); the sink and the
@@ -1538,9 +2526,13 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     const mesh = a.video;
     if (!mesh) return;
     const c = a.controller.status();
-    mesh.setPeers(c.participants.map((p) => p.playerId).filter((id) => id !== a.engine.localId));
+    // A17 step 7: the helper's connections are the lobby's: one per other member, whatever is played (`mediaPeersOf`).
+    mesh.setPeers(mediaPeersOf(a));
     const panel = a.controller.panel();
-    mesh.setSending(panel.phase === 'playing' && panel.myTurn);
+    // A18: a pause does not stop the picture of a ball that is live (`ball`: the grant's, until its end is logged), as
+    // it does not put the panel over that player's table (D8.14): on 2026-11-23 a pause of 2.3 s for the other player
+    // stopped the sender and started the encoder again in the owner's ball.
+    mesh.setSending(panel.myTurn && (panel.phase === 'playing' || (panel.phase === 'paused' && panel.ball !== null)));
     // I11.4.2: a rig whose picture is the helper's own window (a desktop PC, a SteamVR rig) gets no window while its
     // VPX shows the player up in 3D: it would sit over the table. The window is back the moment 3D is not shown.
     const where = videoSink(a);
@@ -1565,6 +2557,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     a.video.close();
     a.video = null;
     opts.media?.setVideoLine?.(null);
+    opts.media?.setVideoDirect?.([]);
     opts.media?.setNativeVideo?.(null);
     opts.vrLayer?.setVideoRing?.(null);
   };
@@ -1683,8 +2676,23 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   let menuKeyAt: number | null = null;
   let menuBefore: MenuState | null = null;
   let menuTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The review of PR 131, finding 4: when the question on the menu came up (the clock a held key is read by). */
+  let menuAskedAt: number | null = null;
+  /** The last choose (the choose key or Right) that came in, answered or not, and the answer that is waiting out `MENU_HELD_KEY_MS`. */
+  let menuChooseAt: number | null = null;
+  let menuAnswer: ReturnType<typeof setTimeout> | null = null;
+  const dropMenuAnswer = (): void => {
+    if (menuAnswer) clearTimeout(menuAnswer);
+    menuAnswer = null;
+  };
   let arrowsHeld = false;
   let menuSent = 'null';
+  /** The lobby's PC, a pause, and a Resume that would end it. */
+  const canResume = (a: Active | null): boolean => {
+    const r = a?.controller.currentRole;
+    if (!(r instanceof HostMatch)) return false;
+    return r.state.phase === 'running' && r.state.paused !== null && !r.state.pendingTransfer && r.resumeBlocker() === null;
+  };
   const menuFacts = (a: Active): MenuFacts => {
     const st = a.controller.status();
     return {
@@ -1699,7 +2707,16 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       myTable: settings.myTableWhileUp,
       mic: st.panel.mic,
       scoreboardPlace: scoreboardPlaceFact(a),
+      endBall: st.endBall,
+      // A17 step 7: every member's menu is the lobby's (match-menu.ts): the start for anyone, Play or watch, End
+      // match, Leave lobby; on the lobby's PC also what to do about a player who is away at their own turn.
+      lobby: menuLobby(a, st),
     };
+  };
+  const menuLobby = (a: Active, st: ControllerStatus): MenuFacts['lobby'] => {
+    const l = lobbyView(a, st);
+    // The final review (finding 15): one function with the story pages of the screens (match-menu.ts `menuLobbyOf`).
+    return l ? menuLobbyOf(l, a.engine instanceof HostMatch) : null;
   };
   const menuHint = (): string => {
     const key = shortcutWords(settings.menuKey);
@@ -1708,10 +2725,31 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   };
   /** The menu as it is now to the panel page; only when it changed (a status emit calls this often). */
   const pushMenu = (): void => {
-    const view = active ? menuView(menu, menuItems(menuFacts(active)), menuHint()) : null;
+    // The review of PR 131, finding 3: End my ball's question is about one grant. When that grant is gone (the table
+    // ended the ball, with or without an extra ball; the turn went round) the question goes with it: the next choose
+    // asks again, with the score as it is then.
+    if (active && menu.open && menu.confirming === 'endBall' && (menu.confirmFor ?? null) !== (menuFacts(active).endBall?.grantSeq ?? null)) {
+      menu = { ...menu, confirming: null, confirmFor: null, note: null };
+      menuAskedAt = null;
+    }
+    // The review of PR 136: so it is with every question: when its line is gone, or asks something else, or is about
+    // another game by now, it is closed (`menuSettle`); a choose that was on its way to it is then forgotten too
+    // (`pressMenu` answers only the menu it saw).
+    if (active && menu.open && menu.confirming !== null) {
+      const settled = menuSettle(menu, menuItems(menuFacts(active)));
+      if (settled !== menu) {
+        menu = settled;
+        menuAskedAt = null;
+        dropMenuAnswer();
+      }
+    }
+    const items = active ? menuItems(menuFacts(active)) : [];
+    const view = active ? menuView(menu, items, menuHint()) : null;
     const text = JSON.stringify(view);
     if (text === menuSent) return;
     menuSent = text;
+    // The final review (finding 12): what the chosen line says as it is drawn now is what a press of it is about.
+    menu = menuDrawn(menu, items);
     opts.media?.setMenu?.(view);
   };
   const holdArrows = (on: boolean): void => {
@@ -1728,6 +2766,9 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     menu = MENU_CLOSED;
     menuKeyAt = null;
     menuBefore = null;
+    menuAskedAt = null;
+    menuChooseAt = null;
+    dropMenuAnswer();
     holdArrows(false);
   };
   const armMenuTimer = (): void => {
@@ -1743,18 +2784,61 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   const runMenuEffect = (effect: MenuEffect): void => {
     // A refusal (the lobby is not complete, no next game yet) comes back onto the menu, on the line that asked.
     const refused =
-      (at: 'start' | 'next') =>
+      (...lines: Array<'start' | 'nextGame' | 'next' | 'startNow'>) =>
       (e: unknown): void => {
         if (!active) return;
+        // The review of PR 136: on the line that asked only while it is still there; else the sentence is the panel's.
+        // A17 step 9: the start's line is `start` or `nextGame` (match-menu.ts): the one of them that is in the menu now.
+        const items = menuItems(menuFacts(active));
+        const at = lines.find((id) => items.some((it) => it.id === id));
+        if (at === undefined) {
+          active.controller.notify(e instanceof Error ? e.message : String(e));
+          return;
+        }
         menu = { open: true, at, confirming: null, note: describeError(e) };
         holdArrows(true);
         armMenuTimer();
         emit();
       };
+    /** A choice of the lobby's that was not taken: its sentence is on the panel's line and on the Match tab. */
+    const said =
+      (what: string) =>
+      (e: unknown): void => {
+        log.warn(`match: ${what} from the menu: ${describeError(e)}`);
+        active?.controller.notify(describeError(e));
+      };
     switch (effect.kind) {
       case 'start':
-        log.info(`match: Start match chosen in the menu${effect.anyway ? ' (anyway)' : ''}`);
-        void api.start({ anyway: effect.anyway }).catch(refused('start'));
+        log.info(`match: ${effect.now ? 'Start without what the start waits for' : 'Start'} chosen in the menu${effect.anyway ? ' (anyway)' : ''}`);
+        void api.start({ anyway: effect.anyway, now: effect.now === true, ...(effect.without !== undefined ? { without: effect.without } : {}) }).catch(effect.now ? refused('startNow') : refused('start', 'nextGame'));
+        return;
+      case 'cancelStart':
+        log.info('match: Cancel the start chosen in the menu');
+        void api.cancelStart().catch(said('Cancel the start'));
+        return;
+      case 'newMatch':
+        log.info(`match: Start a new match chosen in the menu${effect.anyway ? ' (anyway)' : ''}`);
+        void api.start({ newMatch: true, anyway: effect.anyway }).catch(said('Start a new match'));
+        return;
+      case 'stance':
+        log.info(`match: ${effect.to === 'play' ? 'Play' : 'Watch'} chosen in the menu`);
+        api.setStance(effect.to);
+        return;
+      case 'giveUp':
+        log.info('match: Give up this game chosen in the menu');
+        void api.giveUp().catch(said('Give up this game'));
+        return;
+      case 'endMatch':
+        log.info(`match: End match${effect.everyone ? ' for everyone' : ''} chosen in the menu`);
+        void api.endMatch({ everyone: effect.everyone, about: active?.controller.status().lobby?.gameKey ?? null }).catch(said(effect.everyone ? 'End match for everyone' : 'End match'));
+        return;
+      case 'away':
+        log.info(`match: the answer about the player who is away, chosen in the menu: ${effect.answer}`);
+        void api.answerAway(effect.answer).catch(said('the answer about the player who is away'));
+        return;
+      case 'playOn':
+        log.info('match: Play on without the player who is away, chosen in the menu');
+        void api.playOnWithout().catch(said('Play on without'));
         return;
       case 'next':
         log.info('match: Next game chosen in the menu');
@@ -1778,8 +2862,13 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         else log.warn(`match: the scoreboard was not placed again from the menu (${did})`);
         return;
       }
+      case 'endBall':
+        log.info('match: End my ball chosen in the menu');
+        // The grant the menu's question was about: the main process refuses any other.
+        void api.endMyBall(effect.grantSeq ?? -1).catch((e: unknown) => log.warn(`match: End my ball from the menu: ${describeError(e)}`));
+        return;
       case 'leave':
-        log.info('match: Leave chosen in the menu');
+        log.info('match: Leave lobby (or Close lobby) chosen in the menu');
         void api.leave().catch((e: unknown) => log.warn(`match: leave from the menu: ${describeError(e)}`));
         return;
     }
@@ -1787,10 +2876,37 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   const pressMenu = (key: MenuKey): void => {
     const a = active;
     if (!a) return;
+    // The review of PR 131, finding 4: a key held down repeats, and a repeat of the press that asked a question would
+    // answer it (End my ball, Leave match, Start anyway). A choose that would answer one is ignored for
+    // `MENU_CONFIRM_MIN_MS` after the question came up, and for as long as it is one of a run of repeats; one that
+    // could be the first repeat of a held key waits `MENU_HELD_KEY_MS` to see whether another follows.
+    if (key === 'choose' || key === 'right') {
+      const now = clock();
+      const since = menuChooseAt === null ? null : now - menuChooseAt;
+      menuChooseAt = now;
+      if (menu.open && menu.confirming !== null) {
+        dropMenuAnswer();
+        if (since !== null && since < MENU_HELD_KEY_MS) return;
+        if (menuAskedAt !== null && now - menuAskedAt < MENU_CONFIRM_MIN_MS) return;
+        const asked = menu;
+        menuAnswer = setTimeout(() => {
+          menuAnswer = null;
+          // Still the same question on the same menu: answered now. Anything else by now (the menu moved, closed, the
+          // grant the question was about is gone) and the press is forgotten.
+          if (active === a && menu === asked) applyMenuPress(a, key);
+        }, MENU_HELD_KEY_MS);
+        return;
+      }
+    }
+    applyMenuPress(a, key);
+  };
+  const applyMenuPress = (a: Active, key: MenuKey): void => {
     const facts = menuFacts(a);
     const wasOpen = menu.open;
     const r = menuPress(menu, menuItems(facts), facts, key);
     if (r.state === menu && r.effect === null) return;
+    // A question came up (a first one, or End my ball's again for another grant): the hold starts from here.
+    menuAskedAt = r.effect === null && r.state.confirming !== null ? clock() : null;
     menu = r.state;
     if (menu.open) {
       if (!wasOpen) {
@@ -1886,7 +3002,9 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   // table loads says `pc` and no table; until MATCH_READY, a table load or a new VR sample re-decides both and tells
   // the others (PARTICIPANT_UPDATE from a client, a re-sent HELLO_ACK from the host). The rig only moves towards the
   // headset, as the A6 switch does: a monitor reading after a VR one keeps the headset (`switchToVr` is one-way).
-  const inLobby = (a: Active): boolean => active === a && a.engine.state.phase === 'lobby';
+  // A17 step 7: in a lobby a member's row follows its rig and its table in every phase (a watcher opens the table
+  // while a match is played; a table closes between games), so the refresh is not for the time before a match only.
+  const inLobby = (a: Active): boolean => active === a && !a.engine.matchEnded;
   const checkLobby = (a: Active, s: WitnessStatus): void => {
     if (!inLobby(a)) return;
     const k = lobbyKey(s);
@@ -1922,9 +3040,21 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
    * engines carry only the rig (a table change then is not sent, and `sent.game` keeps what was). The role in charge
    * now (`currentRole`): after a host transfer `a.engine` is the role that stepped down.
    */
+  /**
+   * A17 step 10 (review of PR 139, finding 1): tells the lobby that this PC's open table is its copy of the lobby's
+   * table, while the table one step said it of is still the one the witness names and the row names a table. The
+   * controller only passes on what changed.
+   */
+  const sayPickCopy = (a: Active): void => {
+    const w = a.pickCopy ?? null;
+    const holds = w !== null && witness.status().currentTable === w.open && isTableOpen(a.sent.game);
+    a.controller.setPickCopy(holds ? { pick: w.pick, tableName: a.sent.game.tableName, tableHash: a.sent.game.tableHash } : null);
+  };
   const announceLobby = (a: Active, rig: Rig, game: GameFingerprint): void => {
     const role = a.controller.currentRole as HostMatch | ClientMatch;
-    const lobby = role.state.phase === 'lobby';
+    // A17 step 7: every key counts in every phase (the engines' lobby); `lobby` only words the log line now.
+    const noMatch = role.state.phase === 'lobby';
+    const lobby = true;
     const rigChanged = rig !== a.sent.rig;
     const gameChanged = lobby && JSON.stringify(game) !== JSON.stringify(a.sent.game);
     // A13: whether this table can report ball ends, when the witness knows (no table open: nothing new to say).
@@ -1940,6 +3070,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       return;
     }
     a.sent = { rig, game: gameChanged ? game : a.sent.game, ballEnds: readyChanged ? ballEnds : a.sent.ballEnds };
+    // A17 step 10: the word about this PC's copy names the table as the row does: said again with the new row.
+    if (gameChanged) sayPickCopy(a);
     if (!done) return;
     const what = [
       rigChanged ? `rig ${rig}` : null,
@@ -1948,7 +3080,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     ]
       .filter(Boolean)
       .join(', ');
-    log.info(`match: ${lobby ? 'lobby' : 'match'} update: ${what}; ${role instanceof HostMatch ? 'the players were told' : 'the host was told'}`);
+    log.info(`match: lobby update${noMatch ? '' : ' (a match is open)'}: ${what}; ${role instanceof HostMatch ? 'the members were told' : "the lobby's PC was told"}`);
     emit();
   };
 
@@ -2038,8 +3170,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
 
   const host = (o: { port?: number; ballsPerGame: 3 | 5; displayName: string }): Promise<MatchStatus> =>
     guard(async () => {
-      if (active) return fail(new Error('Leave the current match first'));
-      forget('another match is hosted');
+      if (active) return fail(new Error('Leave the lobby you are in first'));
+      forget('another lobby is opened');
       await endBench('a match is hosted');
       lastError = null;
       const asked = o.port === 0 && opts.ephemeralPort ? 0 : o.port === undefined ? settings.port : cleanPort(o.port);
@@ -2074,28 +3206,14 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         relay = null;
         // The refusal comes from the ack of `match:host` (ArcAid checks the device there, not at connect).
         relayNote = relayHostNote(relayError instanceof RelayError ? relayError.code : null);
-        log.warn(`match: ArcAid is not carrying this match (${relayError instanceof Error ? relayError.message : String(relayError)}); hosting on the listener only`);
+        log.warn(`match: ArcAid is not carrying this lobby (${relayError instanceof Error ? relayError.message : String(relayError)}); it is open on the listener only`);
       }
       const listener = new WsPeerTransport({ localId: me });
       const transport = new CompositeTransport(relay ? [listener, relay] : [listener]);
       const ws = witness.status();
       const game = gameFingerprintFrom(ws, RECIPE_VERSION);
       const ballEnds = ballEndsFrom(ws).ready;
-      const engine = new HostMatch({
-        transport,
-        keys: matchIdentity().keys,
-        matchId: code,
-        ballsPerGame,
-        hostParticipant: participant(me, name, rig.rig),
-        hostGame: game,
-        // §3: a different table file is shown on both panels, never refused (the client learns it from HELLO_ACK).
-        fingerprintPolicy: 'advise',
-        companionVersion: opts.appVersion.slice(0, 32),
-        // A11: who is still loading, and whether the start from this host's table may go.
-        tableOpen: isTableOpen,
-        // A13: whether this host's own table can report ball ends, when a table is open.
-        ...(ballEnds !== null ? { ballEndReady: ballEnds } : {}),
-      });
+      const engine = lobbyHost(transport, code, ballsPerGame, participant(me, name, rig.rig), game, ballEnds, 1);
       const controller = makeController(engine, ballsPerGame);
       const a: Active = {
         role: 'host',
@@ -2104,6 +3222,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         via: relay ? 'relay' : 'direct',
         where: null,
         relay,
+        relayWanted: relay !== null,
         relayNote,
         directInvite: null,
         portMapping: null,
@@ -2132,17 +3251,9 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         ...tracking(null, null),
       };
       a.offs.push(transport.onError((err, peer) => log.warn(`match: socket ${peer ?? '(new)'}: ${err.message}`)));
-      if (relay) {
-        a.offs.push(
-          relay.onState((st) => {
-            if (active !== a) return;
-            if (st === 'reconnecting') log.warn('match: ArcAid is not carrying this match for the moment (the connection dropped, or ArcAid restarted); taking it back (players who came through ArcAid resume when it is back)');
-            else if (st === 'registered') log.info(`match: ArcAid carries ${code} again`);
-            else if (st === 'closed') log.warn(`match: ArcAid closed ${code} and it cannot be opened again; players who came through ArcAid are out`);
-            emit();
-          }),
-        );
-      }
+      watchLobby(a, engine);
+      watchPlayers(a, engine);
+      if (relay) watchRelay(a, engine, relay);
       active = a;
       followLog(a);
       await openPanel(a);
@@ -2160,10 +3271,10 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
           await teardown(a);
           return fail(new Error(errno === 'EADDRINUSE' ? `${why}: pick another port` : why));
         }
-        // D10.8: the relay room is up; the match needs no listener.
+        // D10.8: the relay room is up; the lobby needs no listener.
         listening = false;
         a.port = null;
-        log.warn(`match: ${why}; this match goes through ArcAid only`);
+        log.warn(`match: ${why}; this lobby goes through ArcAid only`);
       }
       const ip = pub ?? pickLanAddress(networkInterfaces()) ?? '127.0.0.1';
       const address = listening ? formatInvite(ip, port, code) : null;
@@ -2171,11 +3282,11 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       if (relay) {
         a.invite = code;
         a.directInvite = address;
-        log.info(`match: hosting ${code} through ArcAid${listening ? ` and on ${listener.endpoint ?? `port ${port}`}` : ''} (${ballsPerGame} balls); the invite is the code`);
+        log.info(`match: the lobby ${code} is open through ArcAid${listening ? ` and on ${listener.endpoint ?? `port ${port}`}` : ''} (${ballsPerGame} balls a game); the invite is the code`);
       } else {
         a.invite = address;
         a.where = `${ip.includes(':') ? `[${ip}]` : ip}:${port}`;
-        log.info(`match: hosting ${code} on ${listener.endpoint ?? `port ${port}`} (${ballsPerGame} balls); invite ${a.invite} (${a.ipSource} address)${relayNote ? `; ${relayNote}` : ''}`);
+        log.info(`match: the lobby ${code} is open on ${listener.endpoint ?? `port ${port}`} (${ballsPerGame} balls a game); invite ${a.invite} (${a.ipSource} address)${relayNote ? `; ${relayNote}` : ''}`);
         // D10.8: the router is asked for the port in the background; the invite does not wait for it.
         mapPort(a, port, pub, creds !== null);
       }
@@ -2185,9 +3296,157 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       return status();
     });
 
+  /**
+   * A17 step 7: the engine of a lobby's PC. `matchId` is the lobby's code (each match gets `<code>-<n>`, counted from
+   * `firstMatch`); `hostGame` is this PC's own table (the lobby's table is the pick: with none made at Open lobby,
+   * the first table this PC has open, which in step 7 is the one way to pick; changing it is step 10). The session's
+   * `seq` starts at the wall clock, so a lobby opened again under its code is heard by members who stayed.
+   */
+  const lobbyHost = (
+    transport: Transport,
+    code: string,
+    ballsPerGame: number,
+    me: ParticipantInfo,
+    game: GameFingerprint,
+    ballEnds: boolean | null,
+    firstMatch: number,
+    /** A17 step 8: the lobby as it was saved, with the open match's log: the engine is the same lobby again. */
+    restore: { lobby: SavedLobbyPart; log: MatchLog } | null = null,
+  ): HostMatch => {
+    // A17 step 8: the counters this PC must not fall behind across a restart are written into the record before a
+    // number above the last one written counts (`SeqGuard`); after a restart they begin where the record says.
+    const session: Session = new Session({
+      transport,
+      keys: matchIdentity().keys,
+      seqStart: Date.now(),
+      ...(restore ? { log: restore.log } : {}),
+      seqGuard: {
+        ...(restore ? { taken: restore.lobby.seq.taken, sent: restore.lobby.seq.sent } : {}),
+        save: () => (active !== null && active.engine.session === session ? saveResume(active) : false),
+      },
+    });
+    const options: ConstructorParameters<typeof HostMatch>[0] = {
+        transport,
+        keys: matchIdentity().keys,
+        matchId: code,
+        ballsPerGame,
+        hostParticipant: me,
+        hostGame: game,
+        // §3: a different table file is shown on both panels, never refused (in a lobby it is a state of the row).
+        fingerprintPolicy: 'advise',
+        companionVersion: opts.appVersion.slice(0, 32),
+        // A11: who is still loading.
+        tableOpen: isTableOpen,
+        // A13: whether this PC's own table can report ball ends, when a table is open.
+        ...(ballEnds !== null ? { ballEndReady: ballEnds } : {}),
+        disconnectGraceMs: opts.disconnectGraceMs,
+        // The review of PR 136: a member who was away when this PC's ArcAid connection came back is given the time
+        // its own schedule of asks needs (`LOBBY_REJOIN`) before a clock counts against them.
+        lobby: { stance: settings.stance, firstMatch, stillSeen, returnAllowMs: LOBBY_RETURN_ALLOW_MS, ...(opts.lobby ?? {}) },
+    };
+    return restore ? HostMatch.restoreLobby(restore.lobby, options, session) : new HostMatch(options, session);
+  };
+  /**
+   * A17 step 7 (design 11.8, 11.8a; the handoff's item 1): the lobby's PC and its own connection to ArcAid. While it
+   * is away every member who came through ArcAid drops at once and none of them is at fault: the engine is told
+   * (`setCutOff`), so nobody is paused for, no place runs out and no clock runs; when the room is registered again
+   * the engine is told that too, and everything starts from zero. If ArcAid will not have the room again the lobby
+   * cannot go on for the members who came through it: it is closed, and its owner is told why.
+   *
+   * The step 9 last pass (the final review's note on `reopenLobby`): a word of the room is heard only while `a` is
+   * the active lobby. A lobby opened again after a restart is watched before it is the active one (its listener is
+   * opened in between, an `await`), so a word that came then (the room taken back, lost again, or refused for good)
+   * was never heard: the tab said for good that ArcAid was not carrying the lobby, and a lobby opened again empty
+   * stayed cut off. `relayCatchUp` hears the room's state as it is now, once, when the lobby has become the active one.
+   */
+  const relayCatchUp = new WeakMap<Active, () => void>();
+  const watchRelay = (a: Active, engine: HostMatch, relay: RelayHostTransport): void => {
+    /** The room's state as this watch last acted on it. */
+    let seen = relay.state;
+    const on = (st: RelayHostState): void => {
+      if (active !== a) return;
+      seen = st;
+      if (st === 'reconnecting') {
+        engine.setCutOff(true);
+        a.relayNote = 'ArcAid is not carrying this lobby for the moment (the connection dropped, or ArcAid restarted). Castcade is taking it back; nobody is paused or counted as away for it';
+        log.warn('match: ArcAid is not carrying this lobby for the moment (the connection dropped, or ArcAid restarted); taking it back. Nobody is paused or counted as away for it, and a ball in play goes on');
+      } else if (st === 'registered') {
+        engine.setCutOff(false);
+        a.relayNote = null;
+        log.info(`match: ArcAid carries ${a.code} again; the members come back by themselves`);
+      } else if (st === 'closed') {
+        // The review of PR 136: ArcAid's room is gone for good (the code is taken, the pairing was revoked, this
+        // device opened another room). Whoever came through ArcAid cannot be reached again. Somebody connected to
+        // this PC's own port can: for them nothing happened, and a game they play is not ended for it. The
+        // lobby goes on for them, on the listener alone; with nobody there it is closed, as the handoff asks.
+        const direct = (a.ws?.peers() ?? []).filter((id) => id !== engine.localId);
+        // A17 step 8: this PC is no longer paired with ArcAid (it asked for its room a few times and was told so
+        // each time): said in those words, with where to pair it again.
+        const unpaired = relay.closedWhy === 'unauthorized';
+        if (direct.length > 0) {
+          const cs = a.controller.status();
+          const who = direct.map((id) => nameIn(cs, id));
+          const names = who.length <= 1 ? (who[0] ?? '') : `${who.slice(0, -1).join(', ')} and ${who[who.length - 1]}`;
+          // Nobody who came through ArcAid can come back: no time to return for them (`returnAllowMs`).
+          engine.setCutOff(false, { returning: false });
+          a.via = 'direct';
+          a.relayNote = null;
+          if (a.directInvite) a.invite = a.directInvite;
+          log.warn(`match: ArcAid closed ${a.code} and it cannot be opened again; the lobby goes on for the ${direct.length} member(s) connected to this PC directly, and whoever came through ArcAid is away from now on`);
+          // The panel's line first (a notice is also the tab's last word); then the tab's own, which says what to do.
+          a.controller.notify("ArcAid closed this lobby's room: it goes on for the people connected to this PC directly");
+          lastError = unpaired
+            ? `This PC is no longer paired with ArcAid, so ArcAid does not carry the lobby ${a.code} any more. The lobby goes on for ${names}, connected to this PC directly. Whoever came through ArcAid cannot come back. Pair this PC again in Settings, then close the lobby and open a new one for a new code.`
+            : `ArcAid closed the room of the lobby ${a.code} and it could not be opened again. The lobby goes on for ${names}, connected to this PC directly. Whoever came through ArcAid cannot come back, and the code no longer works: for a new code, close the lobby and open a new one.`;
+          emit();
+          return;
+        }
+        log.warn(`match: ${unpaired ? `this PC is no longer paired with ArcAid, which does not carry ${a.code} any more` : `ArcAid closed ${a.code} and it cannot be opened again`}; the lobby is closed on this PC`);
+        // The lobby ends for this PC, and its record with it (`teardown`). Whoever came through ArcAid cannot be
+        // told: they meet the line of a lobby's PC that is away, and its twenty minutes.
+        void closeLobby(a, unpaired ? "the lobby's PC is no longer paired with ArcAid" : 'ArcAid closed the room of this lobby and it could not be opened again').then(() => {
+          lastError = unpaired
+            ? unpairedClosedSentence(a.code)
+            : `The lobby ${a.code} is closed: ArcAid closed its room and it could not be opened again. Open a new lobby and send the new code.`;
+          emit();
+        });
+        return;
+      }
+      emit();
+    };
+    a.offs.push(relay.onState(on));
+    relayCatchUp.set(a, () => {
+      if (active === a && relay.state !== seen) on(relay.state);
+    });
+  };
+  /** A17 step 7: Close lobby: a game being played is ended for everyone, every member is told (LOBBY_CLOSED), then everything closes. */
+  const closeLobby = async (a: Active, why: string): Promise<void> => {
+    if (active !== a) return;
+    try {
+      if (a.engine instanceof HostMatch) a.engine.closeLobby(why);
+    } catch (e) {
+      log.warn(`match: the lobby could not be closed for the others: ${describeError(e)}`);
+    }
+    // LOBBY_CLOSED leaves the sockets before the transport is torn down.
+    await new Promise<void>((r) => setTimeout(r, LEAVE_FLUSH_MS));
+    await teardown(a);
+  };
+
   // ---- D10.8: the relay and the router port ----
   const relayHost = (me: string, c: { baseUrl: string; deviceId: string; deviceToken: string }): RelayHostTransport =>
-    new RelayHostTransport({ localId: me, baseUrl: c.baseUrl, auth: { deviceId: c.deviceId, deviceToken: c.deviceToken }, connectTimeoutMs: opts.relayTimeouts?.connectMs, ackTimeoutMs: opts.relayTimeouts?.ackMs });
+    new RelayHostTransport({
+      localId: me,
+      baseUrl: c.baseUrl,
+      auth: { deviceId: c.deviceId, deviceToken: c.deviceToken },
+      connectTimeoutMs: opts.relayTimeouts?.connectMs,
+      ackTimeoutMs: opts.relayTimeouts?.ackMs,
+      confirmUnpaired: async () => ((await opts.pairingCheck?.()) ?? 'unknown') === 'unpaired',
+      // The final review (finding 6): a PC paired again during its lobby has a new token in its settings.
+      freshAuth: () => {
+        const now = opts.relay?.() ?? null;
+        return now ? { deviceId: now.deviceId, deviceToken: now.deviceToken } : null;
+      },
+    });
 
   /**
    * A direct host with no relay: ask the router to forward the port (UPnP, 3 s inside `openPort`), in the background.
@@ -2235,12 +3494,12 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       return {
         transport: t,
         connect: () => withTimeout(t.connect(invite.url), CONNECT_TIMEOUT_MS, `Could not reach the host at ${invite.host}:${invite.port}`),
-        failure: (e) => new Error(`${describeError(e)}. Check the invite, and that the host forwarded the TCP port to their PC (a host paired with ArcAid needs no port forward: its invite is six letters).`, { cause: e }),
+        failure: (e) => new Error(`${describeError(e)}. Check the invite, and that the lobby's PC has the TCP port forwarded to it (a PC paired with ArcAid needs no port forward: its invite is six letters).`, { cause: e }),
       };
     }
     const c = opts.relay?.() ?? null;
     if (!c) throw new Error(RELAY_NOT_PAIRED);
-    const t = new RelayClientTransport({ localId: me, baseUrl: c.baseUrl, auth: { deviceId: c.deviceId, deviceToken: c.deviceToken }, connectTimeoutMs: opts.relayTimeouts?.connectMs, ackTimeoutMs: opts.relayTimeouts?.ackMs, rejoin: opts.relayRejoin ?? HOST_WAIT_REJOIN });
+    const t = new RelayClientTransport({ localId: me, baseUrl: c.baseUrl, auth: { deviceId: c.deviceId, deviceToken: c.deviceToken }, connectTimeoutMs: opts.relayTimeouts?.connectMs, ackTimeoutMs: opts.relayTimeouts?.ackMs, rejoin: opts.relayRejoin ?? LOBBY_REJOIN, missLog: relayMisses });
     return {
       transport: t,
       connect: () => t.connect(invite.code),
@@ -2250,26 +3509,35 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
 
   type JoinOutcome = { kind: 'joined'; transport: MatchTransport; engine: ClientMatch; controller: MatchController } | { kind: 'refused'; refuse: PayloadOf<'REFUSE'> };
 
-  const tryJoin = async (invite: Invite, me: string, name: string, rig: Rig, game: ReturnType<typeof gameFingerprintFrom>, ballEnds: boolean | null): Promise<JoinOutcome> => {
+  /** `rec` (A15, A17 step 7): the join is a Castcade that started again going back into the lobby of its saved match. */
+  const tryJoin = async (invite: Invite, me: string, name: string, rig: Rig, game: ReturnType<typeof gameFingerprintFrom>, ballEnds: boolean | null, rec: ResumeRecord | null = null): Promise<JoinOutcome> => {
     const code = invite.code;
     const { transport, connect, failure } = linkFor(invite, me);
-    const engine = new ClientMatch({
-      transport,
-      keys: matchIdentity().keys,
-      participant: participant(me, name, rig),
-      game,
-      throwdownCode: code,
-      companionVersion: opts.appVersion.slice(0, 32),
-      // A13: whether this table can report ball ends, when a table is open (HELLO.ballEndReady).
-      ...(ballEnds !== null ? { ballEndReady: ballEnds } : {}),
-      ...clientLink,
-    });
+    // A17 step 7: a member of a lobby: the signed HELLO (in every phase), and a `seq` that starts at the wall clock,
+    // so that a Castcade that started again is taken back while its place is kept (the handoff's item 4).
+    const engine = new ClientMatch(
+      {
+        transport,
+        keys: matchIdentity().keys,
+        participant: participant(me, name, rig),
+        game,
+        throwdownCode: code,
+        companionVersion: opts.appVersion.slice(0, 32),
+        // A13: whether this table can report ball ends, when a table is open (HELLO.ballEndReady).
+        ...(ballEnds !== null ? { ballEndReady: ballEnds } : {}),
+        ...clientLink(),
+      },
+      new Session({ transport, keys: matchIdentity().keys, seqStart: Date.now() }),
+    );
     // Built before HELLO so it sees HELLO_ACK's roster.
-    const controller = makeController(engine);
+    const controller = makeController(engine, undefined, rec !== null, rec?.owed ?? []);
     const offs: (() => void)[] = [];
     const answer = new Promise<'joined' | PayloadOf<'REFUSE'>>((resolve) => {
       offs.push(engine.on('joined', () => resolve('joined')));
       offs.push(engine.on('refused', (r) => resolve(r)));
+      // A17 (2026-11-24): a host on another protocol version, whose answer this PC cannot decode (a host up to 0.2.50
+      // answers in its own version): the sentence now, in place of "The host did not answer" ten seconds later.
+      offs.push(transport.onError((e) => void (e instanceof ForeignVersionError && resolve({ code: 'protocol_version', message: e.message, mismatches: [] }))));
     });
     const cleanup = async (): Promise<void> => {
       await controller.close();
@@ -2279,7 +3547,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     try {
       await connect();
       engine.join();
-      const r = await withTimeout(answer, JOIN_TIMEOUT_MS, 'The host did not answer');
+      const r = await withTimeout(answer, JOIN_TIMEOUT_MS, "The lobby's PC did not answer");
       if (r !== 'joined') {
         await cleanup();
         return { kind: 'refused', refuse: r };
@@ -2295,8 +3563,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
 
   const joinMatch = (invite: string, displayName: string): Promise<MatchStatus> =>
     guard(async () => {
-      if (active) return fail(new Error('Leave the current match first'));
-      forget('another match is joined');
+      if (active) return fail(new Error('Leave the lobby you are in first'));
+      forget('another lobby is joined');
       await endBench('a match is joined');
       lastError = null;
       let parsed: Invite;
@@ -2316,15 +3584,21 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         const game = gameFingerprintFrom(ws, RECIPE_VERSION);
         const ballEnds = ballEndsFrom(ws).ready;
         const out = await tryJoin(parsed, me, name, rig.rig, game, ballEnds);
-        if (out.kind === 'refused') throw new Error(`The host refused: ${out.refuse.message}`);
+        // A17 step 7: the sentence is written to be shown as it is ("This lobby is full (four people).").
+        if (out.kind === 'refused') throw new Error(refusalShown(out.refuse));
         const differs = out.controller.status().tableMismatch.includes(me);
-        if (differs) log.warn("match: the host's table file differs from this one; joined anyway, flagged on both panels");
+        if (differs) log.warn("match: this PC's table file differs from the lobby's table; joined anyway, flagged on every panel");
         const a = clientActive(parsed, out, rig, game, ballEnds, ws, invite.trim(), null);
         active = a;
         connecting = false;
         followLog(a);
+        watchLobby(a, out.engine);
         watchHost(a, out.engine);
-        log.info(`match: joined ${parsed.code} ${parsed.via === 'relay' ? 'through ArcAid' : `at ${parsed.url}`}`);
+        const open = out.engine.lobby()?.match ?? null;
+        log.info(`match: joined the lobby ${parsed.code} ${parsed.via === 'relay' ? 'through ArcAid' : `at ${parsed.url}`}${open ? `; ${open.matchId} is being played, and this PC watches it` : ''}`);
+        // I11.4.15: the first HELLO_ACK came before anything listened; a later one is logged by `watchHost`.
+        const hostObjects = out.engine.hostTableObjects();
+        if (hostObjects) log.info(`match: the host's table objects: ${forkIdentityText(hostObjects)}`);
         await openPanel(a);
         // The table may have loaded while joining (A6, 2026-10-31).
         checkLobby(a, witness.status());
@@ -2386,7 +3660,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         log.warn(`match: socket: ${err.message}`);
         // D10.8: a pairing revoked mid-match is final (ArcAid took the seat): the tab says so, in those words.
         if (err instanceof RelayError && err.code === 'unauthorized' && active === a) {
-          lastError = `${err.message}: pair it again in Settings. This match cannot be resumed through ArcAid.`;
+          lastError = `${err.message}: pair it again in Settings. This lobby cannot be reached through ArcAid any more.`;
           emit();
         }
       }),
@@ -2394,50 +3668,80 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     return a;
   };
 
-  // ---- A15: back into the saved match ----
-  const rejoinClient = async (rec: ResumeRecord, saved: MatchLog, st0: MatchState, meInfo: ParticipantInfo, rig: RigDecision): Promise<Active> => {
+  // ---- A15, A17 step 7: back into the lobby of the saved match ----
+  /**
+   * A member whose Castcade started again (the handoff's trap 9): a fresh engine with the lobby's option and a `seq`
+   * from the wall clock, the link, and a signed HELLO. A lobby that still holds this PC's place takes that as its
+   * return and sends the open match's whole log; one whose place ran out takes it as a newcomer. Never a RECONNECT
+   * from the saved log: a lobby's way back for a process that kept nothing is the HELLO. When the match the record
+   * was saved in is still the open one, what A15 kept for it counts (the table's events since the saved mark, the
+   * ball ends the table owes); when it is not, this PC is simply back in the lobby.
+   */
+  const rejoinClient = async (rec: ResumeRecord, st0: MatchState, rig: RigDecision): Promise<{ a: Active; same: boolean }> => {
     const parsed = parseInvite(rec.invite ?? '');
-    const hostId = st0.hostId;
-    if (!hostId) throw new Error('The saved match names no host');
-    const { transport, connect, failure } = linkFor(parsed, rec.playerId);
     const ws = witness.status();
     const game = gameFingerprintFrom(ws, RECIPE_VERSION);
-    // The counter of the last run is lost; the wall clock is above anything it reached (Session.seqStart).
-    const session = new Session({ transport, keys: matchIdentity().keys, log: saved, seqStart: Date.now() });
-    const engine = ClientMatch.adopt(session, { participant: meInfo, game, throwdownCode: rec.code, companionVersion: opts.appVersion.slice(0, 32), ...clientLink });
-    const controller = makeController(engine, undefined, true);
-    const offs: (() => void)[] = [];
-    const answer = new Promise<{ ok: true } | { ok: false; code: string | null }>((resolve) => {
-      offs.push(engine.on('reconnected', () => resolve({ ok: true })));
-      offs.push(engine.on('reconnectRejected', (r) => resolve({ ok: false, code: r.code })));
-    });
-    const cleanup = async (): Promise<void> => {
-      await controller.close();
-      engine.close();
-      transport.close();
-    };
-    let r: Awaited<typeof answer>;
+    const ballEnds = ballEndsFrom(ws).ready;
+    let out: JoinOutcome;
     try {
-      // Through ArcAid the room is joined first; either way the first frame is RECONNECT from the saved log's head.
-      if (parsed.via === 'relay') await connect().catch((e: unknown) => Promise.reject(failure(e)));
-      engine.relinkTo(hostId, parsed.via === 'direct' ? { endpoint: parsed.url } : {});
-      r = await withTimeout(answer, opts.rejoinTimeoutMs ?? REJOIN_TIMEOUT_MS, `The host of ${rec.code} did not answer`);
+      out = await tryJoin(parsed, rec.playerId, rec.displayName, rig.rig, game, ballEnds, rec);
     } catch (e) {
-      await cleanup();
-      throw new Error(`${describeError(e)}. The match may be over, or its host away for the moment: Rejoin tries again, Forget it drops it.`, { cause: e });
-    } finally {
-      for (const off of offs) off();
+      throw new Error(`${e instanceof Error ? e.message : String(e)} The lobby may be over, or its PC away for the moment: Rejoin tries again, Forget it drops it.`, { cause: e });
     }
-    if (!r.ok) {
-      await cleanup();
-      forget(`the host refused the reconnect (${r.code ?? '?'})`);
-      throw new Error(`The host did not take this PC back into the match ${rec.code}${r.code ? ` (${r.code.replace(/_/g, ' ')})` : ''}.`);
+    if (out.kind === 'refused') {
+      // Another protocol version on the lobby's PC: the saved match is kept (the same version on both PCs, and Rejoin works again).
+      if (out.refuse.code === 'protocol_version') throw new Error(out.refuse.message);
+      forget(`the lobby did not take this PC back (${out.refuse.code})`);
+      throw new Error(`The lobby ${rec.code} did not take this PC back: ${out.refuse.message}`);
     }
-    const a = clientActive(parsed, { transport, engine, controller }, rig, game, ballEndsFrom(ws).ready, ws, rec.invite ?? '', rec);
-    return a;
+    const { engine, controller, transport } = out;
+    // The open match's log follows the answer; what the saved match needs is decided once all of it is here.
+    if (engine.lobby()?.match && !engine.holdsOpenLog) {
+      const all = new Promise<void>((resolve) => {
+        const off = engine.on('caughtUp', () => {
+          off();
+          resolve();
+        });
+      });
+      try {
+        await withTimeout(all, opts.rejoinTimeoutMs ?? REJOIN_TIMEOUT_MS, `The log of the match that is open in ${rec.code} did not arrive`);
+      } catch (e) {
+        await controller.close();
+        engine.close();
+        transport.close();
+        throw new Error(`${describeError(e)}. Rejoin tries again, Forget it drops it.`, { cause: e });
+      }
+    }
+    // A15's share (the table's backlog, what the table owes) is a player's, of the match that is still the open one.
+    const same = st0.matchId !== null && engine.state.matchId === st0.matchId && st0.participants.some((x) => x.playerId === rec.playerId);
+    if (same) {
+      controller.takeOwed(rec.owed ?? []);
+      // A turn of this player that the lobby's PC passed while Castcade was closed: after the saved log's last entry.
+      for (const e of engine.log.entries().slice(rec.log.length)) {
+        const m = e.message;
+        if (m?.type === 'TURN_PASS' && m.payload.player === rec.playerId) controller.passedWhileAway(m.payload);
+      }
+    }
+    const a = clientActive(parsed, out, rig, game, ballEnds, ws, rec.invite ?? '', same ? rec : null);
+    // A PC that was in this match is no newcomer: its video and state stream connections are made again at once,
+    // with everyone, also in the middle of its own ball (the others were watching it), and not at that ball's end.
+    if (same) a.mediaPeers = new Set(controller.status().participants.map((x) => x.playerId));
+    return { a, same };
   };
 
-  const rejoinHost = async (rec: ResumeRecord, saved: MatchLog, st0: MatchState, rig: RigDecision): Promise<Active> => {
+  /**
+   * The lobby's PC whose Castcade started again (A15; A17 step 8, design 11.8). It opens the SAME code again (its
+   * room at ArcAid, its port), and with `restore` it is the same lobby: its members with their places kept, their
+   * choices and keys, the picked table, the number of the next match, and the open match from its log, with the
+   * counters it must not fall behind. The members who are waiting for this PC find it and come back by themselves,
+   * as after any absence of the lobby's PC; nobody was told that anybody left.
+   *
+   * Without `restore` (the record's own part did not read, or failed its check, or does not fit its log) the code is
+   * opened again as a new, empty lobby: the members are answered that their place is gone and join again by
+   * themselves as newcomers, and a match that was open is lost, which every panel says. Its matches go on counting
+   * after the lost one, so no match id is used twice.
+   */
+  const reopenLobby = async (rec: ResumeRecord, st0: MatchState, rig: RigDecision, restore: { lobby: SavedLobbyPart; log: MatchLog } | null): Promise<Active> => {
     const me = rec.playerId;
     const code = rec.code;
     const creds = rec.relay ? (opts.relay?.() ?? null) : null;
@@ -2448,28 +3752,40 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         await relay.connect();
         await relay.host(code);
       } catch (e) {
-        relay.close();
-        relay = null;
-        relayNote = relayHostNote(e instanceof RelayError ? e.code : null);
-        log.warn(`match: ArcAid is not carrying ${code} again (${describeError(e)})`);
+        if (e instanceof RelayError && (e.code === 'code_in_use' || e.code === 'refused')) {
+          // Another device holds the code now: asking again changes nothing.
+          relay.close();
+          relay = null;
+          relayNote = relayHostNote(e.code);
+          log.warn(`match: ArcAid is not carrying ${code} again (${describeError(e)})`);
+        } else {
+          // The review of PR 138: ArcAid did not answer in this moment (a deploy, the network not up yet), or could
+          // not read this device just now. The lobby is ArcAid's still: the room is asked for until it is there, as
+          // a lobby's PC that is cut off asks, and the engine stays cut off meanwhile (`watchRelay`).
+          relay.reclaim(code);
+          relayNote = RELAY_WAITING;
+          log.warn(`match: ArcAid is not carrying ${code} yet (${e instanceof Error ? e.message : String(e)}); Castcade keeps asking for its room`);
+        }
       }
     }
-    if (!relay && rec.port === null) throw new Error(`ArcAid is not carrying the match ${code} again, and it had no port of its own: the other players cannot come back to it`);
+    if (!relay && rec.port === null) throw new Error(`ArcAid is not carrying the lobby ${code} again, and it had no port of its own: the others cannot come back to it`);
     const listener = new WsPeerTransport({ localId: me });
     const transport = new CompositeTransport(relay ? [listener, relay] : [listener]);
-    const session = new Session({ transport, keys: matchIdentity().keys, log: saved, seqStart: Date.now() });
-    const others = st0.participants.map((p) => p.playerId).filter((id) => id !== me);
+    const ws = witness.status();
+    const game = gameFingerprintFrom(ws, RECIPE_VERSION);
+    const ballEnds = ballEndsFrom(ws).ready;
+    const ballsPerGame = restore ? restore.lobby.ballsPerGame : st0.ballsPerGame > 0 ? st0.ballsPerGame : settings.ballsPerGame;
+    const lost = Number(/-(\d+)$/.exec(st0.matchId ?? rec.matchId ?? '')?.[1] ?? '0');
     let engine: HostMatch;
     try {
-      // Nobody is on a link yet: each player comes back with RECONNECT, as after any drop.
-      engine = HostMatch.resumeFromLog(saved, { transport, keys: session.keys, session, gone: others });
+      engine = lobbyHost(transport, code, ballsPerGame, participant(me, rec.displayName, rig.rig), game, ballEnds, (Number.isSafeInteger(lost) ? lost : 0) + 1, restore);
     } catch (e) {
       transport.close();
       throw e;
     }
-    const controller = makeController(engine, st0.ballsPerGame, true);
-    const ws = witness.status();
-    const game = gameFingerprintFrom(ws, RECIPE_VERSION);
+    // This PC plays in the open match: what its own table said while Castcade was closed is reported as A15 has it.
+    const plays = restore !== null && st0.matchId !== null && st0.participants.some((x) => x.playerId === me);
+    const controller = makeController(engine, ballsPerGame, true, plays ? (rec.owed ?? []) : []);
     const a: Active = {
       role: 'host',
       transport,
@@ -2493,7 +3809,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       ...rigOf(rig),
       witnessRig: rigFrom(ws),
       switching: false,
-      sent: { rig: rig.rig, game, ballEnds: ballEndsFrom(ws).ready },
+      sent: { rig: rig.rig, game, ballEnds },
       lobbyKey: lobbyKey(ws),
       refreshing: false,
       refreshAgain: false,
@@ -2502,17 +3818,16 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       video: null,
       theater: THEATER_ON_RING,
       theaterTimer: null,
-      ...tracking(null, rec),
+      ...tracking(null, plays ? rec : null),
+      relayWanted: rec.relay,
     };
+    // A lobby that is opened again empty while ArcAid is not carrying it yet is a lobby whose PC is cut off, too.
+    if (relay && relay.state !== 'registered' && !restore) engine.setCutOff(true);
     a.offs.push(transport.onError((err, peer) => log.warn(`match: socket ${peer ?? '(new)'}: ${err.message}`)));
-    if (relay) {
-      const room = relay;
-      a.offs.push(room.onState(() => (active === a ? emit() : undefined)));
-      // The room may be a new one, which knows no seats yet: the players get a minute to come back before it is locked again.
-      const t = setTimeout(() => void room.lock().catch((e: unknown) => log.warn(`match: ArcAid did not lock ${code} against new joins: ${describeError(e)}`)), REHOST_LOCK_MS);
-      (t as { unref?: () => void }).unref?.();
-      a.offs.push(() => clearTimeout(t));
-    }
+    watchLobby(a, engine);
+    watchPlayers(a, engine);
+    // A17 step 7: the room is never locked (it was, a minute after a rehost): a lobby takes people in every phase.
+    if (relay) watchRelay(a, engine, relay);
     if (rec.port !== null) {
       try {
         await listener.listen(rec.port, opts.listenAddress ?? '0.0.0.0');
@@ -2521,56 +3836,114 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
           await controller.close();
           engine.close();
           transport.close();
-          throw new Error(`Could not listen on port ${rec.port} again (${describeError(e)}): the other players cannot come back`, { cause: e });
+          throw new Error(`Could not listen on port ${rec.port} again (${describeError(e)}): the others cannot come back`, { cause: e });
         }
         a.port = null;
         log.warn(`match: could not listen on port ${rec.port} again (${describeError(e)}); ${code} goes through ArcAid only`);
       }
     }
+    // (What the room did during the listen above is caught up once this lobby is the active one: `relayCatchUp`.)
     return a;
   };
 
   const rejoin = (): Promise<MatchStatus> =>
     guard(async () => {
-      if (active) return fail(new Error('Leave the current match first'));
+      if (active) return fail(new Error('Leave the lobby you are in first'));
       const rec = pendingResume;
       if (!rec || resumeFreshness(rec, Date.now()) === 'stale') {
         forget('it is too old to go back to');
-        return fail(new Error('There is no match to rejoin any more'));
+        return fail(new Error('There is no lobby to go back into any more'));
       }
-      await endBench('a match is rejoined');
+      await endBench('a lobby is gone back into');
       lastError = null;
-      let saved: MatchLog;
-      let st0: MatchState;
-      try {
-        saved = MatchLog.fromJSON(rec.log);
-        st0 = replayLog(saved);
-      } catch (e) {
-        forget('its saved log does not read');
-        return fail(e);
+      // A17 step 8 (design 11.8): the record is this PC's when it was saved with this PC's match key (a watcher and a
+      // lobby's PC that only watched are in no roster, so the roster cannot say it).
+      if (rec.publicKey !== matchIdentity().keys.publicKeyB64) {
+        forget("it was not saved with this PC's match keys");
+        return fail(new Error("The saved lobby was not saved with this PC's match keys: it cannot be gone back into"));
       }
-      const meInfo = st0.participants.find((p) => p.playerId === rec.playerId);
-      if (!meInfo || meInfo.publicKey !== matchIdentity().keys.publicKeyB64 || st0.phase === 'lobby') {
-        forget("it was not played with this PC's match keys");
-        return fail(new Error("The saved match was not played with this PC's match keys: it cannot be rejoined"));
+      // The open match as the record has it. A log that does not replay, or is not the match the record names, is no
+      // match to go back into: a member is then simply back in the lobby, and the lobby's PC has no lobby to restore.
+      let st0: MatchState = initialState();
+      let saved: MatchLog | null = null;
+      let unreadable: string | null = null;
+      if (rec.matchId !== null) {
+        try {
+          saved = MatchLog.fromJSON(rec.log);
+          st0 = replayLog(saved);
+          if (st0.matchId !== rec.matchId || st0.phase === 'lobby') throw new Error(`the saved log is not the log of ${rec.matchId}`);
+        } catch (e) {
+          unreadable = describeError(e);
+          log.warn(`match: the saved log of ${rec.matchId} does not read (${unreadable}); it is not used`);
+          st0 = initialState();
+          saved = null;
+        }
       }
       connecting = true;
       emit();
       try {
         const rig = await decide();
-        const a = rec.role === 'client' ? await rejoinClient(rec, saved, st0, meInfo, rig) : await rejoinHost(rec, saved, st0, rig);
+        let a: Active;
+        let same = false;
+        /** The lobby's PC: `restored`, or opened again empty and why. */
+        let lost: string | null = null;
+        if (rec.role === 'client') ({ a, same } = await rejoinClient(rec, st0, rig));
+        else {
+          const part = unreadable === null ? rec.lobby : null;
+          if (part === null) lost = rec.damaged || rec.lobby === null ? 'the saved lobby did not read in full' : 'the saved log of its match did not read';
+          try {
+            a = await reopenLobby(rec, st0, rig, part ? { lobby: part, log: saved ?? new MatchLog() } : null);
+          } catch (e) {
+            if (part === null) throw e;
+            // What was saved does not fit together (the engine says how): the code is opened again, empty.
+            lost = 'the saved lobby and its match do not fit together';
+            log.warn(`match: the lobby ${rec.code} could not be restored (${describeError(e)}); opening it again empty`);
+            a = await reopenLobby(rec, st0, rig, null);
+          }
+        }
         pendingResume = null;
         pendingBacklog = null;
         pendingExit = false;
         active = a;
         connecting = false;
+        // The step 9 last pass: what ArcAid's room did while the lobby was being opened again (`watchRelay`).
+        relayCatchUp.get(a)?.();
         followLog(a);
-        if (a.engine instanceof ClientMatch) watchHost(a, a.engine);
-        log.info(`match: back in ${rec.code} as ${rec.role === 'host' ? 'its host; waiting for the players to come back' : 'a player'} (${saved.length} log entries saved, ${a.engine.log.length} now)`);
+        if (a.engine instanceof ClientMatch) {
+          watchLobby(a, a.engine);
+          watchHost(a, a.engine);
+        }
         await openPanel(a);
-        // A host: the outstanding grant goes out again (or the result, between games), as after a transfer.
-        if (a.engine instanceof HostMatch) a.engine.runAfterRestart();
-        tryReconcile(a);
+        if (a.engine instanceof HostMatch && lost === null) {
+          // The same lobby: this PC can be reached again, so its absence ends here (its own grant is issued again,
+          // every member has the grace and the time to come back before a clock counts).
+          // The review of PR 138: not while ArcAid does not carry the room yet: until then this PC is still away for
+          // everyone who comes through it (`watchRelay` ends that when the room is registered).
+          const waiting = a.relay !== null && a.relay.state !== 'registered';
+          a.engine.runAfterRestore({ reachable: !waiting });
+          const open = a.engine.openMatch();
+          const said = reopenedSentence(rec.code, open ? open.state : null, waiting);
+          a.controller.notify(said);
+          log.info(`match: ${said} (${rec.log.length} log entries saved; ${a.engine.members().length - 1} place(s) kept)`);
+          tryReconcile(a);
+        } else if (a.engine instanceof HostMatch) {
+          const said = `Castcade on this PC started again, and ${lost}: the lobby ${rec.code} is open again, empty, under its code. The others come back by themselves as newcomers${rec.matchId ? '; the match that was being played is lost' : ''}.`;
+          lastError = said;
+          a.controller.notify(said);
+          log.warn(`match: ${said}`);
+        } else if (same) {
+          log.info(`match: back in the lobby ${rec.code} and in ${st0.matchId ?? 'its match'} (${rec.log.length} log entries saved, ${a.engine.log.length} now)`);
+          tryReconcile(a);
+        } else if (rec.matchId !== null && a.engine.state.matchId !== rec.matchId) {
+          const said = `You are back in the lobby ${rec.code}. The match that was open when Castcade closed is no longer the open one.`;
+          lastError = said;
+          a.controller.notify(said);
+          log.info(`match: ${said}`);
+        } else {
+          log.info(`match: back in the lobby ${rec.code}${a.engine.state.matchId ? `; ${a.engine.state.matchId} is open, and this PC watches it` : ''}`);
+        }
+        saveResume(a);
+        checkLobby(a, witness.status());
         emit();
         return status();
       } catch (e) {
@@ -2579,16 +3952,55 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       }
     });
 
-  /** Close everything a match holds: the overlay, the controller (the panel, the media), the engine(s), the sockets. A15: `keep`: its saved record stays. */
-  const teardown = async (a: Active, keep = false): Promise<void> => {
-    if (active === a) active = null;
-    if (a.heartbeat) clearInterval(a.heartbeat);
-    a.heartbeat = null;
-    a.engine.session.onCommit = null;
-    if (keep) a.recordOff = true;
-    else dropRecord(a);
+  /**
+   * A17 step 2 (2026-11-24, alpha-match.md §11.6): **what ends with a match.** The saved match (A15: its record, the
+   * hook that saves every log entry, the record's heartbeat; `keep`: the record stays for a restart), a client's
+   * linger after the series (A10), what the table said that this match's log never answered and the journal mark
+   * that goes with it (`TableBacklog`), this rig's table sound put back (D2.8, D2.10), and the controller's share
+   * (`releaseMatch`: the ball end that waits for its score, an initials hold, the turn lock, "this rig sends").
+   *
+   * Nothing the lobby holds is touched: the panel page and its voice peers, the native video mesh, the state stream's
+   * tunnels, the overlay, the in-game menu and its global keys, the lobby's peek timer, the engine and its listeners,
+   * the transport, the ArcAid room, the router port. Synchronous, and a second call changes nothing.
+   *
+   * Until the lobby outlives a match (step 7) it never runs alone: `teardown` is its one caller, with `closeLobbyHalf`
+   * right behind it. Against the one function this was, two things happen a moment sooner, with no `await` in
+   * between: the table sound is put back, and the lock goes, before the video mesh and the tunnels are closed and
+   * not after. With `active` already null the unlock is the plain one either way (`lock.unlock`).
+   */
+  const endMatchHalf = (a: Active, _keep = false): void => {
+    // A17 step 8: the record is the lobby's now: a match that ends leaves it (it is written again, with no match
+    // open, by whoever called this); `endRecord` ends it, with the lobby.
     if (a.endTimer) clearTimeout(a.endTimer);
     a.endTimer = null;
+    // A17 step 4: a pause is a match's.
+    if (a.upAwayTimer) clearTimeout(a.upAwayTimer);
+    a.upAwayTimer = null;
+    a.upSeenAt = null;
+    a.upKept = false;
+    // A15: the table's events of this match, and where its journal stood, are no other match's.
+    a.backlog = new TableBacklog<GameEvent>(null, false);
+    a.mark = null;
+    a.hold = false;
+    a.reconcileDue = false;
+    a.savedTurnEnds = 0;
+    a.savedEndSeqs = [];
+    a.pendingExit = false;
+    // D2.8: this rig's table sounds again at once (the emit that follows would do it too, a moment later).
+    opts.tableAudio?.apply({ mutePid: null, tapPid: null });
+    opts.tableAudio?.unlevel();
+    tableLogged = '';
+    a.controller.releaseMatch();
+  };
+
+  /**
+   * A17 step 2 (2026-11-24, alpha-match.md §11.6): **what ends with the lobby**, which until step 7 is every time a
+   * match ends: the listeners on the engine and the transport, the in-game menu and its global keys, the lobby's peek
+   * timer, the native video mesh, the state stream's tunnels, the overlay, the controller (its `close()` detaches the
+   * media: the panel page and every voice connection), the engine(s), the transport, the ArcAid room and the router
+   * port. A15: `keep`: a host that closes to come straight back does not tell ArcAid it left.
+   */
+  const closeLobbyHalf = async (a: Active, keep = false): Promise<void> => {
     for (const off of a.offs) off();
     unregisterKeys();
     closeMenu();
@@ -2603,17 +4015,15 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     const stream = a.stream;
     a.stream = null;
     await stream?.close().catch((e: unknown) => log.warn(`stream3d: close: ${describeError(e)}`));
-    // D2.8: this rig's table sounds again at once (the emit that follows would do it too, a moment later).
-    opts.tableAudio?.apply({ mutePid: null, tapPid: null });
-    opts.tableAudio?.unlevel();
-    tableLogged = '';
     if (a.overlay) await a.overlay.stop().catch((e: unknown) => log.warn(`match: overlay stop: ${describeError(e)}`));
     const roles = new Set<{ close(): void }>([a.engine, a.controller.currentRole as HostMatch | ClientMatch]);
     await a.controller.close();
-    for (const r of roles) r.close();
-    // A15: a host that closes to come straight back does not tell ArcAid it left: the room would end for its players.
-    if (keep) a.relay?.abandon();
-    a.transport.close();
+    if (!a.linksClosed) {
+      for (const r of roles) r.close();
+      // A15: a host that closes to come straight back does not tell ArcAid it left: the room would end for its players.
+      if (keep) a.relay?.abandon();
+      a.transport.close();
+    }
     // D10.8: the router gets its port back (a lease would drop it within the hour anyway).
     if (a.renewTimer) clearInterval(a.renewTimer);
     a.renewTimer = null;
@@ -2625,73 +4035,289 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     }
   };
 
+  /**
+   * Close everything a match holds: the overlay, the controller (the panel, the media), the engine(s), the sockets. A15:
+   * `keep`: its saved record stays. A17 step 2: in two halves, what ends with a match and what ends with the lobby;
+   * every caller still means both (Leave, the end of a client's series, a refused reconnect, a host that cannot
+   * listen, quit), so both run, one behind the other.
+   */
+  /**
+   * A17 step 8: the record ends when the lobby ends for this PC: its heartbeat, the hook that saves every log entry,
+   * and the file itself. `keep`: Castcade is closing and will be back (an update, or the lobby PC's own quit): the
+   * file stays as it was last written, and nothing writes to it any more.
+   */
+  const endRecord = (a: Active, keep: boolean): void => {
+    if (a.heartbeat) clearInterval(a.heartbeat);
+    a.heartbeat = null;
+    a.engine.session.onCommit = null;
+    if (keep) a.recordOff = true;
+    else dropRecord(a);
+  };
+  /**
+   * `keep` (A17 step 8, the review of PR 138): Castcade is closing and the lobby is kept. The order is the point:
+   * (1) the engine stops taking and sending frames, in this same synchronous run; (2) the last record is written,
+   * so nothing the engine accepted, echoed or granted is missing from what it is restored from; (3) only then the
+   * rest closes (the panel, the overlay, the connections: seconds of awaits, during which nothing arbitrates any
+   * more). `tell`: the lobby PC's owner quit: the others are told so before its links go (`HELLO_ACK.hostQuit`).
+   */
+  /**
+   * The members of the lobby other than this PC: the people a quit of the lobby's PC is about. The final review
+   * (2026-11-28, finding 2): everybody who has a place, present (`here`) or away (`away`). It was the present ones
+   * alone, read at the moment of the stop: a friend whose link was down in that moment (their PC restarting, a
+   * router) made "Keep the lobby" close the lobby for everyone, and with them away there was no question at all.
+   */
+  const otherMembers = (a: Active): { here: string[]; away: string[] } => {
+    const others = (a.controller.status().lobby?.members ?? []).filter((m) => !m.me);
+    return { here: others.filter((m) => !m.flags.includes('away')).map((m) => m.name), away: others.filter((m) => m.flags.includes('away')).map((m) => m.name) };
+  };
+  const teardown = async (a: Active, keep = false, mark: 'update' | 'quit' | null = null, tell = false): Promise<void> => {
+    if (keep && active === a) {
+      if (tell && a.engine instanceof HostMatch) {
+        try {
+          a.engine.sayKept(hostWaitMs);
+        } catch (e) {
+          log.warn(`match: the others were not told that the lobby is kept: ${describeError(e)}`);
+        }
+      }
+      for (const r of new Set<{ close(): void }>([a.engine, a.controller.currentRole as HostMatch | ClientMatch])) {
+        try {
+          r.close();
+        } catch (e) {
+          log.warn(`match: closing the engine: ${describeError(e)}`);
+        }
+      }
+      const saved = saveResume(a, mark);
+      // The final review (2026-11-28): a kept quit whose last record could not be written. What is on disk then is the
+      // record of a minute ago, which says nothing of a quit: a start within the minute would go back into the lobby
+      // by itself, microphone on, although its owner closed Castcade. It is tried once more; when that fails too the
+      // record is taken away: the lobby is lost for this PC, and never entered again without being asked.
+      if (mark === 'quit' && !saved && !saveResume(a, mark)) {
+        log.warn(`match: the lobby ${a.code} was to be kept, and its record could not be written (${resumeStore.writeError() ?? 'unknown error'}): the record is removed, so that the next start does not go back into it by itself`);
+        resumeStore.remove();
+      }
+      active = null;
+      endRecord(a, true);
+      // The last word leaves the sockets; a host that closes to come back does not tell ArcAid it left (A15).
+      if (tell) await new Promise<void>((r) => setTimeout(r, LEAVE_FLUSH_MS));
+      a.relay?.abandon();
+      a.transport.close();
+      a.linksClosed = true;
+    } else {
+      if (active === a) active = null;
+      endRecord(a, keep);
+    }
+    endMatchHalf(a, keep);
+    await closeLobbyHalf(a, keep);
+  };
+
+  /**
+   * A17 step 7 (design 11.2): Leave lobby, or on the lobby's PC Close lobby. A member says LEAVE_LOBBY before its link
+   * closes (the handoff's item 12): the lobby's PC then gives up, in this player's name, a game they are playing,
+   * takes the row out and frees the place at once; a link that just closed would be a drop, with the place kept for
+   * minutes and the game waiting at this player's turn. The lobby's PC ends a game that is being played for
+   * everyone, tells every member the lobby is closed, and tears down. Either way the voice, the video and the state
+   * stream to and from this PC close here: nobody's microphone is sent once they have left.
+   */
   const leave = (): Promise<MatchStatus> =>
     guard(async () => {
       const a = active;
       if (!a) return status();
-      a.controller.leave('left the match');
-      // A10: the host leaving between games ends the series for everyone (MATCH_END), rather than leaving them to find
-      // out from a dead socket.
-      if (a.controller.currentRole instanceof HostMatch && a.controller.endMatch()) log.info(`match: ${a.code} ended by the host after ${a.controller.status().series.game} game(s)`);
-      await new Promise<void>((r) => setTimeout(r, LEAVE_FLUSH_MS));
-      await teardown(a);
+      const role = a.engine;
+      if (role instanceof HostMatch) {
+        const who = nameIn(a.controller.status(), role.localId);
+        log.info(`match: closing the lobby ${a.code} for everyone`);
+        await closeLobby(a, `${who} closed the lobby`);
+      } else {
+        try {
+          if (role.leave()) log.info(`match: leaving the lobby ${a.code}: its PC is told, and the place is free at once`);
+        } catch (e) {
+          log.warn(`match: the lobby's PC was not told that this PC leaves: ${describeError(e)}`);
+        }
+        // LEAVE_LOBBY leaves the socket before the transport is torn down.
+        await new Promise<void>((r) => setTimeout(r, LEAVE_FLUSH_MS));
+        await teardown(a);
+      }
       lastError = null;
-      log.info(`match: left ${a.code}`);
+      log.info(`match: left the lobby ${a.code}`);
       emit();
       return status();
     });
+
+  /** A17 step 3 (`lobbyTable().joined`): a number for each engine object this PC has been in a lobby with. */
+  const stays = new WeakMap<object, number>();
+  let lastStay = 0;
 
   const api: MatchHost = {
     host,
     join: joinMatch,
     async start(o) {
       const a = active;
-      if (!a) return fail(new Error('No match: host one first'));
-      const r = a.controller.currentRole;
-      if (!(r instanceof HostMatch)) return fail(new Error('Only the host starts the match'));
-      if (r.state.phase !== 'lobby') {
-        // A10: between games this is Next game.
-        const why = a.controller.status().series.nextGameBlocker;
-        if (why !== null || !a.controller.nextGame()) return fail(new Error(`No next game now: ${why ?? 'the host could not start it'}`));
-        lastError = null;
-        log.info(`match: ${a.code} game ${r.state.gameNumber} started from the Match tab`);
-        emit();
-        return status();
+      if (!a) return fail(new Error('No lobby: open or join one first'));
+      const st = a.controller.status();
+      // The review of PR 136: with the lobby's PC away the request would go into a link that is down and say nothing.
+      if (st.lobby?.hostAway) return fail(new Error(LOBBY_PC_AWAY));
+      // A13: a table that cannot report ball ends holds its turn for ever: whoever asks confirms such a start. (The
+      // lobby's PC makes the same check and answers with its own sentence; this one is at hand on every PC.)
+      // The review of PR 136: a new match is checked for ITS players (everyone set to Play), not the next game's.
+      const warnings = o?.newMatch === true ? (st.lobby?.newMatch?.warnings ?? st.startWarnings) : st.startWarnings;
+      if (warnings.length > 0 && o?.anyway !== true && !st.lobby?.start) {
+        // A17 step 4: the player concerned ends such a ball themselves (End my ball); Pass the turn stays the lobby PC's.
+        return fail(new Error(`${warnings.join(' · ')}. Start anyway to play it by hand: that player ends each ball with End my ball (the in-game menu or the Match tab), or the lobby's PC ends it with Pass the turn.`));
       }
-      // A13: a table that cannot report ball ends holds its first turn for ever: the host confirms such a start.
-      const warnings = a.controller.status().startWarnings;
-      if (warnings.length > 0 && o?.anyway !== true) {
-        return fail(new Error(`${warnings.join(' · ')}. Start anyway to play it by hand: Pass the turn ends such a ball.`));
+      // A start that is not there any more cannot be started "without what it waits for": that press was about it.
+      if (o?.now === true && !st.lobby?.start) return fail(new Error('That start is no longer announced: nothing was started.'));
+      // The review of PR 138: "Start without Dana" is about Dana: when the start waits for somebody (or something)
+      // else by now, the press does nothing.
+      if (o?.now === true && o.without != null && o.without !== st.lobby?.startWithout) {
+        return fail(new Error(`Nothing was started: the start no longer waits for what that press was about${st.lobby?.startWithout ? ` (it is "${st.lobby.startWithout}" now)` : ''}.`));
       }
-      // I11.4.9: the first turn starts in 3D: while a PC's 3D connection is still being made the first press holds the
-      // start until it is settled (each PC stops waiting by itself after its own limit); a second press starts now.
-      if (o?.anyway !== true && o?.held !== true && a.controller.holdTabStart()) {
-        lastError = null;
-        emit();
-        return status();
+      const no = a.controller.requestStart({ anyway: o?.anyway === true, newMatch: o?.newMatch === true, now: o?.now === true });
+      if (no !== null) return fail(new Error(no));
+      lastError = null;
+      // I11.4.18: a press on the Match tab left Castcade's window the active one, and whoever asks goes first when
+      // they play: the table gets the foreground back while the start counts down. The press is the player's own.
+      if (st.lobby?.stance === 'play') {
+        pressFocusAt = clock();
+        pressStartSeen = false;
+        giveVpxFocus('Start match was pressed');
       }
+      log.info(`match: ${a.code}: a start was asked for on this PC${o?.newMatch ? ' (a new match)' : ''}${o?.now ? ' (now: without what the announced start waits for)' : ''}`);
+      if (warnings.length > 0 && o?.anyway === true) log.warn(`match: asked to start anyway (confirmed on this PC): ${warnings.join(' · ')}`);
+      emit();
+      return status();
+    },
+    async cancelStart() {
+      const a = active;
+      if (!a) return fail(new Error('No lobby'));
+      if (a.controller.status().lobby?.hostAway) return fail(new Error(LOBBY_PC_AWAY));
+      const no = a.controller.cancelStart();
+      if (no !== null) return fail(new Error(no));
+      lastError = null;
+      log.info(`match: ${a.code}: the announced start was cancelled on this PC`);
+      emit();
+      return status();
+    },
+    async endMatch(o) {
+      const a = active;
+      if (!a) return fail(new Error('No lobby'));
+      const l = a.controller.status().lobby;
+      // The review of PR 136: what is ended is what the press said, and only while that is still what there is.
+      const everyone = o?.everyone === true;
+      if (l?.hostAway) return fail(new Error(LOBBY_PC_AWAY));
+      if (!l?.match) return fail(new Error('No match is open: nothing was ended.'));
+      if (o?.about != null && o.about !== l.gameKey) return fail(new Error(everyone ? 'The match was not ended: the game that press was about is over.' : 'The match was not ended: a game has begun since that press.'));
+      if (everyone) {
+        if (!(a.engine instanceof HostMatch)) return fail(new Error("During a game only the lobby's PC ends the match."));
+        if (l.end !== 'everyone') return fail(new Error('The match was not ended for everyone: no game is being played now. Between games it is End match.'));
+      } else if (l.end !== 'match') {
+        return fail(new Error(l.match.state === 'game' ? "The match was not ended: a game is being played. The lobby's PC can end it for everyone." : 'The match cannot be ended now.'));
+      }
+      const no = a.controller.requestEnd();
+      if (no !== null) return fail(new Error(no));
+      lastError = null;
+      log.info(everyone ? `match: ${a.code}: End match for everyone, on the lobby's PC: the game being played gets no result` : `match: ${a.code}: End match was asked for on this PC`);
+      emit();
+      return status();
+    },
+    setStance(stance) {
+      const next: Stance = stance === 'watch' ? 'watch' : 'play';
+      if (settings.stance !== next) {
+        saveSettings(patchMatchSettings(settings, { stance: next }));
+        log.info(`match: this person is set to ${next === 'play' ? 'Play' : 'Watch'} (it counts from the next start${active ? '' : ', and is said at the next join'})`);
+      }
+      active?.controller.setStance(next);
+      emit();
+      return status();
+    },
+    async giveUp(o) {
+      const a = active;
+      if (!a) return fail(new Error('No lobby'));
+      if (o?.about != null && o.about !== a.controller.status().lobby?.gameKey) return fail(new Error('Nothing was given up: the game that press was about is over.'));
+      if (!a.controller.giveUp()) return fail(new Error('You are not playing a game now'));
+      lastError = null;
+      log.info(`match: ${a.code}: this player gave up the game; they stay in the lobby and watch`);
+      emit();
+      return status();
+    },
+    async answerAway(answer, o) {
+      const a = active;
+      if (!a) return fail(new Error('No lobby'));
+      const r = a.engine;
+      const q = status().lobby?.awayQuestion ?? null;
+      if (!(r instanceof HostMatch) || !q) return fail(new Error('Nobody is asked about now: they came back, or the game went on another way'));
+      if (o?.player != null && o.player !== q.player) return fail(new Error(`That answer was about another player: the question is about ${q.name} now.`));
+      // "End their ball" ends it at the score as it stands (that player's last STATE), not at their last logged score.
+      let ok: boolean;
       try {
-        r.start();
+        ok = r.answerAway(q.player, answer, answer === 'end_ball' ? q.score : undefined);
       } catch (e) {
         return fail(e);
       }
+      if (!ok) return fail(new Error(`The question about ${q.name} is no longer open: they came back, or the game went on another way`));
       lastError = null;
-      // D10.8: the first game is on: ArcAid now refuses a device that was never in the room (the players may come back).
-      a.relay?.lock().catch((e: unknown) => log.warn(`match: ArcAid did not lock ${a.code} against new joins: ${describeError(e)}`));
-      log.info(`match: ${a.code} started with ${r.state.participants.map((p) => p.displayName).join(', ')}`);
-      if (warnings.length > 0) log.warn(`match: started anyway (the host confirmed): ${warnings.join(' · ')}`);
+      log.info(`match: ${a.code}: ${q.name} is away at their own turn and still seen playing: ${answer === 'wait' ? 'keep waiting' : answer === 'end_ball' ? `their ball is ended at ${q.score}` : 'the game goes on without them'} (answered on this PC)`);
       emit();
       return status();
+    },
+    async playOnWithout(o) {
+      const a = active;
+      if (!a) return fail(new Error('No lobby'));
+      const r = a.engine;
+      const w = r instanceof HostMatch ? r.waitedFor() : null;
+      if (!(r instanceof HostMatch) || !w) return fail(new Error('The game is not waiting for anybody'));
+      const who = nameIn(a.controller.status(), w.player);
+      if (o?.player != null && o.player !== w.player) return fail(new Error(`That press was about another player: the game waits for ${who} now.`));
+      let ok: boolean;
+      try {
+        ok = r.playOnWithout(w.player);
+      } catch (e) {
+        return fail(e);
+      }
+      if (!ok) return fail(new Error(`The game is not waiting for ${who} any more`));
+      lastError = null;
+      log.info(`match: ${a.code}: Play on without ${who}: they are out of this game, and the game goes on`);
+      emit();
+      return status();
+    },
+    setNoCopy(noCopy) {
+      const a = active;
+      if (!a || (a.noCopySaid ?? false) === noCopy) return;
+      const r = a.engine;
+      try {
+        if (r instanceof HostMatch) r.updateLocal({ noCopy });
+        else if (!r.updateParticipant({ noCopy }) && !r.isJoined) return;
+      } catch (e) {
+        log.warn(`match: the lobby was not told whether this PC has the table: ${describeError(e)}`);
+        return;
+      }
+      a.noCopySaid = noCopy;
+      log.info(noCopy ? "match: this PC has no copy of the lobby's table: the lobby is told, and this person is not counted for a start (they can watch)" : "match: this PC has a copy of the lobby's table again: the lobby is told");
+      emit();
     },
     async passTurn() {
       const a = active;
       if (!a) return fail(new Error('No match'));
       const r = a.controller.currentRole;
-      if (!(r instanceof HostMatch)) return fail(new Error('Only the host passes the turn'));
+      if (!(r instanceof HostMatch)) return fail(new Error("Only the lobby's PC passes the turn"));
       const p = a.controller.status().pass;
-      if (!p || !a.controller.passTurn()) return fail(new Error(`The turn cannot be passed now: ${r.passTurnBlocker() ?? 'the host could not pass it'}`));
+      if (!p || !a.controller.passTurn()) return fail(new Error(`The turn cannot be passed now: ${r.passTurnBlocker() ?? "the lobby's PC could not pass it"}`));
       lastError = null;
       log.info(`match: ${a.code} turn passed from the Match tab: ${p.name}'s ball ${p.ball} ended at ${p.score}`);
+      emit();
+      return status();
+    },
+    async endMyBall(grantSeq) {
+      const a = active;
+      if (!a) return fail(new Error('No match'));
+      const b = a.controller.status().endBall;
+      // The review of PR 131: the question was about one grant (its ball, its score); another grant is another question.
+      if (b && b.grantSeq !== grantSeq) return fail(new Error('Your ball was not ended: the question was about an earlier ball (the table ended that one meanwhile, or the turn went round). Press End my ball again for this one.'));
+      if (!b || !a.controller.endMyBall(grantSeq)) {
+        const st = a.controller.status();
+        return fail(new Error(`Your ball cannot be ended now: ${st.phase === 'paused' ? 'the match is paused' : !st.myTurn ? 'it is not your ball' : 'the turn is changing hands'}`));
+      }
+      lastError = null;
+      log.info(`match: ${a.code} End my ball: ball ${b.ball} ended by hand at ${b.score}${b.tableBall ? " (the table's ball is still in play: played out at this player's next turn)" : ''}`);
       emit();
       return status();
     },
@@ -2699,9 +4325,12 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       const a = active;
       if (!a) return fail(new Error('No match'));
       const r = a.controller.currentRole;
-      if (!(r instanceof HostMatch)) return fail(new Error('Only the host resumes a pause from here'));
+      if (!(r instanceof HostMatch)) return fail(new Error("Only the lobby's PC resumes a pause from here"));
       if (r.state.phase !== 'running' || !r.state.paused) return fail(new Error('The match is not paused'));
       if (r.state.pendingTransfer) return fail(new Error('A host transfer is under way: wait for it to finish'));
+      // The final review (finding 3): a pause that waits for a member who is away is not one a press ends.
+      const blocked = r.resumeBlocker();
+      if (blocked !== null) return fail(new Error(`${blocked}.`));
       try {
         r.resume();
       } catch (e) {
@@ -2714,8 +4343,26 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     },
     leave,
     rejoin,
+    quitQuestion() {
+      const a = active;
+      if (!a || a.role !== 'host' || a.recordOff) return null;
+      const o = otherMembers(a);
+      return o.here.length + o.away.length > 0 ? { code: a.code, names: o.here, away: o.away } : null;
+    },
+    quitGameQuestion() {
+      const a = active;
+      if (!a || a.role !== 'client' || !a.code) return null;
+      return a.controller.status().lobby?.giveUp ? { code: a.code } : null;
+    },
     forgetResume() {
+      const rec = pendingResume;
       forget('the player dropped it');
+      // The review of PR 138: said as it is. The others cannot be told from here (they are not on a link to this PC
+      // until they find it again), so they wait out their time.
+      if (rec?.role === 'host' && rec.names.length > 0) {
+        lastError = `The lobby ${rec.code} is forgotten on this PC. The others were not told: they read that this PC is away until their 20 minutes are over, or until they leave. To tell them at once, open it again and press Close lobby.`;
+        log.info(`match: ${lastError}`);
+      }
       emit();
       return status();
     },
@@ -2888,11 +4535,67 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     wants3d() {
       return !!active?.stream && settings.watch3d === 'auto' && active.stream.status().forkInstalled === true;
     },
-    setLaunchNote(note) {
+    setLaunchNote(note, not3d = false) {
       const a = active;
-      if (!a || (a.launchNote ?? null) === note) return;
+      if (!a || ((a.launchNote ?? null) === note && (a.launchNot3d ?? false) === not3d)) return;
       a.launchNote = note;
+      a.launchNot3d = not3d;
       emit();
+    },
+    hostTableObjects() {
+      const a = active;
+      if (!a) return null;
+      const role = a.controller.currentRole;
+      // A17 step 10: in a lobby it is the picked table's, on the lobby's PC too (not the table that PC has open).
+      const o = role instanceof ClientMatch ? role.hostTableObjects() : role instanceof HostMatch ? role.tableObjects() : (a.objectsSent ?? null);
+      return o ? { editables: o.editables, hash: o.hash } : null;
+    },
+    tableHeld() {
+      return active?.controller.status().initialsHold ?? false;
+    },
+    async pickTable(o) {
+      const a = active;
+      const l = a?.controller.status().lobby ?? null;
+      if (!a || !l) return { kind: 'refused', sentence: 'You are not in a lobby.' };
+      if (l.hostAway) return { kind: 'refused', sentence: LOBBY_PC_AWAY };
+      // What the lobby's PC would answer, said at once on this PC too.
+      if (l.table.off !== null) return { kind: 'refused', sentence: l.table.off };
+      // A change between games ends the open match: the press said so, and only while that is still what there is.
+      if (o.about != null && o.about !== l.gameKey) return { kind: 'refused', sentence: 'The table was not changed: the lobby is not as it was when you pressed. Look again and press again.' };
+      const waitMs = o.waitMs ?? PICK_WAIT_MS;
+      const answer = await a.controller.pickTableAnswered(o.game, o.objects ? { editables: o.objects.editables, hash: o.objects.hash } : null, waitMs);
+      if (answer.kind !== 'taken') {
+        log.info(`match: ${a.code}: the pick of ${tableWords(o.game.tableName)} on this PC was not taken: ${answer.kind === 'refused' ? answer.sentence : `no answer from the lobby's PC in ${Math.round(waitMs / 1000)} s`}`);
+        return answer;
+      }
+      log.info(`match: ${a.code}: the lobby's table was picked on this PC: ${tableWords(o.game.tableName)}${o.objects ? ` (table objects ${forkIdentityText(o.objects)})` : ''}${l.table.endsMatch ? '; the open match ends at its tally' : ''}`);
+      emit();
+      return { kind: 'taken', status: status() };
+    },
+    ownTable() {
+      const a = active;
+      if (!a || !isTableOpen(a.sent.game)) return null;
+      return { ...a.sent.game };
+    },
+    setTableChange(state, line) {
+      active?.controller.setTableChange(state, line);
+    },
+    setPickCopy(word) {
+      const a = active;
+      if (!a) return;
+      a.pickCopy = word ? { pick: word.pick, open: word.open } : null;
+      sayPickCopy(a);
+    },
+    lobbyTable() {
+      const role = active?.controller.currentRole;
+      if (!(role instanceof ClientMatch) && !(role instanceof HostMatch)) return null;
+      // One number per engine object (a lobby opened again, a resume and a rejoin each make a new one); a client's
+      // own count of the times it found the lobby anew beside it.
+      let stay = stays.get(role);
+      if (stay === undefined) stays.set(role, (stay = ++lastStay));
+      if (role instanceof HostMatch) return { game: role.table().game, joined: `${stay}` };
+      const t = role.lobbyTable();
+      return t ? { game: t.game, joined: `${stay}.${t.joins}` } : null;
     },
     async saveFrames() {
       const media = opts.media;
@@ -2929,11 +4632,21 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     async stop(o) {
       await endBench('Castcade quits');
       const a = active;
-      if (o?.keepForRestart && a && !a.recordOff && a.engine.state.phase !== 'lobby') {
-        // A15: Castcade restarts itself (an update): the match is not left; the others see a drop, and the next start rejoins.
-        saveResume(a, 'update');
-        await teardown(a, true);
-        log.info(`match: ${a.code} is kept for the restart; Castcade rejoins it when it is back`);
+      // A15: Castcade restarts itself (an update): the match is not left; the others see a drop, and the next start
+      // rejoins.
+      // A17 step 8: in every phase, for a player, a watcher and the lobby's PC alike: an update restart leaves
+      // nothing, and the next start goes back in without asking. The review of PR 138: the lobby's PC that is quit
+      // with somebody else PRESENT in its lobby keeps it unless its owner answered "Close the lobby for everyone"
+      // (`quitQuestion`; a quit that could not ask keeps it): the others are told, and the lobby is offered at the
+      // next start, never gone back into by itself. Alone in the lobby it is closed as before.
+      // The final review (finding 2): the owner's answer is what happens. "Keep" keeps the lobby whoever is present
+      // at this moment, and so does a quit that could not ask, as long as anybody else has a place in it.
+      const others = a ? otherMembers(a) : { here: [], away: [] };
+      const present = [...others.here, ...others.away.map((n) => `${n} (away)`)];
+      const mark: 'update' | 'quit' | null = !a || a.recordOff ? null : o?.keepForRestart ? 'update' : a.role === 'host' && present.length > 0 && o?.lobby !== 'close' ? 'quit' : null;
+      if (a && mark !== null) {
+        await teardown(a, true, mark, mark === 'quit');
+        log.info(`match: the lobby ${a.code} is kept for the next start of Castcade${mark === 'update' ? ' (an update)' : ` (Castcade was closed on the lobby's PC with ${present.join(', ')} in the lobby; whoever is present was told; it is offered at the next start)`}`);
       } else await leave().catch((e: unknown) => log.warn(`match: leave on quit: ${describeError(e)}`));
       unregisterKeys();
       closeMenu();
@@ -2942,6 +4655,9 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       cue.destroy();
     },
   };
+  MATCH_HALF.set(api, () => {
+    if (active) endMatchHalf(active);
+  });
   return api;
 }
 

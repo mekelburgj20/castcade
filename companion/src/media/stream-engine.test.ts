@@ -289,6 +289,23 @@ describe('stream engine (D1.2 + D1.3)', () => {
     expect(h.engine.status().segment).toBe('seg-002.mp4');
   });
 
+  // 2026-11-24: nothing awaits what the engine does at an ffmpeg exit (hash the segment, write its end to the
+  // manifest), so a test that ends while that is still on its way has its folder removed under it (`afterEach`). On a
+  // busy PC the write then failed with ENOENT as an unhandled rejection, which fails the whole run and is blamed on
+  // whichever test runs next. A player's PC can do the same (the recordings folder deleted, its drive gone).
+  it("the session folder gone when ffmpeg exits: a warning, the failure counted and the engine waiting again; nothing is thrown", async () => {
+    const h = harness({ rtmpUrl: null });
+    h.setWindows([PLAYER]);
+    await h.engine.start(h.plan);
+    await h.tick();
+    await h.tick();
+    expect(h.engine.status()).toMatchObject({ state: 'capturing', segment: 'seg-001.mp4' });
+    rmSync(join(root, readdirSync(root)[0]!), { recursive: true, force: true });
+    h.procs[0]!.die();
+    await vi.waitFor(() => expect(h.engine.status()).toMatchObject({ state: 'waiting', restarts: 1, segment: null }));
+    expect(h.logs.filter((l) => l.startsWith("WARN stream: the end of the segment could not be written to the recording's manifest (ENOENT"))).toHaveLength(1);
+  });
+
   it('record only: no slate between tables; landscape films the whole window; a moved window restarts', async () => {
     const h = harness({ rtmpUrl: null, orientation: 'landscape', rotate: 0 });
     await h.engine.start(h.plan);

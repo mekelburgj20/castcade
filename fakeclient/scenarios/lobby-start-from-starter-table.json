@@ -1,0 +1,16 @@
+{
+  "name": "lobby-start-from-starter-table",
+  "description": "A17 step 6: the starter (the first member set to Play) starts a game on their own table: that asks for the match, and they go first. Another player's game on their own table, in the same moment, is never a request: they are told who the starter is.",
+  "matchId": "STARTT",
+  "ballsPerGame": 2,
+  "lobby": { "countdownMs": 15 },
+  "host": "p1",
+  "players": [
+    { "playerId": "p1", "displayName": "Lobby PC", "stance": "play", "scores": [1000, 2000] },
+    { "playerId": "p2", "displayName": "Player Two", "stance": "play", "scores": [1500, 3000] },
+    { "playerId": "p3", "displayName": "Player Three", "stance": "play", "scores": [1200, 2500] }
+  ],
+  "matches": [
+    { "start": { "by": "p1", "how": "table" }, "alsoStart": { "by": "p3", "how": "table" } }
+  ]
+}

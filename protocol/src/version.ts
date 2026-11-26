@@ -35,5 +35,34 @@
  *   `stream3dWait` (defaulted), both never logged, so still 6, by the precedent of `ballEndReady` in 5. A 0.2.46 peer
  *   strips the keys (zod objects are not strict): as the host it lists nobody and waits for nobody, which is what it
  *   did; as a client it never says it is waiting and is never waited for, and it ignores the list.
+ *   I11.4.15 (2026-11-24, the table a joining PC opens): HELLO_ACK `hostTableObjects` (defaulted to null, never
+ *   logged), so still 6, by the same precedent. A 0.2.46 to 0.2.50 client strips the key and picks its table by the
+ *   file hash and the name, as it did; a host of those builds never sends it, and a new client then ranks its copies
+ *   as before. Not a field of `GameFingerprint`: that object is also MATCH_READY's `game`, which is logged.
  */
-export const PROTOCOL_VERSION = 6 as const;
+/*
+ * 7 (2026-11-25, A17 step 7: the companion's shell turns the lobby on; docs/design/alpha-match.md section 11.7). A
+ *   host is a lobby from here on: one connection for an evening, any number of matches in it, people who watch. Each
+ *   key and message of it alone would have stayed 6 by the precedent of `ballEndReady` (all are optional and never
+ *   logged, and they came into the schemas in steps 5 and 6 behind an option that was off). Together they change what
+ *   a peer must do, and a lobby of mixed builds half works: a 0.2.50 client cannot decode the seven new message types
+ *   (START_REQUEST, START_CANCEL, END_REQUEST, TABLE_PICK, LEAVE_LOBBY, MATCH_LOG, LOBBY_CLOSED), reads MATCH_END as
+ *   the end of the evening and leaves, and comes back with a RECONNECT the lobby does not take; a 0.2.50 host refuses
+ *   a join after the first game and answers none of what a member asks. So they refuse each other at HELLO, each
+ *   with a sentence that names the PC that has to update (`transport-ws.ts`).
+ *   What a lobby does on the wire, against 6: HELLO (`stance`, `proof`) is taken in every phase and HELLO_ACK is the
+ *   lobby as it is now, in every phase; PARTICIPANT_UPDATE (`stance`, `noCopy`, `ownGame`) counts in every phase;
+ *   MATCH_READY's id is `<lobby code>-<n>` and its roster the players only (the host need not be one); MATCH_END
+ *   means "back to the lobby", may say `games: 0` and may name a game that was ended for everyone (`abandoned`);
+ *   the logged stream goes only to members who hold the log (MATCH_LOG brings it, in pages); no host transfer.
+ *   **RECONNECT has one signed body in protocol 7**, with or without a lobby: `{lobby, host, player, match, logHash,
+ *   logLength, seq}`: the PC the frame is addressed to and the envelope's own `seq` are under the signature, so a
+ *   RECONNECT is good for one use at one PC, and a protocol 7 host takes no other body. (Up to 6 the body was
+ *   `{matchId, player, logHash, logLength}`.) RECONNECT_ACK gains `match`, `restart`, `more`, `closed`, `seqAbove`
+ *   and the codes `stale_seq` and `protocol_version` (the last one is what a RECONNECT of another version is
+ *   answered with when the asker is on 7 or later; an asker up to 6 does not know it and gets `unknown_player`).
+ *   No logged message changes shape, so a protocol 6 log and a protocol 7 match's log fold the same way. The engines
+ *   still have the lobby as an option (`HostOptions.lobby`, `ClientOptions.lobby`): the companion always sets it; with
+ *   it off an engine runs one match as before (the fakeclient, the engine's own tests), on the same version 7.
+ */
+export const PROTOCOL_VERSION = 7 as const;

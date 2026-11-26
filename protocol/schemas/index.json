@@ -1,5 +1,5 @@
 {
-  "protocolVersion": 6,
+  "protocolVersion": 7,
   "envelope": "Envelope.schema.json",
   "shared": [
     "Envelope.schema.json",
@@ -104,6 +104,34 @@
     "MATCH_END": {
       "direction": "host->all",
       "schema": "MATCH_END.schema.json"
+    },
+    "START_REQUEST": {
+      "direction": "client->host",
+      "schema": "START_REQUEST.schema.json"
+    },
+    "START_CANCEL": {
+      "direction": "client->host",
+      "schema": "START_CANCEL.schema.json"
+    },
+    "END_REQUEST": {
+      "direction": "client->host",
+      "schema": "END_REQUEST.schema.json"
+    },
+    "TABLE_PICK": {
+      "direction": "client->host",
+      "schema": "TABLE_PICK.schema.json"
+    },
+    "LOBBY_CLOSED": {
+      "direction": "host->all",
+      "schema": "LOBBY_CLOSED.schema.json"
+    },
+    "MATCH_LOG": {
+      "direction": "host->client",
+      "schema": "MATCH_LOG.schema.json"
+    },
+    "LEAVE_LOBBY": {
+      "direction": "client->host",
+      "schema": "LEAVE_LOBBY.schema.json"
     }
   }
 }

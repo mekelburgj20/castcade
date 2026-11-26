@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Button } from '../parts/Button.js';
 import { describe, type CastcadeState } from '../useCastcade.js';
 
 const CONFIDENCE_LABEL: Record<MatchConfidence, string> = {
@@ -49,17 +50,17 @@ export function Identity({ state, identity, compact = false }: { state: Castcade
   const slope = identity.physics?.slopeMin !== null && identity.physics?.slopeMin !== undefined ? (identity.physics.slopeMin === identity.physics.slopeMax ? `${identity.physics.slopeMin}°` : `${identity.physics.slopeMin}°–${identity.physics.slopeMax}°`) : null;
 
   return (
-    <dl className={compact ? 'facts identity compact' : 'facts identity'}>
+    <dl className="cc-facts cc-facts--sub">
       <dt>VPS game</dt>
       <dd>
-        {game ? `${game.name}${game.manufacturer || game.year ? ` (${[game.manufacturer, game.year].filter(Boolean).join(' ')})` : ''}` : 'not matched'}
-        {game && <span className="muted"> · {game.id}{CONFIDENCE_LABEL[identity.gameConfidence]}</span>}
+        {game ? <span className="cc-display">{`${game.name}${game.manufacturer || game.year ? ` (${[game.manufacturer, game.year].filter(Boolean).join(' ')})` : ''}`}</span> : 'not matched'}
+        {game && <span className="cc-quiet"> · {game.id}{CONFIDENCE_LABEL[identity.gameConfidence]}</span>}
       </dd>
       <dt>VPS table</dt>
       <dd>
         {identity.vpsTable ? identity.vpsTable.label : identity.tableChoices.length > 0 ? 'not decided' : 'none known'}
         {identity.vpsTable && (
-          <span className="muted">
+          <span className="cc-quiet">
             {' '}
             · {identity.vpsTable.id}
             {identity.confirmed ? ' (confirmed by you)' : CONFIDENCE_LABEL[identity.tableConfidence]}
@@ -68,14 +69,14 @@ export function Identity({ state, identity, compact = false }: { state: Castcade
         {canPick && !editing && !askNow && (
           <>
             {' '}
-            <button type="button" className="link" onClick={() => setEditing(true)} disabled={!bridge}>
+            <button type="button" className="cc-link" onClick={() => setEditing(true)} disabled={!bridge}>
               change
             </button>
           </>
         )}
         {canPick && (editing || askNow) && (
-          <div className="picker">
-            <select id="vps-table-choice" value={choice} onChange={(e) => setChoice(e.target.value)} disabled={busy}>
+          <div className="cc-picker">
+            <select id="vps-table-choice" className="cc-input" aria-label="Which table is this file?" value={choice} onChange={(e) => setChoice(e.target.value)} disabled={busy}>
               <option value="">— which table is this file? —</option>
               {identity.tableChoices.map((t) => (
                 <option key={t.id} value={t.id}>
@@ -83,16 +84,16 @@ export function Identity({ state, identity, compact = false }: { state: Castcade
                 </option>
               ))}
             </select>
-            <button type="button" className="small" disabled={busy || !choice} onClick={() => void confirm(choice)}>
+            <Button size="sm" disabled={busy || !choice} onClick={() => void confirm(choice)}>
               Confirm
-            </button>
+            </Button>
             {identity.confirmed && (
-              <button type="button" className="small" disabled={busy} onClick={() => void confirm(null)}>
+              <Button variant="secondary" size="sm" disabled={busy} onClick={() => void confirm(null)}>
                 Forget
-              </button>
+              </Button>
             )}
             {editing && (
-              <button type="button" className="link" disabled={busy} onClick={() => setEditing(false)}>
+              <button type="button" className="cc-link" disabled={busy} onClick={() => setEditing(false)}>
                 cancel
               </button>
             )}
@@ -102,7 +103,7 @@ export function Identity({ state, identity, compact = false }: { state: Castcade
       {!compact && (
         <>
           <dt>File</dt>
-          <dd className="mono" title={identity.filePath ?? ''}>
+          <dd className={identity.filePath ? 'cc-mono' : undefined} title={identity.filePath ?? ''}>
             {identity.filePath ?? 'not found (set the tables folder in Settings)'}
           </dd>
           <dt>Table info</dt>
@@ -110,10 +111,10 @@ export function Identity({ state, identity, compact = false }: { state: Castcade
             {identity.tableInfo
               ? [identity.tableInfo.tableName, identity.tableInfo.authorName, identity.tableInfo.tableVersion].filter(Boolean).join(' · ') || '—'
               : '—'}
-            {identity.saveRev !== null && <span className="muted"> · save rev {identity.saveRev}</span>}
+            {identity.saveRev !== null && <span className="cc-quiet"> · save rev {identity.saveRev}</span>}
           </dd>
           <dt>SHA-256</dt>
-          <dd className="mono" title={identity.sha256 ?? ''}>
+          <dd className={identity.sha256 ? 'cc-mono' : undefined} title={identity.sha256 ?? ''}>
             {identity.sha256 ? shortHash(identity.sha256) : identity.filePath ? 'computing…' : '—'}
           </dd>
           {slope && (
@@ -127,13 +128,15 @@ export function Identity({ state, identity, compact = false }: { state: Castcade
       {identity.notes.length > 0 && !compact && (
         <>
           <dt>Notes</dt>
-          <dd className="muted">{identity.notes.join('; ')}</dd>
+          <dd className="cc-quiet">{identity.notes.join('; ')}</dd>
         </>
       )}
       {error && (
         <>
           <dt />
-          <dd className="error">{error}</dd>
+          <dd className="cc-problem" role="alert">
+            {error}
+          </dd>
         </>
       )}
     </dl>

@@ -1,4 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
+import { Field, Note } from '../parts/Bits.js';
+import { Button } from '../parts/Button.js';
+import { Panel } from '../parts/Panel.js';
 import { describe } from '../useCastcade.js';
 
 /**
@@ -90,95 +93,95 @@ export function TestBench({ bridge, st, bare = false }: { bridge: CastcadeBridge
 
   const body = (
     <>
-      <div className="row">
-        <label className="field">
-          <span>Source</span>
-          <select value={chosen.value} disabled={!!bench} onChange={(e) => setSource(e.target.value)}>
+      <div className="cc-fields">
+        <Field label="Source" htmlFor="bench-source">
+          <select id="bench-source" className="cc-input" value={chosen.value} disabled={!!bench} onChange={(e) => setSource(e.target.value)}>
             {options.map((o) => (
               <option key={o.value} value={o.value}>
                 {o.label}
               </option>
             ))}
           </select>
-        </label>
-        <label className="field">
-          <span>Path</span>
-          <select value={path} disabled={!!bench} onChange={(e) => setPath(e.target.value === 'loop' ? 'loop' : 'direct')}>
+        </Field>
+        <Field label="Path" htmlFor="bench-path">
+          <select id="bench-path" className="cc-input" value={path} disabled={!!bench} onChange={(e) => setPath(e.target.value === 'loop' ? 'loop' : 'direct')}>
             <option value="direct">Straight to the layer (no encoder)</option>
-            <option value="loop">Through a local WebRTC loop (the match's encoder and bitrate)</option>
+            <option value="loop">Through a local WebRTC loop (the match&apos;s encoder and bitrate)</option>
           </select>
-        </label>
+        </Field>
         {path === 'loop' && (
-          <label className="field">
-            <span>Bitrate cap</span>
-            <select value={cap} disabled={!!bench} onChange={(e) => setCap(e.target.value)}>
+          <Field label="Bitrate cap" htmlFor="bench-cap">
+            <select id="bench-cap" className="cc-input" value={cap} disabled={!!bench} onChange={(e) => setCap(e.target.value)}>
               {BITRATE_CAPS.map((c) => (
                 <option key={c.value} value={c.value}>
                   {c.label}
                 </option>
               ))}
             </select>
-          </label>
+          </Field>
         )}
       </div>
-      <div className="row">
+      <div className="cc-row">
         {bench ? (
           <>
-            <button type="button" className="small" disabled={busy} onClick={() => act(() => bridge.match.benchStop())}>
+            <Button size="sm" disabled={busy} onClick={() => act(() => bridge.match.benchStop())}>
               Stop
-            </button>
+            </Button>
             {bench.headset && (
-              <button type="button" className="small" disabled={busy || bench.state !== 'running'} onClick={() => act(() => bridge.match.benchView(bench.view === 'theater' ? 'direct' : 'theater'))}>
+              <Button size="sm" variant="secondary" disabled={busy || bench.state !== 'running'} onClick={() => act(() => bridge.match.benchView(bench.view === 'theater' ? 'direct' : 'theater'))}>
                 {bench.view === 'theater' ? "Show VPX's own view" : 'Show the bench picture'}
-              </button>
+              </Button>
             )}
           </>
         ) : (
-          <button type="button" className="small" disabled={busy || inMatch} onClick={start}>
+          <Button size="sm" disabled={busy || inMatch} onClick={start}>
             Start
-          </button>
+          </Button>
         )}
-        <button type="button" className="small" disabled={saving} onClick={save}>
+        <Button size="sm" variant="secondary" disabled={saving} onClick={save}>
           {saving ? 'Saving 2 s of frames…' : 'Save 2 s of frames'}
-        </button>
+        </Button>
       </div>
       {bench ? (
         <>
-          <small>
+          <small className="cc-help">
             {bench.state === 'running' ? 'Running' : 'Starting'}: {bench.source === 'live' ? 'your own table, live, as the other players will see it' : bench.clip},{' '}
             {bench.path === 'loop' ? 'through the local WebRTC loop' : 'straight to the layer'}.
           </small>
-          <small>{bench.readout}</small>
-          <small>{bench.hint}</small>
+          <small className="cc-help">{bench.readout}</small>
+          <small className="cc-help">{bench.hint}</small>
         </>
       ) : (
-        <small>
+        <small className="cc-help">
           {inMatch
             ? 'The bench runs only without a match.'
             : 'Your own table on the theater screen in your headset, as the other players will see it, no second player: start VPX in VR with the table, pick a source and a path, then Start. Theater size above applies at once. Stop gives VPX its own view back.'}
         </small>
       )}
-      <small>
-        Save 2 s of frames writes your VR layer camera's frames (while it runs: Camera = VR layer in a match, or the bench on your own table) and the theater
+      <small className="cc-help">
+        Save 2 s of frames writes your VR layer camera&apos;s frames (while it runs: Camera = VR layer in a match, or the bench on your own table) and the theater
         frames handed to your headset (while theater shows) to the logs folder, at most 120 of each; the bench can play them back. Pressed while the
-        bench runs through the local WebRTC loop, it keeps the encoded picture (the frames as they came out of the loop), so the encoder's work can be
+        bench runs through the local WebRTC loop, it keeps the encoded picture (the frames as they came out of the loop), so the encoder&apos;s work can be
         looked at offline.
       </small>
       {saved && (
-        <small>
+        <small className="cc-help">
           {saved.dir ? `Saved ${saved.sender} camera frame(s) and ${saved.receiver} theater frame(s) to ${saved.dir}.` : 'Nothing saved.'}
           {saved.notes.length ? ` ${saved.notes.join('; ')}.` : ''}
         </small>
       )}
-      {error && <p className="error">{error}</p>}
+      {error && (
+        <Note state="problem" role="alert">
+          {error}
+        </Note>
+      )}
     </>
   );
   // Inside another card (the VR test bench card of D7.6.1 / D7.6.2), no card of its own.
   if (bare) return body;
   return (
-    <div className="card">
-      <strong>VR test bench</strong>
+    <Panel wide title="VR test bench">
       {body}
-    </div>
+    </Panel>
   );
 }

@@ -1,0 +1,16 @@
+{
+  "name": "lobby-join-mid-game",
+  "description": "A17 step 5: a third person joins while a ball is in play. They are sent HELLO_ACK and then the match's log in pages of 2, a few ms apart, so ball ends land between the HELLO_ACK and the last page: none of them reaches the newcomer live, all of them are in a later page, and the newcomer ends with the head everyone has.",
+  "matchId": "JOINMD",
+  "ballsPerGame": 8,
+  "lobby": { "logPageSize": 2, "logPageGapMs": 2 },
+  "host": "p1",
+  "players": [
+    { "playerId": "p1", "displayName": "Lobby PC", "stance": "play", "scores": [100, 200, 300, 400, 500, 600, 700, 800] },
+    { "playerId": "p2", "displayName": "Player Two", "stance": "play", "scores": [150, 250, 350, 450, 550, 650, 750, 850] },
+    { "playerId": "p3", "displayName": "Newcomer", "stance": "play", "scores": [1], "joinsAt": { "match": 1, "afterGrants": 8 } }
+  ],
+  "matches": [
+    {}
+  ]
+}

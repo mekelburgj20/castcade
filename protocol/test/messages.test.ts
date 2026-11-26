@@ -157,10 +157,12 @@ describe('envelope', () => {
     expect(() => buildMessage('MEDIA_SIGNAL', { to: 'p2', kind: 'offer', sdp: 'v=0', channel: 'audio' as never }, { matchId: 'TD-1', seq: 8, from: 'p1' })).toThrow(ProtocolError);
   });
 
-  it('protocol 6 (I11.4.2): MEDIA_SIGNAL channel `stream` round-trips for every kind the tunnel sends; the version is 6 and a frame stamped 5 does not decode', () => {
-    expect(PROTOCOL_VERSION).toBe(6);
+  it('protocol 6 (I11.4.2): MEDIA_SIGNAL channel `stream` round-trips for every kind the tunnel sends; the version is 7 now (A17 step 7) and a frame stamped 5 or 6 does not decode', () => {
+    expect(PROTOCOL_VERSION).toBe(7);
     const offer = buildMessage('MEDIA_SIGNAL', { to: 'p2', kind: 'offer', sdp: 'v=0\r\n', channel: 'stream' }, { matchId: 'TD-1', seq: 7, from: 'p1', ts: 1 });
-    expect(offer.v).toBe(6);
+    expect(offer.v).toBe(7);
+    // A17 step 7: the frame of a 0.2.46 to 0.2.50 PC (protocol 6) does not decode either: the two refuse each other at HELLO.
+    expect(() => decodeFrame(JSON.stringify({ ...offer, v: 6 }))).toThrow(ProtocolError);
     expect(offer.payload.channel).toBe('stream');
     expect(decodeFrame(encodeFrame(offer))).toEqual(offer);
     const ice = buildMessage('MEDIA_SIGNAL', { to: 'p2', kind: 'ice', candidate: { candidate: 'candidate:1 1 udp 1 192.0.2.1 9 typ host', sdpMid: '0', sdpMLineIndex: 0 }, channel: 'stream' }, { matchId: 'TD-1', seq: 8, from: 'p1', ts: 1 });
@@ -191,6 +193,30 @@ describe('envelope', () => {
     expect(buildMessage('PARTICIPANT_UPDATE', { ballEndReady: true }, { matchId: 'TD-1', seq: 2, from: 'p1' }).payload).toEqual({ ballEndReady: true });
     const ack = buildMessage('HELLO_ACK', { hostPlayerId: 'host', hostPublicKey: b64key, participants: [participant] }, { matchId: null, seq: 1, from: 'host' });
     expect(ack.payload.ballEndReady).toEqual([]);
+  });
+
+  it("I11.4.15: HELLO_ACK.hostTableObjects is defaulted to null, round-trips, and takes only a count and 16 lower-case hex digits; a key a peer does not know is stripped, not refused (so the protocol stays 6)", () => {
+    const base = { hostPlayerId: 'host', hostPublicKey: b64key, participants: [participant] };
+    const none = buildMessage('HELLO_ACK', base, { matchId: null, seq: 1, from: 'host', ts: 1 });
+    expect(none.payload.hostTableObjects).toBeNull();
+    const said = buildMessage('HELLO_ACK', { ...base, hostTableObjects: { editables: 769, hash: 'fc87ddefd36bdd13' } }, { matchId: null, seq: 2, from: 'host', ts: 1 });
+    expect(decodeFrame(encodeFrame(said))).toEqual(said);
+    for (const bad of [{ editables: 769, hash: 'FC87DDEFD36BDD13' }, { editables: 769, hash: 'fc87' }, { editables: -1, hash: 'fc87ddefd36bdd13' }, { editables: 1.5, hash: 'fc87ddefd36bdd13' }, { editables: 769 }]) {
+      expect(() => buildMessage('HELLO_ACK', { ...base, hostTableObjects: bad as never }, { matchId: null, seq: 3, from: 'host' })).toThrow(ProtocolError);
+    }
+    // What a 0.2.46 to 0.2.50 client does with this frame, shown with a key this build does not know: zod objects are
+    // not strict, so the frame decodes and the key is gone. (Checked on 2026-11-24 against the protocol sources of the
+    // v0.2.46 tag as well: its `decodeFrame` takes a HELLO_ACK that carries `hostTableObjects` and drops the key.)
+    const future = JSON.parse(encodeFrame(said)) as { payload: Record<string, unknown> };
+    future.payload['aFieldOfALaterBuild'] = { any: 'thing' };
+    const back = decodeFrame(JSON.stringify(future));
+    expect(back.type).toBe('HELLO_ACK');
+    expect(back.payload).not.toHaveProperty('aFieldOfALaterBuild');
+    expect(back.payload).toEqual(said.payload);
+    // The fingerprint itself did not grow: it is also MATCH_READY's `game`, which is logged.
+    expect(Object.keys(fingerprint).sort()).toEqual(['emulatorVersion', 'kind', 'physicsHash', 'recipeVersion', 'romHash', 'romName', 'sidecarHash', 'tableHash', 'tableName']);
+    const hello = buildMessage('HELLO', { protocolVersion: PROTOCOL_VERSION, companionVersion: '0.2.51', throwdownCode: 'TD-1', participant, game: { ...fingerprint, tableObjects: { editables: 1, hash: '0'.repeat(16) } } as never }, { matchId: null, seq: 0, from: 'p1', ts: 1 });
+    expect(hello.payload.game).toEqual(fingerprint);
   });
 
   it('MEDIA_SIGNAL stereo: `eyes` is optional and survives the wire when present (D7.5.2)', () => {

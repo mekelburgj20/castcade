@@ -13,6 +13,7 @@ import { createRoot } from 'react-dom/client';
 import { Match } from '../src/views/Match.js';
 import { useCastcade } from '../src/useCastcade.js';
 import '../src/app.css';
+import { MatchWindow } from './shell.js';
 
 const TABLE = 'Nudge Test and Calibration.vpx';
 const SIZE = 4_952_064;
@@ -145,7 +146,7 @@ const match: MatchStatus = {
   resume: null,
 };
 
-const oneStep: OneStepStatus = { link: null, message: null, copied: false, pending: null, launch: { state: 'idle', table: null, detail: null }, tableToStart: null, notice: null, attention: 0 };
+const oneStep: OneStepStatus = { link: null, message: null, copied: false, pending: null, launch: { state: 'idle', table: null, detail: null }, tableToStart: null, change: null, notice: null, attention: 0 };
 
 /** An API object: what it has, as given; any other call answers null; any other `onX` subscription is a no-op. */
 const api = (o: Record<string, unknown>): Record<string, unknown> =>
@@ -177,21 +178,9 @@ Object.defineProperty(window, 'castcade', { value: bridge });
 function Story() {
   const state = useCastcade();
   return (
-    <main className="shell">
-      <header className="top">
-        <h1>
-          <span className="dot on" aria-hidden="true" /> Castcade
-        </h1>
-        <nav className="tabs" aria-label="Views">
-          {['Pairing', 'Status', 'Stream', 'Match', 'Settings'].map((t) => (
-            <button key={t} type="button" className={t === 'Match' ? 'tab active' : 'tab'}>
-              {t}
-            </button>
-          ))}
-        </nav>
-      </header>
+    <MatchWindow>
       <Match state={state} />
-    </main>
+    </MatchWindow>
   );
 }
 

@@ -1,11 +1,11 @@
 {
-  "$id": "https://castcade.dev/protocol/v6/HELLO.schema.json",
+  "$id": "https://castcade.dev/protocol/v7/HELLO.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "properties": {
     "protocolVersion": {
       "type": "number",
-      "const": 6
+      "const": 7
     },
     "companionVersion": {
       "type": "string",
@@ -163,6 +163,19 @@
     "ballEndReady": {
       "description": "A13: whether the sender's companion can report this table's ball ends (it follows the table's hook journal): false when a table is open and it cannot (not patched, an original table, an unreadable machine). Absent: unknown (no table open yet, or a companion from before A13).",
       "type": "boolean"
+    },
+    "stance": {
+      "description": "A17: Play or Watch at the next start. Absent: play.",
+      "type": "string",
+      "enum": [
+        "play",
+        "watch"
+      ]
+    },
+    "proof": {
+      "description": "A17: the sender's signature over canonicalJson({hello: true, lobby, player, seq}) with the key in `participant.publicKey`: the lobby's code, its player id, and this envelope's own `seq`. A lobby that still holds a place for that player with that key takes the HELLO as that member's return when the signature verifies and the `seq` is above the last it took from them; without it such a HELLO is refused (`duplicate_player`). Ignored for a player the lobby holds no place for.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9+/]+={0,2}$"
     }
   },
   "required": [

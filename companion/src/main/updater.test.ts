@@ -421,16 +421,16 @@ describe('nothing installs or restarts during a game, a match or a 3D watch sess
     const none = { match: null, watch: false, table: null, vpx: false, recording: false };
     expect(installWaitReason(none)).toBeNull();
     expect(installWaitReason({ ...none, match: { role: 'none', phase: 'none' } })).toBeNull();
-    for (const phase of ['lobby', 'playing', 'paused', 'over']) expect(installWaitReason({ ...none, match: { role: 'client', phase } })).toBe('until you leave the match');
-    expect(installWaitReason({ ...none, match: { role: 'host', phase: 'lobby' } })).toBe('until you leave the match');
-    expect(installWaitReason({ ...none, match: { role: 'none', phase: 'connecting' } })).toBe('until you leave the match');
+    for (const phase of ['lobby', 'playing', 'paused', 'over']) expect(installWaitReason({ ...none, match: { role: 'client', phase } })).toBe('until you leave the lobby');
+    expect(installWaitReason({ ...none, match: { role: 'host', phase: 'lobby' } })).toBe('until you leave the lobby');
+    expect(installWaitReason({ ...none, match: { role: 'none', phase: 'connecting' } })).toBe('until you leave the lobby');
     expect(installWaitReason({ ...none, watch: true })).toBe('until you leave the 3D watch session');
     expect(installWaitReason({ ...none, table: 'Monster Bash (Williams 1998)', vpx: true })).toBe('until Monster Bash (Williams 1998) is closed');
     expect(installWaitReason({ ...none, vpx: true })).toBe('until VPX is closed');
     expect(installWaitReason({ ...none, recording: true })).toBe('until the recording or stream stops');
   });
 
-  for (const why of ['until you leave the match', 'until you leave the 3D watch session', 'until Monster Bash (Williams 1998) is closed']) {
+  for (const why of ['until you leave the lobby', 'until you leave the 3D watch session', 'until Monster Bash (Williams 1998) is closed']) {
     it(`Restart and update is refused ${why}, and offered again (once) when it is over`, async () => {
       const r = rig({ busy: why });
       r.listen();
@@ -496,7 +496,7 @@ describe('nothing installs or restarts during a game, a match or a 3D watch sess
   });
 
   it('a waiting update found at start is not installed while VPX is open or a match is to be rejoined', async () => {
-    for (const why of ['VPX is open (VPinballX_GL64.exe, pid 4242)', 'Castcade was in match ABCDEF when it closed']) {
+    for (const why of ['VPX is open (VPinballX_GL64.exe, pid 4242)', 'Castcade was in the lobby ABCDEF when it closed']) {
       const r = rig({ appVersion: '0.2.45', pending: pendingOf('0.2.46'), busyAtStart: why });
       r.u.offers('0.2.46');
       await expect(r.c.atStart()).resolves.toEqual({ outcome: 'continue', hidden: false });

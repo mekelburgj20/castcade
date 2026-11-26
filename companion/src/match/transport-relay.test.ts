@@ -9,10 +9,10 @@
 import { createServer } from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';
 import { io as ioClient, type Socket as ClientSocket } from 'socket.io-client';
-import { buildMessage, PROTOCOL_VERSION, type AnyMessage } from '@castcade/protocol';
+import { buildMessage, decodeFrame, PROTOCOL_VERSION, type AnyMessage } from '@castcade/protocol';
 import { startFakeRelay, type FakeRelay } from './relay-fake.test-support.js';
-import { CompositeTransport, RelayClientTransport, RelayError, RelayHostTransport, RelayPacer, relayEndpoint, RELINK, type RelayOptions } from './transport-relay.js';
-import { WsPeerTransport } from './transport-ws.js';
+import { CompositeTransport, DEFAULT_REJOIN, dropWords, LOBBY_REJOIN, LOBBY_RETURN_ALLOW_MS, REHOST_UNAUTHORIZED_MAX, rejoinGapAfter, RelayClientTransport, RelayError, RelayHostTransport, RelayPacer, relayEndpoint, RELINK, type RelayOptions } from './transport-relay.js';
+import { ForeignVersionError, foreignVersionOf, foreignVersionRefusal, PROTOCOL_SINCE_RELEASE, WsPeerTransport } from './transport-ws.js';
 
 const ZERO = '0'.repeat(64);
 const KEY = Buffer.alloc(32, 7).toString('base64');
@@ -57,8 +57,17 @@ const optsFor = (r: FakeRelay, id: string, extra: Partial<RelayOptions> = {}): R
   ackTimeoutMs: 1500,
   ...extra,
 });
+/**
+ * 2026-11-25: a link is a player's only once the engine has accepted its first frame (`LinkCandidate`). These tests
+ * run the transports with no engine, so this stands in for one that takes every opening frame; the verdicts
+ * themselves (a frame that is refused, one that gets no verdict) are tested in `link-binding.test.ts`.
+ */
+const takesAll = <T extends { onMessage: RelayHostTransport['onMessage'] }>(t: T): T => {
+  t.onMessage((_from, _msg, candidate) => void candidate?.accept());
+  return t;
+};
 const hostOn = (r: FakeRelay, extra: Partial<RelayOptions> = {}): RelayHostTransport => {
-  const t = new RelayHostTransport(optsFor(r, 'h', extra));
+  const t = takesAll(new RelayHostTransport(optsFor(r, 'h', extra)));
   open.push(t);
   return t;
 };
@@ -109,6 +118,49 @@ const watch = (t: { onMessage: RelayHostTransport['onMessage']; onPeerJoin: Rela
   t.onPeerLeave((p) => seen.push(`leave ${p}`));
   t.onMessage((from, m) => seen.push(`${from}:${m.type}:${m.seq}`));
   return seen;
+};
+
+
+/**
+ * Review of PR 127: frames of every shape, as anybody who reaches the port (or holds a seat in the room) can send
+ * them. `answer`: what comes back, if anything: only a HELLO or a RECONNECT of another version is answered.
+ */
+const X600 = 'x'.repeat(600);
+const GARBAGE: Array<{ what: string; text: string; answer: 'REFUSE' | 'RECONNECT_ACK' | null }> = [
+  { what: 'a HELLO whose v is 600 characters', text: JSON.stringify({ v: X600, type: 'HELLO' }), answer: 'REFUSE' },
+  { what: 'a RECONNECT whose v and match id are 20 KB each', text: JSON.stringify({ v: 'x'.repeat(20_000), type: 'RECONNECT', matchId: 'x'.repeat(20_000) }), answer: 'RECONNECT_ACK' },
+  { what: 'v an object', text: JSON.stringify({ v: { a: X600 }, type: 'HELLO' }), answer: 'REFUSE' },
+  { what: 'v an array', text: JSON.stringify({ v: [1, 2, 3], type: 'HELLO' }), answer: 'REFUSE' },
+  { what: 'v negative', text: JSON.stringify({ v: -3, type: 'HELLO' }), answer: 'REFUSE' },
+  { what: 'v a fraction', text: JSON.stringify({ v: 6.5, type: 'HELLO' }), answer: 'REFUSE' },
+  { what: 'v beyond a number', text: '{"v":1e400,"type":"HELLO"}', answer: 'REFUSE' },
+  { what: 'v null', text: JSON.stringify({ v: null, type: 'HELLO' }), answer: 'REFUSE' },
+  { what: 'no v at all', text: JSON.stringify({ type: 'HELLO' }), answer: 'REFUSE' },
+  { what: 'a RECONNECT whose match id is an object', text: JSON.stringify({ v: 5, type: 'RECONNECT', matchId: { x: X600 } }), answer: 'RECONNECT_ACK' },
+  { what: 'a RECONNECT whose match id has a line break and quotes', text: JSON.stringify({ v: 5, type: 'RECONNECT', matchId: 'M"\n<x>' }), answer: 'RECONNECT_ACK' },
+  { what: 'type an object', text: JSON.stringify({ v: 5, type: { toString: 'HELLO' } }), answer: null },
+  { what: 'a REFUSE of another version (an answer is never answered)', text: JSON.stringify({ v: 5, type: 'REFUSE', matchId: null, seq: 1, ts: 1, from: 'x', payload: { code: 'protocol_version', message: 'm', mismatches: [] } }), answer: null },
+  { what: 'a RECONNECT_ACK of another version', text: JSON.stringify({ v: 5, type: 'RECONNECT_ACK', matchId: 'M', seq: 1, ts: 1, from: 'x', payload: {} }), answer: null },
+  { what: 'our own version with nothing in it', text: JSON.stringify({ v: PROTOCOL_VERSION, type: 'HELLO' }), answer: null },
+  { what: 'not JSON', text: 'HELLO', answer: null },
+  { what: 'nothing', text: '', answer: null },
+  { what: 'a number', text: '7', answer: null },
+  { what: 'null', text: 'null', answer: null },
+  { what: 'an array', text: '[{"v":5,"type":"HELLO"}]', answer: null },
+  { what: 'a string', text: '"HELLO"', answer: null },
+  { what: 'ten thousand open brackets', text: '['.repeat(10_000), answer: null },
+  { what: 'two hundred thousand of one letter', text: 'a'.repeat(200_000), answer: null },
+];
+/** An answer holds nothing of the frame it answers but its whole-number version and a plain match id. */
+const checkAnswer = (text: string, want: 'REFUSE' | 'RECONNECT_ACK'): void => {
+  expect(text.length).toBeLessThan(1000);
+  expect(text).not.toContain('xxxx');
+  expect(text).not.toContain('<x>');
+  const f = JSON.parse(text) as { v: unknown; type: string; matchId: unknown; payload: { message?: string } };
+  expect(f.type).toBe(want);
+  expect(Number.isSafeInteger(f.v)).toBe(true);
+  expect(f.matchId).toBeNull();
+  if (want === 'REFUSE') expect(f.payload.message).toMatch(/^This lobby needs Castcade 0\.2\.51 or newer \(protocol 7; this PC sent (another version|\d+)\)\. /);
 };
 
 describe('relay transports (D10.8)', () => {
@@ -321,27 +373,258 @@ describe('relay transports (D10.8)', () => {
     await expect(a.connectTo('h', () => hello('a'))).rejects.toMatchObject({ code: 'no_such_match' });
   });
 
-  it('a frame over 256 KB is not sent and is reported; a HELLO of another protocol version is refused by name', async () => {
+  it("A18: a dropped socket says why: socket.io's reason, the close code, how long the connection was up and when ArcAid last pinged it; never an address", async () => {
+    expect(dropWords('transport close', { description: 'websocket connection closed', context: { code: 1006, reason: '' } }, 802_040, 3_210)).toBe(
+      "the connection to ArcAid closed (transport close; websocket connection closed; close code 1006) after 802 s; ArcAid's last ping came 3.2 s before",
+    );
+    expect(dropWords('ping timeout', undefined, 46_000, 45_900)).toBe("the connection to ArcAid closed (ping timeout) after 46 s; ArcAid's last ping came 45.9 s before");
+    // A description that could carry an address or a path is left out.
+    expect(dropWords('transport error', { description: 'connect ECONNREFUSED 203.0.113.7:443' }, null, null)).toBe('the connection to ArcAid closed (transport error); no ping from ArcAid on this connection yet');
+
+    // The server closes the host's socket: one line with the reason, then the room is taken back as before.
+    const r = (relay = await startFakeRelay({ devices: DEVICES }));
+    const h = hostOn(r);
+    const errors: string[] = [];
+    h.onError((e) => errors.push(e.message));
+    const states: string[] = [];
+    h.onState((s) => states.push(s));
+    await h.host('RELAYA');
+    r.dropDevice('dev-h');
+    await until(() => states.includes('reconnecting') && states.at(-1) === 'registered');
+    expect(errors.filter((e) => e.startsWith('the connection to ArcAid closed ('))).toHaveLength(1);
+    // A close of our own is not a drop: nothing is said.
+    errors.length = 0;
+    h.close();
+    await sleep(50);
+    expect(errors).toEqual([]);
+  });
+
+  it('a frame over 256 KB is not sent and is reported', async () => {
     const r = (relay = await startFakeRelay({ devices: DEVICES }));
     const h = hostOn(r);
     await h.host('RELAYA');
     const a = clientOn(r, 'a');
     const errors: string[] = [];
     a.onError((e) => errors.push(e.message));
-    const aSeen = watch(a);
     await a.connect('RELAYA');
     const big = buildMessage('RECONNECT_ACK', { accept: false, code: 'unknown_log_hash', entries: [], logHash: ZERO, logLength: 0 }, { matchId: 'M', seq: 9, from: 'a' });
     (big.payload as { pad?: string }).pad = 'x'.repeat(300 * 1024);
     a.send('all', big);
     expect(errors.join()).toMatch(/RECONNECT_ACK is \d+ bytes, over the relay's 262144: not sent/);
     expect(r.dropped.size).toBe(0);
+  });
 
-    // A foreign-version HELLO never decodes; the host answers REFUSE(protocol_version) as the WebSocket host does.
-    const foreign = JSON.parse(JSON.stringify(hello('a'))) as { v: number };
-    foreign.v = PROTOCOL_VERSION + 1;
-    const raw = a as unknown as { socket: { emit(ev: string, p: unknown): void } };
-    raw.socket.emit('match:relay', { data: JSON.stringify(foreign) });
-    await until(() => aSeen.some((s) => s.includes(':REFUSE:')));
+  it('A17 step 1 (2026-11-24): a HELLO, and a RECONNECT, of another version are answered in that version; the PC that asked is told in a sentence, not left to time out', async () => {
+    // The sentence names the first release of the protocol: the two change together.
+    // A17 step 7 (2026-11-25): protocol 7, the lobby; 0.2.51 is the release the design names for it.
+    expect([PROTOCOL_VERSION, PROTOCOL_SINCE_RELEASE]).toEqual([7, '0.2.51']);
+    const r = (relay = await startFakeRelay({ devices: DEVICES }));
+    const h = hostOn(r);
+    const hErrors: string[] = [];
+    h.onError((e) => hErrors.push(e.message));
+    await h.host('RELAYA');
+    const a = clientOn(r, 'a');
+    const errors: Error[] = [];
+    a.onError((e) => errors.push(e));
+    const aSeen = watch(a);
+    await a.connect('RELAYA');
+    // What reaches the asking PC, as text: a frame of another version never decodes here, as it never decoded there.
+    const raw = a as unknown as { socket: { emit(ev: string, p: unknown): void; on(ev: string, cb: (p: { data?: unknown }) => void): void } };
+    const frames: Array<{ v: number; type: string; matchId: string | null; seq: number; from: string; payload: Record<string, unknown> }> = [];
+    raw.socket.on('match:relay', (p) => {
+      if (typeof p.data === 'string' && p.data.startsWith('{')) frames.push(JSON.parse(p.data) as (typeof frames)[number]);
+    });
+    const ofType = (type: string) => frames.filter((f) => f.type === type);
+
+    // A PC on an older version (what a 0.2.46 to 0.2.50 client sends: the envelope and the HELLO both say 6).
+    const older = PROTOCOL_VERSION - 1;
+    raw.socket.emit('match:relay', { data: JSON.stringify({ ...JSON.parse(JSON.stringify(hello('a'))), v: older }) });
+    await until(() => ofType('REFUSE').length === 1);
+    const refuse = ofType('REFUSE')[0]!;
+    expect(refuse).toMatchObject({ v: older, type: 'REFUSE', matchId: null, from: 'h', payload: { code: 'protocol_version', mismatches: [] } });
+    expect(refuse.payload.message).toBe(`This lobby needs Castcade 0.2.51 or newer (protocol 7; this PC sent ${older}). Update Castcade on this PC (Settings, Check for updates) and join again.`);
+    expect(older).toBe(6);
+    // Apart from its `v` it is a REFUSE as this version writes one: the asker's own decoder takes it.
+    expect(decodeFrame(JSON.stringify({ ...refuse, v: PROTOCOL_VERSION })).type).toBe('REFUSE');
+
+    // A PC on a newer version is told that the host is the one to update.
+    const newer = PROTOCOL_VERSION + 1;
+    raw.socket.emit('match:relay', { data: JSON.stringify({ ...JSON.parse(JSON.stringify(hello('a'))), v: newer }) });
+    await until(() => ofType('REFUSE').length === 2);
+    expect(ofType('REFUSE')[1]).toMatchObject({ v: newer, payload: { code: 'protocol_version', message: `The Castcade on the lobby's PC is older than this PC's (it speaks protocol 7, this PC ${newer}). It is updated there (Settings, Check for updates); then join again.` } });
+
+    // A RECONNECT of another version got no answer at all until 0.2.50: now a RECONNECT_ACK that does not accept, in
+    // the asker's version, with a `seq` above anything this host can have sent that PC before (it drops a lower one).
+    const before = Date.now();
+    const reconnect = { v: older, type: 'RECONNECT', matchId: 'RELAYA', seq: 77, ts: 1, from: 'a', payload: { player: 'a', logHash: ZERO, logLength: 12, signature: 'c2ln' } };
+    raw.socket.emit('match:relay', { data: JSON.stringify(reconnect) });
+    await until(() => ofType('RECONNECT_ACK').length === 1);
+    const ack = ofType('RECONNECT_ACK')[0]!;
+    expect(ack).toMatchObject({ v: older, type: 'RECONNECT_ACK', matchId: 'RELAYA', from: 'h', payload: { accept: false, code: 'unknown_player', entries: [], logHash: ZERO, logLength: 0 } });
+    expect(ack.seq).toBeGreaterThanOrEqual(before);
+    expect(decodeFrame(JSON.stringify({ ...ack, v: PROTOCOL_VERSION })).type).toBe('RECONNECT_ACK');
+    // A17 step 7: a PC on protocol 7 or later knows the code that says why (`protocol_version`); one on 6 or
+    // older does not, and got `unknown_player` above, the nearest it has.
+    raw.socket.emit('match:relay', { data: JSON.stringify({ ...reconnect, v: newer, seq: 78 }) });
+    await until(() => ofType('RECONNECT_ACK').length === 2);
+    expect(ofType('RECONNECT_ACK')[1]).toMatchObject({ v: newer, matchId: 'RELAYA', payload: { accept: false, code: 'protocol_version', entries: [] } });
+
+    // Nothing of it reached an engine on either side, and the host said what it could not decode: one line for the
+    // first of the four (2026-11-25: at most one in ten seconds per relay peer; the others are counted for the next).
+    expect(aSeen).toEqual([]);
+    expect(hErrors).toHaveLength(1);
+    // The asking side of the same thing, with a host that answers in ITS OWN version (every host up to 0.2.50): this
+    // PC cannot decode the answer, and says which versions the two PCs have in place of "The host did not answer".
+    const foreign = errors.filter((e): e is ForeignVersionError => e instanceof ForeignVersionError);
+    expect(foreign.map((e) => e.theirs)).toEqual([older, newer, older, newer]);
+    expect(foreign[0]?.message).toBe(`The lobby's PC runs another version of Castcade (protocol ${older}; this PC has 7). Both need the same: Castcade is updated on the lobby's PC (Settings, Check for updates), then join again.`);
+    expect(foreign[1]?.message).toBe(`The lobby's PC runs another version of Castcade (protocol ${newer}; this PC has 7). Both need the same: update Castcade on this PC (Settings, Check for updates), then join again.`);
+  });
+
+  it('review of PR 127: no frame of any shape from a relay peer that has not joined throws in the host\'s process; only a HELLO or a RECONNECT of another version is answered, and an answer is never answered', async () => {
+    const uncaught: string[] = [];
+    const onUncaught = (e: unknown): void => void uncaught.push(String(e));
+    process.on('uncaughtException', onUncaught);
+    try {
+      const r = (relay = await startFakeRelay({ devices: DEVICES }));
+      const h = hostOn(r);
+      let hErrors = 0;
+      h.onError(() => void hErrors++);
+      const hSeen = watch(h);
+      await h.host('RELAYA');
+      const a = clientOn(r, 'a');
+      a.onError(() => undefined);
+      await a.connect('RELAYA');
+      const raw = a as unknown as { socket: { emit(ev: string, p: unknown): void; on(ev: string, cb: (p: { data?: unknown }) => void): void } };
+      const got: string[] = [];
+      raw.socket.on('match:relay', (p) => void (typeof p.data === 'string' && p.data.startsWith('{') && got.push(p.data)));
+      // How many frames the host has been through (2026-11-25: it no longer writes a line for each, so the lines
+      // do not say that).
+      const inner = h as unknown as { takeFrame(relayPeer: string, text: string): void };
+      const take = inner.takeFrame.bind(h);
+      let taken = 0;
+      inner.takeFrame = (relayPeer, text) => {
+        try {
+          take(relayPeer, text);
+        } finally {
+          taken += 1;
+        }
+      };
+      for (const g of GARBAGE) {
+        const before = { got: got.length, taken };
+        raw.socket.emit('match:relay', { data: g.text });
+        // The host has handled the frame; an answer, if one is due, is on its way then.
+        await until(() => taken === before.taken + 1, 4000);
+        if (g.answer !== null) await until(() => got.length === before.got + 1, 4000);
+        else await sleep(30);
+        expect([g.what, got.length - before.got]).toEqual([g.what, g.answer === null ? 0 : 1]);
+        if (g.answer !== null) checkAnswer(got.at(-1)!, g.answer);
+      }
+      expect(hSeen).toEqual([]);
+      expect(uncaught).toEqual([]);
+      // Reported, and not once per frame: one line for the first, the rest counted for the next line.
+      expect(hErrors).toBeGreaterThanOrEqual(1);
+      expect(hErrors).toBeLessThan(GARBAGE.length);
+      // A first frame that does decode, on which a listener of ours throws: reported, not thrown out of the socket.
+      const seen: string[] = [];
+      h.onError((e) => void seen.push(e.message));
+      h.onMessage(() => {
+        throw new Error('a listener threw');
+      });
+      raw.socket.emit('match:relay', { data: JSON.stringify(hello('a')) });
+      await until(() => seen.includes('a listener threw'), 4000);
+      expect(uncaught).toEqual([]);
+    } finally {
+      process.off('uncaughtException', onUncaught);
+    }
+  }, 30_000);
+
+  it('A17 step 1: foreignVersionRefusal answers only a HELLO or a RECONNECT of another version', () => {
+    const frame = (o: Record<string, unknown>): string => JSON.stringify({ v: 5, type: 'HELLO', matchId: null, seq: 1, ts: 1, from: 'a', payload: {}, ...o });
+    expect(foreignVersionRefusal('not json', 'h', 1)).toBeNull();
+    expect(foreignVersionRefusal('[]', 'h', 1)).toBeNull();
+    // Our own version that does not decode for another reason is not a version refusal.
+    expect(foreignVersionRefusal(frame({ v: PROTOCOL_VERSION }), 'h', 1)).toBeNull();
+    expect(foreignVersionRefusal(frame({ type: 'STATE' }), 'h', 1)).toBeNull();
+    // A HELLO opens a new connection: its REFUSE keeps the caller's counter.
+    expect(JSON.parse(foreignVersionRefusal(frame({}), 'h', 3) ?? '{}')).toMatchObject({ v: 5, type: 'REFUSE', seq: 3, from: 'h' });
+    // A version that is not a whole number is nobody's: answered in ours, as before, and nothing of it is repeated.
+    expect(JSON.parse(foreignVersionRefusal(frame({ v: 'six' }), 'h', 1) ?? '{}')).toMatchObject({
+      v: PROTOCOL_VERSION,
+      type: 'REFUSE',
+      payload: { message: 'This lobby needs Castcade 0.2.51 or newer (protocol 7; this PC sent another version). Update Castcade on this PC (Settings, Check for updates) and join again.' },
+    });
+    // Review of PR 127: a `v` of any length or kind makes no answer the schema refuses (it threw in the socket's handler).
+    for (const v of ['x'.repeat(600), 'x'.repeat(100_000), { a: 1 }, [1], -1, 1.5, null, true]) {
+      const text = foreignVersionRefusal(frame({ v }), 'h', 1);
+      expect(text).not.toBeNull();
+      expect(text!.length).toBeLessThan(600);
+      expect(JSON.parse(text!)).toMatchObject({ v: PROTOCOL_VERSION, type: 'REFUSE' });
+    }
+    expect(JSON.parse(foreignVersionRefusal(frame({ v: undefined }), 'h', 1) ?? '{}')).toMatchObject({ v: PROTOCOL_VERSION, type: 'REFUSE' });
+    // A RECONNECT with no usable match id is answered with none.
+    expect(JSON.parse(foreignVersionRefusal(frame({ type: 'RECONNECT', matchId: 7 }), 'h', 1) ?? '{}')).toMatchObject({ v: 5, type: 'RECONNECT_ACK', matchId: null });
+    expect(foreignVersionOf(frame({}))).toBe(5);
+    expect(foreignVersionOf(frame({ v: PROTOCOL_VERSION }))).toBeNull();
+    expect(foreignVersionOf('nope')).toBeNull();
+  });
+
+  it("A17 step 7: the asks of a lobby's member for a room that is gone (`LOBBY_REJOIN`): at once, 5 s and 30 s later, then every 150 s; never more than six in any ten minutes, two under ArcAid's eight, and never stopping in the twenty minutes a member waits", () => {
+    // Every ask misses (the lobby's PC is gone for the whole wait). The arithmetic is the transport's own: the misses
+    // inside the window, the cap, and the gap after the n-th miss (`rejoinGapAfter`, which `join` uses).
+    const simulate = (earlier: number[]): { asks: number[]; heldBack: number[] } => {
+      const p = LOBBY_REJOIN;
+      const log = [...earlier];
+      const asks: number[] = [];
+      const heldBack: number[] = [];
+      let own = 0;
+      let t = 0;
+      while (t <= 20 * 60_000) {
+        if (log.filter((m) => t - m < p.windowMs).length >= p.maxMisses) {
+          // Refused by the transport itself; the engine tries again after its own longest gap (30 s).
+          heldBack.push(t);
+          t += 30_000;
+          continue;
+        }
+        asks.push(t);
+        log.push(t);
+        own += 1;
+        t += rejoinGapAfter(p, own);
+      }
+      return { asks, heldBack };
+    };
+    const { asks, heldBack } = simulate([]);
+    expect(asks.slice(0, 6)).toEqual([0, 5_000, 30_000, 180_000, 330_000, 480_000]);
+    expect(heldBack).toEqual([]);
+    // ArcAid counts in a window that is fixed from a device's first miss; this cap slides, which is never less strict.
+    const inWindow = (list: number[], end: number): number => list.filter((a) => a > end - 600_000 && a <= end).length;
+    expect(Math.max(...asks.map((a) => inWindow(asks, a)))).toBe(6);
+    expect(inWindow(asks, asks.at(-1)!)).toBe(4);
+    // A lobby's PC that is back is asked for within two and a half minutes, whenever it comes back.
+    expect(Math.max(...asks.slice(1).map((a, i) => a - asks[i]!))).toBe(150_000);
+    // The policy of a match before the lobby gave up after five asks, 18 s in: a member would not ask again for ten minutes.
+    expect(DEFAULT_REJOIN.maxMisses).toBe(5);
+
+    // The review of PR 136: two codes this device got wrong a minute before count at ArcAid as two misses of the
+    // device. With the device's own list (`missLog`) they hold the asks back: the sixth scheduled ask, which would
+    // have been ArcAid's eighth miss in its window, is not made; the asks go on when those two have left the window.
+    const mistyped = [-60_000, -50_000];
+    const after = simulate(mistyped);
+    const everything = [...mistyped, ...after.asks];
+    expect(Math.max(...everything.map((a) => inWindow(everything, a)))).toBeLessThanOrEqual(7);
+    expect(after.asks.slice(0, 5)).toEqual([0, 5_000, 30_000, 180_000, 330_000]);
+    expect(after.heldBack[0]).toBe(480_000);
+    expect(after.asks[5]).toBeGreaterThanOrEqual(540_000);
+    expect(after.asks.length).toBeGreaterThanOrEqual(9);
+  });
+
+  it('A17 step 7 (the review of PR 136): the time the lobby\'s PC gives a member to be back after its own return covers the schedule: the longest gap between two asks, one ask that fails, and the engine\'s own longest gap before the next', () => {
+    const longestGap = Math.max(...LOBBY_REJOIN.gapsMs);
+    // The socket's and the acknowledgement's default timeouts (5 s, 4 s), and the 30 s the engine waits at the most
+    // between two attempts in a lobby (`LOBBY_RECONNECT_GAP_MAX_MS`, client.ts).
+    expect(LOBBY_RETURN_ALLOW_MS).toBeGreaterThanOrEqual(longestGap + 5_000 + 4_000 + 30_000 + 5_000);
+    // And not so long that a member who never returns holds a game for much more than twice the turn clock.
+    expect(LOBBY_RETURN_ALLOW_MS).toBeLessThanOrEqual(4 * 60_000);
   });
 
   it('relayEndpoint: the origin, and a path in the base URL as the socket.io path prefix', () => {
@@ -507,7 +790,37 @@ describe('relay transports against the server as built (D10.8, 2026-11-12)', () 
     expect(Date.now() - t0).toBeGreaterThanOrEqual(230);
   });
 
-  it('a pairing revoked mid-match: the client is told once, in plain words, and never asks ArcAid again; the host sees a leave; a revoked host is closed for good', async () => {
+  it("A17 step 7 (the review of PR 136): a transport that is given the device's list of misses writes its own into it, a first join's too, and holds its asks back by all of them", async () => {
+    const r = (relay = await startFakeRelay({ devices: DEVICES, hostGraceMs: 50 }));
+    const missLog: number[] = [];
+    // A code that names no room: a miss of the device, written down by the transport that asked.
+    const wrong = clientOn(r, 'a', { missLog });
+    await expect(wrong.connect('NOROOM')).rejects.toThrow(/no match with the code NOROOM/);
+    wrong.close();
+    expect(missLog).toHaveLength(1);
+    expect(r.misses.get('dev-a')).toBe(1);
+    // The same device then joins a room whose host goes away for good: with a cap of three, two asks are left.
+    const { h, clients } = await matchOf(r, ['a'], { client: { missLog, rejoin: { gapsMs: [40], maxMisses: 3 } } });
+    const a = clients['a']!;
+    (h as unknown as { socket: { disconnect(): void } }).socket.disconnect();
+    await until(() => a.seen.includes('leave h') && r.rooms().length === 0);
+    const said: string[] = [];
+    for (let k = 0; k < 5; k++) {
+      said.push(
+        await a.t.connectTo('h', () => hello('a')).then(
+          () => 'ok',
+          (e: Error) => e.message,
+        ),
+      );
+    }
+    expect(said.slice(0, 2)).toEqual(Array(2).fill('no match with the code RELAYA'));
+    expect(said.slice(2)).toEqual(Array(3).fill('no match with the code RELAYA (ArcAid said so 3 times; not asking again)'));
+    expect(missLog).toHaveLength(3);
+    // ArcAid was asked three times by this device in all, the wrong code included: not once more.
+    expect(r.misses.get('dev-a')).toBe(3);
+  });
+
+  it('a pairing revoked mid-match: the client is told once, in plain words, and never asks ArcAid again; the host sees a leave; a host the relay does not accept for a moment asks for its room again and has it back', async () => {
     const r = (relay = await startFakeRelay({ devices: DEVICES, reverifyMs: 0 }));
     const { h, hSeen, states, hErrors, clients } = await matchOf(r, ['a', 'b']);
     const a = clients['a']!;
@@ -526,15 +839,101 @@ describe('relay transports against the server as built (D10.8, 2026-11-12)', () 
     expect(r.errors).toEqual(['unauthorized']);
     expect(h.peers()).toEqual(['b']);
 
+    // The review of PR 138: the host's side of the same word. The relay's `unauthorized` alone is not "unpaired"
+    // (it is also what the relay says when it could not read the device): the host's links drop, it asks for its
+    // room again, and when the device reads again it has it back.
     r.revoke('dev-h');
     h.send('b', resume('h', 40));
-    await until(() => states.at(-1) === 'closed' && b.seen.includes('leave h'));
-    expect(hErrors).toEqual(['This PC is no longer paired with ArcAid']);
-    expect(b.errors).toEqual(['ArcAid closed the match (host_gone)']);
-    await sleep(150);
-    expect(r.rooms()).toEqual([]);
-    expect(h.state).toBe('closed');
-  });
+    await until(() => states.at(-1) === 'reconnecting' && b.seen.includes('leave h'));
+    expect(hErrors).toContain('ArcAid did not accept this device');
+    expect(h.closedWhy).toBeNull();
+    r.accept('dev-h', DEVICES['dev-h']);
+    await until(() => states.at(-1) === 'registered', 15_000);
+    expect(h.state).toBe('registered');
+    expect(states).not.toContain('closed');
+  }, 30_000);
+
+  it("A17 step 8 (the review of PR 138): the relay's `unauthorized` alone never ends a host's room. After three such answers the second question is asked: when ArcAid's own pairing check says the device is not paired, the room is given up as `unauthorized`", async () => {
+    const r = (relay = await startFakeRelay({ devices: DEVICES, hostGraceMs: 50 }));
+    let asked = 0;
+    const { h, states, hErrors } = await matchOf(r, ['a'], { host: { confirmUnpaired: async () => (asked++, true) } });
+    expect(h.closedWhy).toBeNull();
+    r.revoke('dev-h');
+    r.dropDevice('dev-h');
+    await until(() => states.at(-1) === 'closed', 25_000);
+    expect(h.closedWhy).toBe('unauthorized');
+    expect(asked).toBe(1);
+    expect(hErrors.filter((e) => e === 'ArcAid did not accept this device')).toHaveLength(REHOST_UNAUTHORIZED_MAX);
+    expect(hErrors.at(-1)).toBe('This PC is no longer paired with ArcAid');
+  }, 40_000);
+
+  it("the final review (finding 6): a PC that is paired again during its lobby (a new token) gets its room back by itself. The open socket held the old token, so the relay went on answering `unauthorized` while the pairing check, made with the new token, said paired: the room was asked for again for ever", async () => {
+    const r = (relay = await startFakeRelay({ devices: DEVICES, hostGraceMs: 50 }));
+    let asked = 0;
+    let token = DEVICES['dev-h'];
+    const { h, states } = await matchOf(r, ['a'], {
+      host: {
+        // The pairing check is ArcAid's own, made with the token this PC has now: paired.
+        confirmUnpaired: async () => (asked++, false),
+        freshAuth: () => ({ deviceId: 'dev-h', deviceToken: token }),
+      },
+    });
+    // Paired again in Settings: the old token is dead, the new one verifies.
+    r.revoke('dev-h');
+    r.dropDevice('dev-h');
+    r.accept('dev-h', 'tok-h-new');
+    token = 'tok-h-new';
+    await until(() => states.at(-1) === 'registered' && asked >= 1, 30_000);
+    expect(h.closedWhy).toBeNull();
+    expect(states).not.toContain('closed');
+    expect(asked).toBe(1);
+    expect(r.rooms()).toHaveLength(1);
+  }, 45_000);
+
+  it("A17 step 8 (the review of PR 138): the relay could not read the device for a while (two answers `unauthorized`, then it reads again): the host has its room back, nothing was given up and the second question was never asked; and when that question's answer is \"cannot tell\", the host goes on asking for its room", async () => {
+    const r = (relay = await startFakeRelay({ devices: DEVICES, hostGraceMs: 50 }));
+    let asked = 0;
+    let answer = false;
+    const { h, states, hErrors } = await matchOf(r, ['a'], { host: { confirmUnpaired: async () => (asked++, answer) } });
+    const refused = (): number => hErrors.filter((e) => e === 'ArcAid did not accept this device').length;
+    r.revoke('dev-h');
+    r.dropDevice('dev-h');
+    await until(() => refused() === 2, 15_000);
+    r.accept('dev-h', DEVICES['dev-h']);
+    await until(() => states.at(-1) === 'registered', 20_000);
+    expect(asked).toBe(0);
+    expect(states).not.toContain('closed');
+    expect(h.closedWhy).toBeNull();
+    // Again, and this time for longer: after the third answer ArcAid's own check is asked, and it cannot tell
+    // (it is down too): the host is still a host whose ArcAid is away, asking.
+    r.revoke('dev-h');
+    r.dropDevice('dev-h');
+    const before = refused();
+    await until(() => refused() >= before + 3 && asked === 1, 25_000);
+    expect(h.state).toBe('reconnecting');
+    expect(h.closedWhy).toBeNull();
+    answer = true;
+    void answer;
+  }, 70_000);
+
+  it('A17 step 8 (the review of PR 138): a host that starts again while ArcAid does not answer takes its room back when ArcAid does (`reclaim`): it is `reconnecting` meanwhile, never closed, and a client that waited finds the room', async () => {
+    const r = (relay = await startFakeRelay({ devices: DEVICES, hostGraceMs: 50 }));
+    const down = r.restart(1500);
+    await sleep(100);
+    const h = hostOn(r, { connectTimeoutMs: 300 });
+    const states: string[] = [];
+    h.onState((s) => states.push(s));
+    await expect(h.connect().then(() => h.host('RELAYA'))).rejects.toThrow();
+    h.reclaim('RELAYA');
+    expect(h.state).toBe('reconnecting');
+    await down;
+    await until(() => h.state === 'registered', 20_000);
+    expect(states).toEqual(['reconnecting', 'registered']);
+    expect(r.rooms()).toEqual(['RELAYA']);
+    const a = clientOn(r, 'a');
+    await a.connect('RELAYA');
+    expect(r.peers('RELAYA')).toHaveLength(1);
+  }, 40_000);
 
   it('match:leave: a host that closes ends the room at once (the clients are told host_left and do not ask again); a client that closes is a leave at the host', async () => {
     const r = (relay = await startFakeRelay({ devices: DEVICES }));
@@ -822,7 +1221,7 @@ describe('RelayPacer (D10.8): under the relay rate limit', () => {
 describe('CompositeTransport (D10.8): a host on its listener and its relay room at once', () => {
   it('a WebSocket client and a relay client are both peers; each gets its own frames and all; leaves come from the part that holds the peer', async () => {
     const r = (relay = await startFakeRelay({ devices: DEVICES }));
-    const ws = new WsPeerTransport({ localId: 'h' });
+    const ws = takesAll(new WsPeerTransport({ localId: 'h' }));
     const rh = hostOn(r);
     const host = new CompositeTransport([ws, rh]);
     open.push(host);

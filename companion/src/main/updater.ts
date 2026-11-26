@@ -249,7 +249,7 @@ export function installWaitReason(s: {
   vpx: boolean;
   recording: boolean;
 }): string | null {
-  if (s.match && (s.match.role !== 'none' || s.match.phase === 'connecting')) return 'until you leave the match';
+  if (s.match && (s.match.role !== 'none' || s.match.phase === 'connecting')) return 'until you leave the lobby';
   if (s.watch) return 'until you leave the 3D watch session';
   if (s.table) return `until ${s.table} is closed`;
   if (s.vpx) return 'until VPX is closed';

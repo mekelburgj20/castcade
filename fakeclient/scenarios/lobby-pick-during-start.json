@@ -1,0 +1,18 @@
+{
+  "name": "lobby-pick-during-start",
+  "description": "A17 step 10: a table pick while a start counts down is refused with a sentence (\"A match is starting: cancel the start to change the table.\"); the start goes on, and the match is played on the table the lobby had.",
+  "matchId": "PICKST",
+  "ballsPerGame": 2,
+  "lobby": { "countdownMs": 120 },
+  "host": "p1",
+  "players": [
+    { "playerId": "p1", "displayName": "Lobby PC", "stance": "play", "scores": [1000, 2000] },
+    { "playerId": "p2", "displayName": "Player Two", "stance": "play", "scores": [1500, 3000] }
+  ],
+  "matches": [
+    {
+      "start": { "by": "p1" },
+      "pickDuringStart": { "by": "p2", "game": { "tableName": "Attack from Mars (Bally 1995) VPW 1.1", "tableHash": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef", "romName": "afm_113b" } }
+    }
+  ]
+}

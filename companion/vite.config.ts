@@ -42,5 +42,13 @@ export default defineConfig({
     outDir: '../dist/renderer',
     emptyOutDir: true,
     sourcemap: true,
+    // The Arcaid look (2026-11-25): every font, carpet tile and icon is a file of its own, never a `data:` URL, which
+    // the window's Content-Security-Policy (default-src 'self', renderer/index.html) would refuse.
+    assetsInlineLimit: 0,
+    rollupOptions: {
+      // The kit's `.aw-screen` rule (renderer/src/aw-theme/aw-theme.css, verbatim) names the Arcaid Witness background
+      // picture. Castcade never ships or shows it (its ground is the carpet): that one URL is left as it is.
+      external: [/arcaid-witness-background/],
+    },
   },
 });

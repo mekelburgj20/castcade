@@ -19,11 +19,61 @@
  * scoreboard where I look": the player points the head where the scoreboard should be and chooses the line; the OpenXR
  * layer captures the place again from the head's pose at that moment (`placeScoreboard` on the overlay). The menu is on
  * the head-locked panel, so it stays readable wherever the head points.
+ *
+ * A17 step 4 (2026-11-24, alpha-match.md §11.2, §11.9): "End my ball" for the player who is up: their ball ends at
+ * the score as it stands and the turn passes (their own BALL_END, `manual`). For a table whose ball ends Castcade
+ * cannot read and for a stuck ball, from the headset, where the player is; it asks for a second choose.
+ *
+ * The review of PR 131: the question is about one grant. `MenuFacts.endBall` carries the grant, the first choose
+ * notes it (`MenuState.confirmFor`), and a second choose for another grant (the table ended the ball with an extra
+ * ball in between: the same ball number, another score) only asks again. And the question says what becomes of a
+ * ball that is still on the table: it is played out at the next turn.
+ *
+ * A17 step 7 (2026-11-25, alpha-match.md section 11.9): in a lobby (`MenuFacts.lobby`) the menu is every member's,
+ * and its lines are the lobby's: Start match / Next game for anyone (off with the sentence of the check that fails; a
+ * second choose where Start anyway is needed; **Start without Dana** while a start waits, **Cancel the start** while
+ * one is announced), Start a new match when it applies, Play or watch (a choose flips it), the volumes and the
+ * microphone as before, End my ball, Give up this game, End match (between games; on the lobby's PC during a game:
+ * End match for everyone), the lobby PC's answers about a player who is away, and Leave lobby (the lobby's PC:
+ * Close lobby). Without `lobby` in the facts the menu is the one it was. The table is changed on the Match tab only.
  */
 
 import type { PanelMenu } from '../media/match-media-types.js';
+import { possessive } from '../witness/midnight.js';
+import { shortName } from './short-name.js';
 
-export type MenuItemId = 'start' | 'next' | 'voice' | 'theirTable' | 'myTable' | 'mic' | 'scoreboard' | 'leave' | 'close';
+export type MenuItemId =
+  | 'start'
+  | 'next'
+  | 'voice'
+  | 'theirTable'
+  | 'myTable'
+  | 'mic'
+  | 'scoreboard'
+  | 'endBall'
+  | 'leave'
+  | 'close'
+  // A17 step 7: the lobby's lines. A line whose meaning differs has an id of its own (the review of PR 136): the
+  // start that goes without what it waits for is `startNow`, never `start`; End match for everyone is `endMatchAll`.
+  | 'cancelStart'
+  | 'startNow'
+  // A17 step 9 (2026-11-27, the earlier second reader): the last two lines whose meaning moved under one id. The
+  // start of the next game of the open match is `nextGame`, never `start` (a question asked about Start match is
+  // not answered as Next game once a game has been played meanwhile). Leaving is three things: `leave` (a member
+  // goes), `leaveGame` (a member goes during their own game, which they give up by it), `closeLobby` (the lobby's
+  // PC closes the lobby for everyone).
+  | 'nextGame'
+  | 'leaveGame'
+  | 'closeLobby'
+  | 'newMatch'
+  | 'stance'
+  | 'giveUp'
+  | 'endMatch'
+  | 'endMatchAll'
+  | 'awayWait'
+  | 'awayEnd'
+  | 'awayPlayOn'
+  | 'playOn';
 export type MenuVolume = 'voice' | 'theirTable' | 'myTable';
 
 /** What the match host knows that decides the menu's lines. */
@@ -49,6 +99,50 @@ export interface MenuFacts {
    * is on the pipe yet.
    */
   scoreboardPlace: 'ready' | 'old_layer' | 'not_connected' | null;
+  /**
+   * A17 step 4: the "End my ball" line: the ball this player is playing and the score it would end at; null (or absent,
+   * in facts from before it): no such line (it is not this player's ball, or the match is paused).
+   */
+  endBall?: { ball: number; score: number; grantSeq?: number; tableBall?: boolean } | null;
+  /**
+   * A17 step 7: the match is in a lobby: the lines are the lobby's (the file header). Null or absent: no lobby, the
+   * menu as it was.
+   */
+  lobby?: MenuLobby | null;
+}
+
+/** A17 step 7: what the match host knows of the lobby that decides the menu's lines. */
+export interface MenuLobby {
+  /** This PC opened the lobby: its Leave closes the lobby for everyone. */
+  opener: boolean;
+  stance: 'play' | 'watch';
+  /** The start line: its words (Start match, Next game) and why it cannot be chosen now (null: it can). */
+  start: { label: string; off: string | null };
+  /** A start is announced. `without`: while it waits for people or 3D, the words of the second press ("Start without Dana"). */
+  announced: { without: string | null } | null;
+  /**
+   * Start a new match applies: a match is open between games and somebody outside it is set to Play. `warnings`: the
+   * tables among the new match's players that cannot report ball ends (the review of PR 136): they are in the
+   * line's question, and the choose that answers it starts anyway.
+   */
+  newMatch: { warnings: readonly string[] } | null;
+  /**
+   * What a question of the lobby's lines is about: the open match and its game ("JHDFEF-2/3"; empty: no match). A
+   * question asked in one game is not answered in another (the review of PR 136).
+   */
+  game?: string;
+  /** The lobby's PC is away: what would only be sent into a link that is down is off, and says so. */
+  hostAway?: boolean;
+  /** The lobby is over on this PC (it lingers a moment before it closes): the volumes and Close menu are what is left. */
+  over?: boolean;
+  /** What End match would end: the open match, between games; on the lobby's PC during a game, the match for everyone. */
+  end: 'match' | 'everyone' | null;
+  /** This player plays the game that is being played and may give it up. */
+  giveUp: boolean;
+  /** The lobby's PC: the name of the player the game waits for at their own turn; null: nobody. */
+  waitedFor: string | null;
+  /** The lobby's PC: that player is up, out of reach and still seen playing: the three answers, and the score their ball would end at. */
+  awayQuestion: { name: string; score: number } | null;
 }
 
 export interface MenuItem {
@@ -60,6 +154,8 @@ export interface MenuItem {
   off: string | null;
   /** The question a first choose asks, null when one choose is enough. */
   confirm: string | null;
+  /** What the question is about (a game of a match); the second choose counts only for the same one. Absent: nothing that changes. */
+  subject?: string | null;
 }
 
 /** The menu's volume lines: the range (percent) and the step of one press. */
@@ -71,8 +167,17 @@ export const MENU_VOLUME: Record<MenuVolume, { min: number; max: number; step: n
 
 const isVolume = (id: MenuItemId): id is MenuVolume => id === 'voice' || id === 'theirTable' || id === 'myTable';
 
+/**
+ * The menu's question before a ball is ended by hand: the score it ends at, and, on a table whose ball is still in
+ * play, that the ball is not lost (the review of PR 131: it is played out first at the player's next turn).
+ */
+export function endBallQuestion(b: { score: number; tableBall?: boolean }): string {
+  return `Choose again to end your ball at ${b.score.toLocaleString('en-US')}${b.tableBall ? '. The ball on your table is played out first at your next turn' : ''}`;
+}
+
 export function menuItems(f: MenuFacts): MenuItem[] {
   const items: MenuItem[] = [];
+  if (f.lobby) return lobbyItems(f, f.lobby);
   if (f.role === 'host' && f.phase === 'lobby') {
     items.push({
       id: 'start',
@@ -109,6 +214,10 @@ export function menuItems(f: MenuFacts): MenuItem[] {
       confirm: null,
     });
   }
+  // A17 step 4: the player who is up may end their own ball by hand; the score is said before it is done.
+  if (f.endBall) {
+    items.push({ id: 'endBall', label: 'End my ball', value: null, off: null, confirm: endBallQuestion(f.endBall) });
+  }
   // The host's leave between games is End match (A10); at any other time, and for a client, it is Leave match.
   const ends = f.role === 'host' && f.phase === 'over' && !f.seriesOver;
   items.push({
@@ -122,6 +231,93 @@ export function menuItems(f: MenuFacts): MenuItem[] {
   return items;
 }
 
+/** The lines every menu has: the three volumes, the microphone, the scoreboard's place and End my ball. */
+function commonItems(f: MenuFacts, items: MenuItem[], subject: string | null = null): void {
+  items.push({ id: 'voice', label: 'Voice volume', value: `${f.voice} %`, off: null, confirm: null });
+  items.push({ id: 'theirTable', label: 'Their table sound', value: `${f.theirTable} %`, off: null, confirm: null });
+  items.push({ id: 'myTable', label: 'My table while I play', value: `${f.myTable} %`, off: null, confirm: null });
+  items.push({
+    id: 'mic',
+    label: 'Microphone',
+    value: f.mic === 'open' ? 'ON' : f.mic === 'muted' ? 'MUTED' : 'NONE',
+    off: f.mic === 'unavailable' ? 'No microphone on this PC' : null,
+    confirm: null,
+  });
+  if (f.scoreboardPlace !== null) {
+    items.push({
+      id: 'scoreboard',
+      label: 'Put the scoreboard where I look',
+      value: null,
+      off:
+        f.scoreboardPlace === 'old_layer'
+          ? 'Restart VPX first: until then the scoreboard follows your head'
+          : f.scoreboardPlace === 'not_connected'
+            ? 'The headset is not showing Castcade yet'
+            : null,
+      confirm: null,
+    });
+  }
+  // `subject` (a lobby): the match and its game; every match numbers its grants from 1 again.
+  if (f.endBall) items.push({ id: 'endBall', label: 'End my ball', value: null, off: null, confirm: endBallQuestion(f.endBall), ...(subject !== null ? { subject } : {}) });
+}
+
+/** A17 step 7 (alpha-match.md section 11.9): the menu of a member of a lobby, top to bottom. */
+function lobbyItems(f: MenuFacts, l: MenuLobby): MenuItem[] {
+  const items: MenuItem[] = [];
+  if (l.over) {
+    commonItems({ ...f, endBall: null }, items);
+    items.push({ id: 'close', label: 'Close menu', value: null, off: null, confirm: null });
+    return items;
+  }
+  const game = f.phase === 'playing' || f.phase === 'paused';
+  const subject = l.game ?? '';
+  if (l.awayQuestion) {
+    const who = shortName(l.awayQuestion.name, 16);
+    items.push({ id: 'awayWait', label: `Keep waiting for ${who}`, value: null, off: null, confirm: null });
+    items.push({ id: 'awayEnd', label: `End ${possessive(who)} ball`, value: null, off: null, confirm: `Choose again to end ${possessive(who)} ball at ${l.awayQuestion.score.toLocaleString('en-US')}; the turn passes`, subject });
+    items.push({ id: 'awayPlayOn', label: `Play on without ${who}`, value: null, off: null, confirm: `Choose again: ${who} is out of this game`, subject });
+  }
+  const away = l.hostAway ? "The lobby's PC is away: this waits until it is back" : null;
+  if (l.announced) {
+    // A second choose while a start waits starts without what it waits for; anybody takes a start back.
+    if (l.announced.without !== null) items.push({ id: 'startNow', label: l.announced.without, value: null, off: away, confirm: null });
+    items.push({ id: 'cancelStart', label: 'Cancel the start', value: null, off: away, confirm: null });
+  } else if (!game) {
+    // Not while a game is being played: nothing can start then, and the first line of the menu is not one that is off.
+    items.push({
+      id: l.start.label === 'Next game' ? 'nextGame' : 'start',
+      label: l.start.label,
+      value: null,
+      off: l.start.off,
+      confirm: l.start.off === null && f.startWarnings.length > 0 ? `${f.startWarnings.join(' · ')}. Choose again to start anyway` : null,
+      subject,
+    });
+    if (l.newMatch) {
+      const w = l.newMatch.warnings;
+      items.push({ id: 'newMatch', label: 'Start a new match', value: null, off: null, confirm: w.length > 0 ? `${w.join(' · ')}. Choose again to start anyway: the open match ends` : 'Choose again: the open match ends', subject });
+    }
+  }
+  items.push({ id: 'stance', label: 'Play or watch', value: l.stance === 'play' ? 'PLAY' : 'WATCH', off: null, confirm: null });
+  commonItems(f, items, subject);
+  if (l.giveUp) items.push({ id: 'giveUp', label: 'Give up this game', value: null, off: null, confirm: 'Choose again to give up this game', subject });
+  if (l.awayQuestion) {
+    // The final review (2026-11-28, finding 9): the three answers are the first lines of the menu while the question
+    // stands (`awayItems`, above): they were lines 8 to 10, seven presses down in the headset.
+  } else if (l.waitedFor !== null) {
+    items.push({ id: 'playOn', label: `Play on without ${shortName(l.waitedFor, 16)}`, value: null, off: null, confirm: `Choose again: ${shortName(l.waitedFor)} is out of this game`, subject });
+  }
+  // Two lines with two ids: a question asked about the one is never answered as the other.
+  if (l.end === 'match') items.push({ id: 'endMatch', label: 'End match', value: null, off: null, confirm: 'Choose again to end the match; everyone stays in the lobby', subject });
+  if (l.end === 'everyone') items.push({ id: 'endMatchAll', label: 'End match for everyone', value: null, off: null, confirm: 'Choose again to end the match for everyone: the game being played gets no result', subject });
+  // Step 9: three lines with three ids. A member who leaves during their own game gives it up by leaving (design
+  // 11.2): the question says so, and is about that game.
+  if (l.opener) items.push({ id: 'closeLobby', label: 'Close lobby', value: null, off: null, confirm: 'Choose again to close the lobby for everyone' });
+  else if (l.giveUp) items.push({ id: 'leaveGame', label: 'Leave lobby', value: null, off: null, confirm: 'Choose again to leave the lobby: you give up the game you are playing', subject });
+  else items.push({ id: 'leave', label: 'Leave lobby', value: null, off: null, confirm: 'Choose again to leave the lobby' });
+  items.push({ id: 'close', label: 'Close menu', value: null, off: null, confirm: null });
+  return items;
+}
+
 export interface MenuState {
   open: boolean;
   /** The chosen line, by id: the lines change with the match (Start match goes at the start), the choice stays put. */
@@ -130,26 +326,129 @@ export interface MenuState {
   confirming: MenuItemId | null;
   /** One line under the menu: the question, a refusal, or what the last choose did. */
   note: string | null;
+  /** The final review (finding 12): the words of the chosen line when the menu was last drawn (`menuDrawn`). */
+  drawn?: string | null;
+  /** The review of PR 131: for End my ball, the grant the question on screen was asked about (absent: none). */
+  confirmFor?: number | null;
+  /** The review of PR 136: what the question on screen was asked about (`MenuItem.subject`; absent: nothing that changes). */
+  confirmSubject?: string | null;
 }
 
 export const MENU_CLOSED: MenuState = { open: false, at: null, confirming: null, note: null };
 
+/**
+ * The final review (2026-11-28, finding 12): the words of the chosen line as the person sees them, noted when the
+ * menu is drawn (`drawn`). A press acts on what was on the screen: "Start without Dana" chosen in the moment the
+ * start turns to wait for 3D sends "Start without Dana", which the shell then refuses, as the Match tab's button does.
+ */
+export function menuDrawn(state: MenuState, items: readonly MenuItem[]): MenuState {
+  if (!state.open) return state;
+  const label = items.find((it) => it.id === state.at)?.label ?? null;
+  return (state.drawn ?? null) === label ? state : { ...state, drawn: label };
+}
+
+/**
+ * The lobby PC's panel line while it is asked about a player who is up, out of reach and still seen playing (finding
+ * 9): that the question is open, what the answers are, and which key opens the menu that holds them.
+ */
+export function awayQuestionLine(name: string, menuKeyWords: string): string {
+  return `${name} is out of reach and still playing. Keep waiting, end their ball, or play on without them: open the menu (${menuKeyWords}) or the Match tab`;
+}
+
+/**
+ * The lobby's part of the menu's facts, from the lobby as the Match tab has it. One function for the shell and for
+ * the story pages of the screens (finding 15: the story drew its menus from a copy of this made by hand).
+ */
+export function menuLobbyOf(
+  l: {
+    stance: 'play' | 'watch';
+    startButton: { label: 'Start match' | 'Next game'; off: string | null };
+    start: unknown | null;
+    startWithout: string | null;
+    newMatch: { warnings: string[] } | null;
+    gameKey: string;
+    hostAway: unknown | null;
+    over: boolean;
+    end: 'match' | 'everyone' | null;
+    giveUp: boolean;
+    waitedFor: { name: string } | null;
+    awayQuestion: { name: string; score: number } | null;
+  },
+  opener: boolean,
+): MenuLobby {
+  return {
+    opener,
+    stance: l.stance,
+    start: { label: l.startButton.label, off: l.startButton.off },
+    announced: l.start ? { without: l.startWithout } : null,
+    newMatch: l.newMatch ? { warnings: l.newMatch.warnings } : null,
+    game: l.gameKey,
+    hostAway: l.hostAway !== null,
+    over: l.over,
+    end: l.end,
+    giveUp: l.giveUp,
+    waitedFor: l.waitedFor?.name ?? null,
+    awayQuestion: l.awayQuestion ? { name: l.awayQuestion.name, score: l.awayQuestion.score } : null,
+  };
+}
+
 export type MenuKey = 'menu' | 'choose' | 'up' | 'down' | 'left' | 'right';
 
 export type MenuEffect =
-  | { kind: 'start'; anyway: boolean }
+  /** `now` (A17 step 7): the second choose while a start waits: start without what it waits for. */
+  | { kind: 'start'; anyway: boolean; now?: boolean; without?: string }
+  /** A17 step 7: the lobby's choices. */
+  | { kind: 'cancelStart' }
+  /** `anyway`: the question named a table that cannot report ball ends, and the choose answered it. */
+  | { kind: 'newMatch'; anyway: boolean }
+  | { kind: 'stance'; to: 'play' | 'watch' }
+  | { kind: 'giveUp' }
+  /** `everyone`: the line was End match for everyone (a game is being played); false: End match, between games. */
+  | { kind: 'endMatch'; everyone: boolean }
+  | { kind: 'away'; answer: 'wait' | 'end_ball' | 'play_on' }
+  | { kind: 'playOn' }
   | { kind: 'next' }
   /** `to`: the new value in percent, already inside the line's range. */
   | { kind: 'volume'; which: MenuVolume; to: number }
   | { kind: 'mic'; muted: boolean }
   /** D8.12.3: the layer captures the scoreboard's place again, where the head points now. */
   | { kind: 'placeScoreboard' }
+  /** A17 step 4: this player's own ball ends now, by hand. */
+  | { kind: 'endBall'; grantSeq?: number }
   | { kind: 'leave' };
 
-/** The index of the chosen line among `items` (the first line when it is gone or none was chosen). */
+/**
+ * The index of the chosen line among `items`, for the picture of the menu (the first line when the chosen one is
+ * gone). A press never goes by this alone: see `menuPress`.
+ */
 export function menuIndex(state: MenuState, items: readonly MenuItem[]): number {
   const i = items.findIndex((it) => it.id === state.at);
   return i < 0 ? 0 : i;
+}
+
+/** What a press says when the line the cursor was on is no longer there. */
+export const MENU_CHANGED_NOTE = 'The menu changed: nothing was chosen';
+
+/** Is the question on screen still the one this line asks now (the same line, the same words, about the same game)? */
+function stillAsked(state: MenuState, item: MenuItem | undefined): boolean {
+  if (item === undefined || state.confirming !== item.id || item.confirm === null) return false;
+  // End my ball's question names the score as it stands, which may move between the two chooses while the question
+  // stays the same one: it is held to its grant (`confirmFor`, the review of PR 131), not to its words.
+  if (item.id === 'endBall') return (state.confirmSubject ?? null) === (item.subject ?? null);
+  return state.note === item.confirm && (state.confirmSubject ?? null) === (item.subject ?? null);
+}
+
+/**
+ * The review of PR 136: the lines changed while the menu was open (somebody's start, the end of a game, a question
+ * withdrawn). A question on screen whose line is gone, or asks something else now, or is about another game, is
+ * closed: it must not be answered by a choose made for it earlier. The cursor stays where it was, by line id; a
+ * line that is gone is not replaced by another one here (`menuPress` deals with the press). Returns `state` itself
+ * when nothing changed. End my ball's question keeps its own rule (`confirmFor`, the review of PR 131).
+ */
+export function menuSettle(state: MenuState, items: readonly MenuItem[]): MenuState {
+  if (!state.open || state.confirming === null || state.confirming === 'endBall') return state;
+  if (stillAsked(state, items.find((it) => it.id === state.confirming))) return state;
+  return { open: true, at: state.at, confirming: null, note: null };
 }
 
 /** A volume one press away: `wrap` (the choose key, which only goes up) starts again at the lowest after the highest. */
@@ -166,6 +465,9 @@ export function menuPress(state: MenuState, items: readonly MenuItem[], facts: M
     return { state: { open: true, at: items[0]?.id ?? null, confirming: null, note: null }, effect: null };
   }
   if (items.length === 0) return { state: MENU_CLOSED, effect: null };
+  // The review of PR 136: the line the cursor was on is gone (the lines changed under it). Whatever the key, the
+  // press only puts the cursor on the first line and says so: a choose never lands on a line that was not chosen.
+  if (!items.some((it) => it.id === state.at)) return { state: { open: true, at: items[0]!.id, confirming: null, note: MENU_CHANGED_NOTE }, effect: null };
   const i = menuIndex(state, items);
   const move = (by: number): { state: MenuState; effect: null } => ({
     state: { open: true, at: items[(i + by + items.length) % items.length]!.id, confirming: null, note: null },
@@ -182,10 +484,45 @@ export function menuPress(state: MenuState, items: readonly MenuItem[], facts: M
   }
   if (key === 'left') return { state, effect: null };
   if (item.off !== null) return { state: { ...here, note: item.off }, effect: null };
-  if (item.confirm !== null && state.confirming !== item.id) return { state: { ...here, confirming: item.id, note: item.confirm }, effect: null };
+  // The review of PR 131: End my ball's question is about one grant: asked again when the grant is another by now.
+  const asked = item.id === 'endBall' ? (facts.endBall?.grantSeq ?? null) : null;
+  // The review of PR 136: the second choose counts only for the question as it was asked: the same words, about the
+  // same game. Anything else asks (again).
+  if (item.confirm !== null && (!stillAsked(state, item) || (item.id === 'endBall' && (state.confirmFor ?? null) !== asked))) {
+    return { state: { ...here, confirming: item.id, note: item.confirm, ...(item.id === 'endBall' ? { confirmFor: asked } : {}), ...(item.subject != null ? { confirmSubject: item.subject } : {}) }, effect: null };
+  }
   switch (item.id) {
     case 'start':
+    case 'nextGame':
       return { state: MENU_CLOSED, effect: { kind: 'start', anyway: item.confirm !== null } };
+    case 'startNow':
+      // The review of PR 138: the press says what it was about (the line's own words): the shell does nothing when
+      // the start waits for something else by then. The final review (finding 12): the words are the ones the line
+      // had when the menu was last drawn with the cursor on it (`MenuState.drawn`), not the ones it has at the
+      // press: those were compared with themselves.
+      return { state: MENU_CLOSED, effect: { kind: 'start', anyway: false, now: true, without: state.at === 'startNow' && state.drawn != null ? state.drawn : item.label } };
+    case 'cancelStart':
+      return { state: MENU_CLOSED, effect: { kind: 'cancelStart' } };
+    case 'newMatch':
+      return { state: MENU_CLOSED, effect: { kind: 'newMatch', anyway: (facts.lobby?.newMatch?.warnings.length ?? 0) > 0 } };
+    case 'stance':
+      if (facts.lobby?.over) return { state: here, effect: null };
+      // The menu stays open: the line shows the new choice.
+      return { state: here, effect: { kind: 'stance', to: facts.lobby?.stance === 'play' ? 'watch' : 'play' } };
+    case 'giveUp':
+      return { state: MENU_CLOSED, effect: { kind: 'giveUp' } };
+    case 'endMatch':
+      return { state: MENU_CLOSED, effect: { kind: 'endMatch', everyone: false } };
+    case 'endMatchAll':
+      return { state: MENU_CLOSED, effect: { kind: 'endMatch', everyone: true } };
+    case 'awayWait':
+      return { state: MENU_CLOSED, effect: { kind: 'away', answer: 'wait' } };
+    case 'awayEnd':
+      return { state: MENU_CLOSED, effect: { kind: 'away', answer: 'end_ball' } };
+    case 'awayPlayOn':
+      return { state: MENU_CLOSED, effect: { kind: 'away', answer: 'play_on' } };
+    case 'playOn':
+      return { state: MENU_CLOSED, effect: { kind: 'playOn' } };
     case 'next':
       return { state: MENU_CLOSED, effect: { kind: 'next' } };
     case 'mic':
@@ -193,7 +530,11 @@ export function menuPress(state: MenuState, items: readonly MenuItem[], facts: M
     case 'scoreboard':
       // The menu closes: the panel goes, and the scoreboard is seen at its new place at once.
       return { state: MENU_CLOSED, effect: { kind: 'placeScoreboard' } };
+    case 'endBall':
+      return { state: MENU_CLOSED, effect: { kind: 'endBall', ...(asked !== null ? { grantSeq: asked } : {}) } };
     case 'leave':
+    case 'leaveGame':
+    case 'closeLobby':
       return { state: MENU_CLOSED, effect: { kind: 'leave' } };
     default:
       return { state: MENU_CLOSED, effect: null };
@@ -216,10 +557,12 @@ export function readMenuKey(gapMs: number | null): 'single' | 'double' | 'repeat
 
 export function menuView(state: MenuState, items: readonly MenuItem[], hint: string): PanelMenu | null {
   if (!state.open) return null;
+  // A note that belongs to a line which is gone is not shown over another line.
+  const here = items.some((it) => it.id === state.at);
   return {
     items: items.map((it) => ({ label: it.label, value: it.value, off: it.off !== null })),
     index: menuIndex(state, items),
-    note: state.note,
+    note: here || state.note === MENU_CHANGED_NOTE ? state.note : null,
     hint,
   };
 }

@@ -1,0 +1,16 @@
+{
+  "name": "lobby-ended-for-everyone",
+  "description": "A17 step 6: the lobby's PC ends the match for everyone in the middle of its second game. No FORFEIT is logged and no RESULT is sent for that game: the log stops where it stands, MATCH_END says which game was left unfinished, and the tally is the first game's. A new match follows in the same lobby.",
+  "matchId": "ENDALL",
+  "ballsPerGame": 2,
+  "lobby": true,
+  "host": "p1",
+  "players": [
+    { "playerId": "p1", "displayName": "Lobby PC", "stance": "play", "scores": [1000, 2000] },
+    { "playerId": "p2", "displayName": "Player Two", "stance": "play", "scores": [1500, 3000] }
+  ],
+  "matches": [
+    { "games": 2, "endForEveryone": { "afterGrants": 6 } },
+    {}
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "$id": "https://castcade.dev/protocol/v7/LEAVE_LOBBY.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {},
+  "additionalProperties": false,
+  "description": "client -> host, in a lobby. The sender leaves on purpose: its row goes at once (a game it is playing it gives up first), a start it was in is looked at again, and its place is free. Sent before the link closes; nothing answers it but the HELLO_ACK the others get. Never logged."
+}

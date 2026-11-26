@@ -27,6 +27,75 @@ export interface PlayerScript {
   rogueBallEnd?: boolean;
   /** Fingerprint overrides for this player; any difference from the host's gets refused. */
   game?: Partial<GameFingerprint>;
+  /**
+   * A17 step 4 (2026-11-24): this player ends every ball by hand (End my ball): its BALL_ENDs say `detectorReason:
+   * 'manual'` where the scripted player otherwise says `script`. Nothing else about its play changes.
+   */
+  endsByHand?: boolean;
+  /** A17 step 5 (2026-11-25), a lobby scenario: this member's choice at the join, Play or Watch (default play). */
+  stance?: 'play' | 'watch';
+  /**
+   * A17 step 5, a lobby scenario: this member is not there from the start: it joins while match `match` (1-based) is
+   * played, when the lobby's PC has issued `afterGrants` grants of it. It is sent that match's log and watches.
+   */
+  joinsAt?: { match: number; afterGrants: number };
+  /**
+   * A17 step 6, a lobby scenario run on links that can drop (`RunLobbyOptions.links`): this member's link to the
+   * lobby's PC drops when the lobby's PC has issued `afterGrants` grants of match `match` (1-based), and can be made
+   * again `forMs` later, or when `back` says (a grant of that or a later match). The member comes back by itself.
+   */
+  drops?: { match: number; afterGrants: number; forMs?: number; back?: { match: number; afterGrants: number } };
+}
+
+/** A17 step 6: who asks for a start in a lobby scenario, and how. */
+export interface LobbyAsk {
+  by: PlayerId;
+  /** `button` (default): the Match tab or the menu; `table`: a game started on the asker's own table. */
+  how?: 'button' | 'table';
+  /** The asker confirmed a start with a table that cannot report ball ends. */
+  anyway?: boolean;
+}
+
+/** A17 step 5 (2026-11-25): one match of a lobby scenario. The lobby's PC starts and ends it; who plays is said here. */
+export interface LobbyMatchScript {
+  /** Choices that change before this match starts, by member; each says its own to the lobby's PC. */
+  stances?: Record<PlayerId, 'play' | 'watch'>;
+  /** Who plays, the first to go first. Omitted: everyone set to Play, in the lobby's order (the engine's rule). */
+  players?: PlayerId[];
+  /** Games in the match (default 1): the next game follows each RESULT, with the match's own players. */
+  games?: number;
+  /**
+   * How it ends: `end` (default): End match, back to the lobby, and the next match starts from there; `new`: the
+   * next match's start ends it (Start a new match); `pick` (step 10): the next match's table pick ends it. The last
+   * match of a scenario is always ended.
+   */
+  closes?: 'end' | 'new' | 'pick';
+  /**
+   * A17 step 6: the match is ASKED for (START_REQUEST, with the checks and the countdown), by this member; so is
+   * each next game of it. Omitted: the lobby's PC starts it itself, at once, as in step 5 (`startMatch`).
+   */
+  start?: LobbyAsk;
+  /** A17 step 6: a second ask in the same moment as `start` (two tables, or a button and a table). */
+  alsoStart?: LobbyAsk;
+  /** A17 step 6: once the start waits, this member presses again: start without what it waits for (`now`). */
+  startWithout?: PlayerId;
+  /**
+   * A17 step 6: the lobby's PC ends the match for everyone when it has issued this many grants of it: the game
+   * being played has no result.
+   */
+  endForEveryone?: { afterGrants: number };
+  /**
+   * A17 step 10: before this match, this member picks the lobby's table (TABLE_PICK; the lobby's PC of its own
+   * engine): `game` over the scenario's default table, `tableObjects` the Castcade VPX build's identity of it. A
+   * match that was left open (`closes: 'pick'` on the one before) ends by it ("the table changed"). Then every
+   * member opens the picked table (each says so), and the match starts on it.
+   */
+  pick?: { by: PlayerId; game: Partial<GameFingerprint>; tableObjects?: { editables: number; hash: string } };
+  /**
+   * A17 step 10: while this match's start is announced (it needs `start`), this member picks another table: refused
+   * ("A match is starting: cancel the start to change the table."), and the match starts on the table it was.
+   */
+  pickDuringStart?: { by: PlayerId; game: Partial<GameFingerprint> };
 }
 
 export interface TransferScript {
@@ -57,6 +126,15 @@ export interface Scenario {
   /** Host timeout before PAUSE(ball_end_timeout); scenarios with a silent player set it short. */
   ballEndTimeoutMs?: number;
   logSignTimeoutMs?: number;
+  /**
+   * A17 step 5 (2026-11-25): the scenario is a lobby (`HostOptions.lobby` / `ClientOptions.lobby` on): `host` is the
+   * lobby's PC, `matchId` the lobby's code, `matches` what is played in it, one after the other, and every player
+   * has a `stance`. Run by `runLobbyScenario` (`lobby.ts`), not by `runLocalScenario`. The object form sets the
+   * lobby's own numbers (`logPageSize`, `logPageGapMs`: a join in the middle of a match gets the log in pages).
+   */
+  lobby?: boolean | { size?: number; logPageSize?: number; logPageGapMs?: number; countdownMs?: number; placeMs?: number; turnMs?: number };
+  /** A17 step 5: the matches of a lobby scenario, in order. */
+  matches?: LobbyMatchScript[];
   expect?: {
     winner?: PlayerId | null;
     ranks?: Record<PlayerId, number>;
@@ -90,6 +168,31 @@ export const SCENARIO_NAMES = [
 ] as const;
 export type ScenarioName = (typeof SCENARIO_NAMES)[number];
 
+/** A17 step 5 (2026-11-25): the bundled lobby scenarios (`lobby: true`), run by `runLobbyScenario`. */
+export const LOBBY_SCENARIO_NAMES = [
+  'lobby-two-matches',
+  'lobby-watcher',
+  'lobby-host-watches',
+  'lobby-join-mid-game',
+  'lobby-long-log',
+  'lobby-series-then-new-match',
+  // Step 6: asking, and dropping.
+  'lobby-start-by-client',
+  'lobby-start-from-starter-table',
+  'lobby-two-starts',
+  'lobby-start-without',
+  'lobby-ended-for-everyone',
+  'lobby-watcher-drops',
+  'lobby-waiting-player-drops',
+  'lobby-player-up-drops',
+  'lobby-rejoin-other-match',
+  'lobby-reconnect-replayed',
+  // Step 10: the table changes in a lobby.
+  'lobby-table-change',
+  'lobby-pick-during-start',
+] as const;
+export type LobbyScenarioName = (typeof LOBBY_SCENARIO_NAMES)[number];
+
 function scenariosDir(): URL {
   // Works from src/ (tsx, vitest) and from dist/ (built CLI): both sit one level below the package root.
   return new URL('../scenarios/', import.meta.url);
@@ -119,6 +222,36 @@ export function validateScenario(raw: unknown, source = '<inline>'): Scenario {
     if (!Array.isArray(p.scores)) throw new Error(`${source}: ${p.playerId} needs a scores array`);
   }
   if (!s.players.some((p) => p.playerId === s.host)) throw new Error(`${source}: host ${s.host} is not a player`);
+  // A17 step 5: the lobby's keys. A scenario without `lobby` has none of them.
+  const ids = new Set(s.players.map((p) => p.playerId));
+  const isStance = (v: unknown): boolean => v === 'play' || v === 'watch';
+  for (const p of s.players) {
+    if (p.stance !== undefined && !isStance(p.stance)) throw new Error(`${source}: ${p.playerId}: stance is play or watch`);
+    if (p.joinsAt !== undefined && (!s.lobby || typeof p.joinsAt.match !== 'number' || typeof p.joinsAt.afterGrants !== 'number' || p.joinsAt.match < 1 || p.joinsAt.afterGrants < 1 || p.playerId === s.host)) {
+      throw new Error(`${source}: ${p.playerId}: joinsAt needs a lobby, a match and a grant count, and is not for the lobby's PC`);
+    }
+  }
+  if (s.lobby) {
+    if (!Array.isArray(s.matches) || s.matches.length < 1) throw new Error(`${source}: a lobby scenario needs matches`);
+    for (const [i, m] of s.matches.entries()) {
+      if (typeof m !== 'object' || m === null) throw new Error(`${source}: match ${i + 1} must be an object`);
+      for (const id of m.players ?? []) if (!ids.has(id)) throw new Error(`${source}: match ${i + 1}: ${id} is not a player`);
+      for (const [id, v] of Object.entries(m.stances ?? {})) if (!ids.has(id) || !isStance(v)) throw new Error(`${source}: match ${i + 1}: a stance is play or watch, for a player of the scenario`);
+      if (m.games !== undefined && (typeof m.games !== 'number' || m.games < 1)) throw new Error(`${source}: match ${i + 1}: games must be >= 1`);
+      if (m.closes !== undefined && m.closes !== 'end' && m.closes !== 'new' && m.closes !== 'pick') throw new Error(`${source}: match ${i + 1}: closes is end, new or pick`);
+      for (const pick of [m.pick, m.pickDuringStart]) {
+        if (pick !== undefined && (!ids.has(pick.by) || typeof pick.game !== 'object' || pick.game === null)) throw new Error(`${source}: match ${i + 1}: a table is picked by a player of the scenario, with a game`);
+      }
+      if (m.pickDuringStart !== undefined && m.start === undefined) throw new Error(`${source}: match ${i + 1}: pickDuringStart needs a start that is asked for`);
+      if (m.closes === 'pick' && s.matches[i + 1]?.pick === undefined) throw new Error(`${source}: match ${i + 1}: closes pick needs a pick before the next match`);
+      for (const ask of [m.start, m.alsoStart]) {
+        if (ask !== undefined && (!ids.has(ask.by) || (ask.how !== undefined && ask.how !== 'button' && ask.how !== 'table'))) throw new Error(`${source}: match ${i + 1}: a start is asked by a player of the scenario, from a button or a table`);
+      }
+      if (m.startWithout !== undefined && !ids.has(m.startWithout)) throw new Error(`${source}: match ${i + 1}: startWithout names a player of the scenario`);
+    }
+  } else if (s.matches !== undefined) {
+    throw new Error(`${source}: matches needs lobby: true`);
+  }
   return s as Scenario;
 }
 

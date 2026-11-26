@@ -20,7 +20,7 @@ const participant = (id: string, keys: KeyPair): ParticipantInfo => ({ playerId:
 
 type Got = { from: PlayerId; signal: PayloadOf<'MEDIA_SIGNAL'> };
 
-async function rig(ids: string[]): Promise<{ bus: MemoryBus; host: HostMatch; clients: Record<string, ClientMatch>; got: Record<string, Got[]>; wire: Record<string, AnyMessage[]>; rejects: RejectInfo[] }> {
+async function rig(ids: string[], start = true): Promise<{ bus: MemoryBus; host: HostMatch; clients: Record<string, ClientMatch>; got: Record<string, Got[]>; wire: Record<string, AnyMessage[]>; rejects: RejectInfo[] }> {
   const bus = new MemoryBus();
   const clock = new ManualClock();
   const hostKeys = generateKeys();
@@ -43,13 +43,14 @@ async function rig(ids: string[]): Promise<{ bus: MemoryBus; host: HostMatch; cl
     c.join();
   }
   await flush();
-  host.start();
+  if (start) host.start();
   await flush();
   return { bus, host, clients, got, wire, rejects };
 }
 
 const offer = { kind: 'offer' as const, sdp: 'v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\n' };
 const ice = { kind: 'ice' as const, candidate: { candidate: 'candidate:1 1 udp 2122260223 10.0.0.2 50000 typ host', sdpMid: '0', sdpMLineIndex: 0 } };
+const ANSWER_SDP = 'v=0\r\n';
 const signalsOn = (msgs: AnyMessage[] | undefined): AnyMessage[] => (msgs ?? []).filter((m) => m.type === 'MEDIA_SIGNAL');
 
 describe('MEDIA_SIGNAL relay (D2)', () => {
@@ -122,5 +123,28 @@ describe('MEDIA_SIGNAL relay (D2)', () => {
     await flush();
     expect(dropped).toEqual(['MEDIA_SIGNAL:unexpected']);
     expect(r.got['a']).toEqual([]);
+  });
+
+  it('A17 step 1 (2026-11-24): in the lobby, before MATCH_READY, a signal goes the same three ways and nothing is rejected: the voice is connected from the join on', async () => {
+    // This path is as it was in 0.2.50 (the `video` and `stream` connections have opened in the lobby since 0.2.37
+    // and 0.2.46), so a host on an older build carries the voice's lobby signals too.
+    const r = await rig(['a', 'b', 'c'], false);
+    expect(r.host.state.phase).toBe('lobby');
+    expect(r.clients['a']?.sendMediaSignal('b', offer)).toBe(true);
+    expect(r.clients['b']?.sendMediaSignal('h', ice)).toBe(true);
+    expect(r.host.sendMediaSignal('c', { kind: 'answer', sdp: ANSWER_SDP })).toBe(true);
+    await flush();
+    expect(r.got['b']).toEqual([{ from: 'a', signal: { to: 'b', ...offer, channel: 'rtc' } }]);
+    expect(r.got['h']).toEqual([{ from: 'b', signal: { to: 'h', ...ice, channel: 'rtc' } }]);
+    expect(r.got['c']).toEqual([{ from: 'h', signal: { to: 'c', kind: 'answer', sdp: ANSWER_SDP, channel: 'rtc' } }]);
+    expect(signalsOn(r.wire['c'])).toHaveLength(1);
+    expect(r.rejects).toEqual([]);
+    // A player who left the lobby is nobody to signal to.
+    r.bus.disconnect('b');
+    await flush();
+    expect(r.host.sendMediaSignal('b', offer)).toBe(false);
+    r.clients['a']?.sendMediaSignal('b', offer);
+    await flush();
+    expect(r.rejects.map((x) => [x.refType, x.code])).toEqual([['MEDIA_SIGNAL', 'unknown_player']]);
   });
 });

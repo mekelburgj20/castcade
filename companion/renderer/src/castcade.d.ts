@@ -422,6 +422,8 @@ interface PanelState {
   countdown?: number | null;
   message: string | null;
   mic: 'open' | 'muted' | 'unavailable';
+  /** A17 step 4: who a pause for a dropped link waits for (absent for any other pause). */
+  pausedFor?: string | null;
 }
 interface MediaStatus {
   attached: boolean;
@@ -572,6 +574,10 @@ interface MatchSettings {
   scoreboardAnchor: 'room' | 'head';
   /** I11.4.2: the player up on this PC's own table in 3D while this player waits: whenever both PCs can, or never. */
   watch3d: 'auto' | 'off';
+  /** A17 step 7: this person's choice for the next start in a lobby. */
+  stance: 'play' | 'watch';
+  /** A17 step 3: when the lobby's table changes, Castcade closes the table open here and opens the new one; off: the tab offers Open it. */
+  changeTablesForMe: boolean;
 }
 
 /** I11.4.2 (mirrors main/stream3d-host.ts Stream3dView): the state stream of a match on this PC. */
@@ -584,6 +590,44 @@ interface Stream3dView {
   watching: string | null;
   /** One line per other player: what this PC shows of them while they are up, and why when it is the 2D video. */
   players: Array<{ id: string; name: string; mode: '3d' | '2d'; line: string }>;
+}
+
+/** A17 step 7 (mirrors match/controller.ts LobbyStatus, with the two keys main/match-host.ts adds for the lobby's PC). */
+interface LobbyView {
+  stance: 'play' | 'watch';
+  starter: string | null;
+  members: Array<{
+    id: string;
+    name: string;
+    rig: 'pc' | 'vr_headset' | 'real_cabinet';
+    stance: 'play' | 'watch';
+    opener: boolean;
+    me: boolean;
+    starter: boolean;
+    inMatch: boolean;
+    flags: Array<'away' | 'loading' | 'no_table' | 'other_table' | 'own_game' | 'close_table' | 'asked' | 'changing'>;
+    /** Since when this PC has known the member to be away (ms, this PC's clock); null: here. */
+    awaySince: number | null;
+  }>;
+  match: { id: string; game: number; state: 'game' | 'between'; players: string[] } | null;
+  /** A17 step 10: the lobby's table, who picked it, why it cannot be changed now (null: it can), whether a change ends the open match, and whether PCs are on their way to it. */
+  table: { name: string | null; pickedBy: string | null; pickedByName: string | null; off: string | null; endsMatch: boolean; changing: boolean };
+  start: { by: string; players: string[]; newMatch: boolean; waitsFor: 'result' | 'tables' | 'other_tables' | 'own_games' | '3d' | null; waitsOn: string[]; seconds: number | null; line: string } | null;
+  startButton: { label: 'Start match' | 'Next game'; line: string; off: string | null };
+  /** The Arcaid-look pass: the panel's line as the Match tab says it (without the in-game menu's way to its Start); null: none (controller.ts `LobbyStatus.tabLine`). */
+  tabLine: string | null;
+  newMatch: { line: string; warnings: string[] } | null;
+  /** What a press about the match is made against: the open match, its game, and whether it is being played ('' : no match). */
+  gameKey: string;
+  startWithout: string | null;
+  end: 'match' | 'everyone' | null;
+  giveUp: boolean;
+  hostAway: { since: number; until: number | null } | null;
+  over: boolean;
+  /** The final review (finding 7): the match that ended last, until the next one begins (controller.ts `LobbyStatus.lastMatch`). */
+  lastMatch: { games: number; abandoned: number | null; standing: Array<{ id: string; name: string; wins: number; total: number }> } | null;
+  waitedFor: { player: string; name: string; minutes: number } | null;
+  awayQuestion: { player: string; name: string; minutes: number; score: number } | null;
 }
 
 /** A6 (mirrors main/match-host.ts MatchStatus). */
@@ -614,6 +658,8 @@ interface MatchStatus {
     /** A13: whether this player's table can report ball ends; null = unknown. */
     ballEnds: boolean | null;
   }>;
+  /** A17 step 7 (mirrors main/match-host.ts): the lobby; null with none. */
+  lobby: LobbyView | null;
   /** A13: in the lobby, one line per player whose table cannot report ball ends; not empty = Start match asks to confirm. */
   startWarnings: string[];
   /** I11.4.9: in the lobby, who is still making a 3D connection, for how many seconds at most, and whether this host's start is held for it (`tab`: Start match again starts now). */
@@ -622,6 +668,10 @@ interface MatchStatus {
   advisories: string[];
   /** A13: for the host while a turn is held: whose ball Pass the turn would end, and at what score. */
   pass: { name: string; ball: number; score: number } | null;
+  /** The final review (finding 3): on the lobby's PC, a pause that a press of Resume ends (not one that waits for a member who is away). */
+  canResume: boolean;
+  /** A17 step 4: for the player who is up, while they can end their own ball by hand: the ball and the score it would end at. */
+  endBall: { grantSeq: number; ball: number; score: number; tableBall: boolean } | null;
   /** A8: a host transfer under way (names), else null. */
   transfer: { proposer: string; newHost: string | null; reason: 'host_left' | 'host_requested' } | null;
   /** A10: the game being played or just played, whether the series is over, and why Next game cannot start (null: it can). */
@@ -658,7 +708,8 @@ interface MatchStatus {
   /** D7.6: the VR test bench while it runs, else null. */
   bench: BenchStatus | null;
   /** A15: a match this PC was in when Castcade last closed and can go back to; `auto`: it is rejoined without asking. */
-  resume: { code: string; role: 'host' | 'client'; names: string[]; auto: boolean } | null;
+  /** `match`: a match was open then. `lost` (the lobby's PC): the record did not read in full, so the lobby can only be opened again empty. */
+  resume: { code: string; role: 'host' | 'client'; names: string[]; auto: boolean; match: boolean; lost: boolean } | null;
 }
 
 /** A14 (2026-11-12): mirrors `OneStepStatus` in main/one-step.ts. */
@@ -672,6 +723,11 @@ interface OneStepStatus {
   launch: { state: 'idle' | 'waiting_host' | 'starting' | 'running' | 'needed' | 'failed'; table: string | null; detail: string | null };
   /** A14.7: hosting, and this picked table waits for Start the table. */
   tableToStart: string | null;
+  /**
+   * A17 step 3: the lobby's table changed and this PC has not followed yet: `offered` (Change tables for me is off:
+   * Open it), `own_game` (after the game on the open table), `closing`, `close_it` (the person closes the table).
+   */
+  change: { state: 'offered' | 'own_game' | 'closing' | 'close_it'; table: string; open: string | null; detail: string } | null;
   notice: string | null;
   attention: number;
 }
@@ -741,10 +797,24 @@ interface CastcadeBridge {
     status(): Promise<MatchStatus>;
     host(opts: { port?: number; ballsPerGame: 3 | 5; displayName: string }): Promise<MatchStatus>;
     join(invite: string, displayName: string): Promise<MatchStatus>;
-    /** Host only: Start match in the lobby; A10: Next game between games. A13: `anyway` confirms a start with `startWarnings`. I11.4.9: while a 3D connection is being made the first call holds the start (`wait3d.armed: 'tab'`), a second starts now. */
-    start(opts?: { anyway?: boolean }): Promise<MatchStatus>;
+    /** A17 step 7: any member asks for a start (the match, or the open match's next game). A13: `anyway` confirms a start with `startWarnings`. `newMatch`: a new match with everyone set to Play; `now`: without what the announced start waits for. */
+    start(opts?: { anyway?: boolean; newMatch?: boolean; now?: boolean; without?: string | null }): Promise<MatchStatus>;
+    /** A17 step 7: the lobby's other calls (see main/ipc-types.ts). */
+    cancelStart(): Promise<MatchStatus>;
+    /**
+     * The review of PR 136: End match (`everyone: false`, between games) and End match for everyone (`true`, during a
+     * game, the lobby's PC) are two requests, and each press says what it was made against (`about`:
+     * `lobby.gameKey` then; `player`: whom it was about): the main process does nothing when that has changed.
+     */
+    endMatch(o: { everyone: boolean; about: string | null }): Promise<MatchStatus>;
+    setStance(stance: 'play' | 'watch'): Promise<MatchStatus>;
+    giveUp(o: { about: string | null }): Promise<MatchStatus>;
+    answerAway(answer: 'wait' | 'end_ball' | 'play_on', o: { player: string | null }): Promise<MatchStatus>;
+    playOnWithout(o: { player: string | null }): Promise<MatchStatus>;
     /** A13: host only: end the turn holder's ball at its last known score and grant the next turn. */
     passTurn(): Promise<MatchStatus>;
+    /** A17 step 4: the player who is up ends their own ball at the score as it stands; the turn passes. */
+    endMyBall(grantSeq: number): Promise<MatchStatus>;
     /** A8: host only: end a pause nobody resumed. */
     resume(): Promise<MatchStatus>;
     /** D7.6.3: save the next 2 s of layer-camera and theater frames to `<logs>/frames/<date>/`. */
@@ -788,6 +858,12 @@ interface CastcadeBridge {
     host(opts: { tablePath: string | null; startTable?: boolean; port?: number; ballsPerGame: 3 | 5; displayName: string }): Promise<MatchStatus>;
     /** A14.7: start the table Host held back (`OneStepStatus.tableToStart`). */
     startTable(): Promise<OneStepStatus>;
+    /** A17 step 3: Open it: the lobby's new table on this PC (`OneStepStatus.change`). */
+    openPick(): Promise<OneStepStatus>;
+    /** A17 step 10: make a table of this PC's lists the lobby's table (`about`: `lobby.gameKey` at the press). */
+    pick(tablePath: string, about: string | null): Promise<MatchStatus>;
+    /** A17 step 10: make the table that is open on this PC the lobby's table. */
+    pickOpen(about: string | null, name: string | null): Promise<MatchStatus>;
     confirm(): Promise<OneStepStatus>;
     dismiss(): Promise<OneStepStatus>;
     copy(what: 'link' | 'message'): Promise<OneStepStatus>;

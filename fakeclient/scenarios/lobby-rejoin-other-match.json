@@ -1,0 +1,17 @@
+{
+  "name": "lobby-rejoin-other-match",
+  "description": "A17 step 6: a watcher's link drops during one match and comes back during the next. Its RECONNECT names the match it held; the answer says restart: it puts that log away and is sent the open match's log whole.",
+  "matchId": "REJOIN",
+  "ballsPerGame": 2,
+  "lobby": true,
+  "host": "p1",
+  "players": [
+    { "playerId": "p1", "displayName": "Lobby PC", "stance": "play", "scores": [1000, 2000] },
+    { "playerId": "p2", "displayName": "Player Two", "stance": "play", "scores": [1500, 3000] },
+    { "playerId": "p3", "displayName": "Watcher", "stance": "watch", "scores": [9, 9], "drops": { "match": 1, "afterGrants": 2, "back": { "match": 2, "afterGrants": 2 } } }
+  ],
+  "matches": [
+    {},
+    {}
+  ]
+}

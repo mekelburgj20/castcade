@@ -46,6 +46,11 @@ export const Score = z.number().int().min(0).max(1_000_000_000_000).describe('Sc
 
 export const RigDevice = z.enum(['pc', 'vr_headset', 'real_cabinet']).describe("The player's declared rig, for provenance (ArcAid badge, never a gate).");
 
+// A17 (2026-11-25): what a member of a lobby wants at the next start. An enum, so a third choice later is a value,
+// not a field.
+export const Stance = z.enum(['play', 'watch']).describe('A17: Play or Watch at the next start of a match in the lobby. Never logged: a match only knows its players.');
+export type Stance = z.infer<typeof Stance>;
+
 export const DetectorReason = z
   .enum(['nvram', 'script', 'display', 'physical', 'manual', 'timeout'])
   .describe('Which signal produced the ball end: ROM NVRAM map, table script hook, display text, physical heuristic, a human click, or the host timeout.');
@@ -111,8 +116,79 @@ export const Hello = z
       .boolean()
       .optional()
       .describe("A13: whether the sender's companion can report this table's ball ends (it follows the table's hook journal): false when a table is open and it cannot (not patched, an original table, an unreadable machine). Absent: unknown (no table open yet, or a companion from before A13)."),
+    // A17 (2026-11-25): optional and never logged. Sent only to a lobby (protocol 7, the build whose shell turns
+    // the lobby on); a host whose lobby is off strips it.
+    stance: Stance.optional().describe('A17: Play or Watch at the next start. Absent: play.'),
+    // A17 step 6, the review of 2026-11-25: optional, sent only to a lobby: a HELLO that says whose it is. A member
+    // whose Castcade started again says HELLO afresh while its place is still kept, and is taken back by it.
+    proof: Signature.optional().describe(
+      "A17: the sender's signature over canonicalJson({hello: true, lobby, player, seq}) with the key in `participant.publicKey`: the lobby's code, its player id, and this envelope's own `seq`. A lobby that still holds a place for that player with that key takes the HELLO as that member's return when the signature verifies and the `seq` is above the last it took from them; without it such a HELLO is refused (`duplicate_player`). Ignored for a player the lobby holds no place for.",
+    ),
   })
   .describe('client -> host. First message on a connection.');
+
+// A17 step 10 (2026-11-26): where a PC stands on its way to the lobby's table after a change of it.
+export const TableChange = z
+  .enum(['waits_game', 'waits_person', 'offered', 'closing', 'opening'])
+  .describe(
+    "A17: `waits_game`: a game, or the entry of its initials, is on the table that is open there, and the change waits for it; `waits_person`: the person has to close the open table themselves; `offered`: the PC changes tables only when its person says so; `closing`: the open table was asked to close; `opening`: the lobby's table is being opened.",
+  );
+
+export type TableChange = z.infer<typeof TableChange>;
+
+// A17 (2026-11-25): the lobby as it is now, on HELLO_ACK. Every key is OPTIONAL and none is logged: a host whose
+// lobby is off sends none of them, so its HELLO_ACK is byte for byte what a 0.2.50 host sends, and absent reads as
+// the value named in each description. (The design, alpha-match.md 11.7, wrote them as defaulted keys; a default
+// is filled in when a frame is built, which would have put ten more keys on every HELLO_ACK of a match played
+// without a lobby.)
+const HelloAckLobby = {
+  stances: z
+    .array(z.object({ playerId: PlayerId, stance: Stance }))
+    .optional()
+    .describe('A17: what each member wants at the next start (`HELLO.stance`, then `PARTICIPANT_UPDATE.stance`), the host included. Absent: not a lobby; a member not listed: play.'),
+  away: z.array(PlayerId).optional().describe('A17: members whose link is down and whose place is kept. Absent: nobody.'),
+  noCopy: z.array(PlayerId).optional().describe("A17: members whose PC has no copy of the lobby's table (`PARTICIPANT_UPDATE.noCopy`): they do not play a match that starts. Absent: nobody."),
+  ownGame: z.array(PlayerId).optional().describe('A17: members on whose table a game the match does not own is running (`PARTICIPANT_UPDATE.ownGame`). Absent: nobody.'),
+  otherTable: z.array(PlayerId).optional().describe("A17: members whose open table is another game than the lobby's table. Absent: nobody."),
+  tableChange: z
+    .array(z.object({ playerId: PlayerId, state: TableChange }))
+    .optional()
+    .describe("A17: members whose PC is on its way to the lobby's table after a change of it, and where each stands (`PARTICIPANT_UPDATE.tableChange`). Absent: nobody."),
+  tablePickedBy: PlayerId.nullable().optional().describe("A17: who picked the lobby's table (`hostGame`); null or absent: the table is whatever the lobby's PC has open."),
+  ballsPerGame: z.number().int().min(1).max(10).nullable().optional().describe('A17: the balls per game of a match started in this lobby. Null or absent: not said.'),
+  starter: PlayerId.nullable().optional().describe('A17: the one member whose Start on their own table asks for a game. Null or absent: nobody is named.'),
+  match: z
+    .object({
+      matchId: MatchId,
+      players: z.array(PlayerId).min(2).max(4).describe('The players the match started with (its `MATCH_READY.playerOrder`).'),
+      game: GameNumber.describe('The game of the match that is being played, or was played last.'),
+      state: z.enum(['game', 'between']).describe('`game`: a game is being played; `between`: the last game has ended and the match is still open.'),
+    })
+    .nullable()
+    .optional()
+    .describe('A17: the match that is open in the lobby; null or absent: none. A member who joins while one is open is sent its log in MATCH_LOG right after this message, and holds no log of it until the last page.'),
+  start: z
+    .object({
+      by: PlayerId.describe('Who asked for the start.'),
+      players: z.array(PlayerId).min(2).max(4).describe('Who plays it, the first to go first.'),
+      newMatch: z.boolean().describe('True: a new match; false: the next game of the open one.'),
+      waitsFor: z.enum(['result', 'tables', 'other_tables', 'own_games', '3d']).nullable().describe('What the start waits for; null: it is counting down (`leftMs`).'),
+      waitsOn: z.array(PlayerId).default([]).describe('The members it waits for.'),
+      leftMs: z.number().int().min(0).max(120_000).nullable().describe('The ms left of the countdown, or of the wait when it has a limit; null: no limit.'),
+    })
+    .nullable()
+    .optional()
+    .describe('A17: the start that is announced, counting down or waiting; null or absent: none. Each PC in `players` locks its table when it counts down, unless a game runs on it.'),
+  // A17 step 6 (2026-11-25): not in the design's list. A start can go away for a reason only the lobby's PC knows
+  // (who cancelled, who set themselves to Watch, which check failed when the countdown ran out), and every panel is
+  // to say it; without this key the others could only see that `start` is null again.
+  startOff: z
+    .string()
+    .max(500)
+    .nullable()
+    .optional()
+    .describe('A17: on the one HELLO_ACK that takes an announced start away without starting anything: the sentence that says why ("Krobs cancelled the start."). Absent otherwise.'),
+};
 
 export const HelloAck = z
   .object({
@@ -160,6 +236,7 @@ export const HelloAck = z
       .describe(
         'B26.4: what each participant (the host included) said about the Midnight Madness setting on its table (`PARTICIPANT_UPDATE.midnightMode`). A participant not listed said nothing: no table open, a game with no known setting, or a companion from before B26.4. Defaulted and never logged.',
       ),
+    ...HelloAckLobby,
     // I11.4.9 (2026-11-20): defaulted and never logged, like `ballEndReady`, so still protocol 6.
     stream3dWait: z
       .array(z.object({ playerId: PlayerId, leftMs: z.number().int().min(0).max(120_000) }))
@@ -167,8 +244,30 @@ export const HelloAck = z
       .describe(
         "I11.4.9: the participants (the host included) whose PC is still making its 3D connection (`PARTICIPANT_UPDATE.stream3dWaitMs`), each with the ms after which the host stops waiting for it. A start from the host's table waits until this is empty, as it waits for `loading`. A duration, not a time. A participant not listed is not waited for: its 3D connection is settled, it has none, or its companion is from before I11.4.9. Defaulted and never logged.",
       ),
+    // I11.4.15 (2026-11-24): defaulted and never logged, like `stream3dWait`, so still protocol 6. On HELLO_ACK and not
+    // in `GameFingerprint` on purpose: the fingerprint is also MATCH_READY's `game`, which is logged, and a peer that
+    // strips an unknown key there would hash a different log.
+    hostQuit: z
+      .object({ keptMs: z.number().int().min(0).max(3_600_000).describe('For how long the lobby is kept for its PC to come back (ms).') })
+      .optional()
+      .describe(
+        "A17 step 8: the last word of a lobby's PC whose Castcade is being closed while the lobby is kept: its owner quit and may be back. The members then say that, in place of the line of a PC that is away for no known reason. Absent in every other HELLO_ACK, the first one after its return included.",
+      ),
+    hostTableObjects: z
+      .object({
+        editables: z.number().int().min(0).max(0xffffffff).describe("How many table objects (editables) the host's table has once loaded."),
+        hash: z
+          .string()
+          .regex(/^[0-9a-f]{16}$/)
+          .describe('64-bit FNV-1a over each object in order: its item type (u32), the length of its name (u32) and the name (UTF-16LE); 16 hex digits, lower-case.'),
+      })
+      .nullable()
+      .default(null)
+      .describe(
+        "I11.4.15: the identity the Castcade VPX build gives the host's table (its `hello`'s `<editables> <table hash>`): what two PCs must have in common for the 3D view, where `hostGame.tableHash` only says whether the bytes are the same. As the host's VPX said it, or, before that, as the host's companion computed it from the file. A joining PC uses it to pick, among its copies of the table, one the 3D view works with. null: not known (no table open, a file it cannot be told from, a companion from before I11.4.15). Compared only, never a gate. Defaulted and never logged.",
+      ),
   })
-  .describe('host -> client. The HELLO was accepted; the match is not ready until MATCH_READY. Sent again to every client while in the lobby when a PARTICIPANT_UPDATE (or the host itself) changed the roster or the host fingerprint.');
+  .describe('host -> client. The HELLO was accepted; the match is not ready until MATCH_READY. Sent again to every client while in the lobby when a PARTICIPANT_UPDATE (or the host itself) changed the roster or the host fingerprint. In a lobby (A17) it is the lobby as it is now, and is sent to every member on every change in every phase, also while a match is played.');
 
 // B26.4 (2026-11-16): what a player's companion read on its own table: the operator adjustment that enables Midnight
 // Madness (the bonus multiball some WPC ROMs start when the machine's clock, the PC's under VPinMAME, passes
@@ -224,9 +323,25 @@ export const ParticipantUpdate = z
       .describe(
         "I11.4.9: lobby only: the sender's PC is still making its 3D connection (its VPX build has not connected to its Castcade yet, or nothing has been heard from another player's PC over the state stream's data connection), and stops waiting for it in at most this many ms; 0: settled (or given up). The host lists it in HELLO_ACK `stream3dWait` and holds a start from its table meanwhile. Absent: no change. A peer from before I11.4.9 ignores it.",
       ),
+    // A17 (2026-11-25): three more optional keys, never logged, sent only in a lobby; a peer that does not know them
+    // strips them.
+    stance: Stance.optional().describe("A17: the sender's choice now, Play or Watch at the next start. It changes nothing in a game that is being played."),
+    noCopy: z.boolean().optional().describe("A17: true: the sender's PC has no copy of the lobby's table (`HELLO_ACK.hostGame`); false: it has."),
+    ownGame: z.boolean().optional().describe("A17: true: a game the match does not own is running on the sender's table (played alone, in the lobby or as a watcher); false: it has ended."),
+    // A17 step 10 (2026-11-26): optional, never logged, sent only in a lobby.
+    tableChange: TableChange.nullable()
+      .optional()
+      .describe("A17: what the sender's PC is doing about a change of the lobby's table (`TableChange`); null: nothing any more (its table is the lobby's, or it has no copy: `noCopy`)."),
+    pickCopy: z
+      .object({ pick: z.string().min(1).max(200), tableName: z.string().min(1).max(200), tableHash: Sha256Hex })
+      .nullable()
+      .optional()
+      .describe(
+        "A17: the sender's open table (`tableName` and `tableHash` as its `game` says them) is its PC's own copy of the lobby's table named `pick`, by the rules that PC finds a copy with (the ROM its table list knows, which `game` does not carry). While the lobby's table has that name and the sender's `game` is that table, the host does not list the sender in `otherTable`. Null: no longer.",
+      ),
   })
   .describe(
-    "client -> host in the lobby: replaces the sender's HELLO `participant.rig` and `game`; the host compares the fingerprint again and re-sends HELLO_ACK to every client; (I11.4.9) `stream3dWaitMs` says whether the sender's 3D connection is still being made. After MATCH_READY (A6.1, 2026-11-01) only `rig`, (B26) `advisory` and (B26.4) `midnightMode` count: the roster in the log stays final, and the host passes the update on to every other participant (`from` preserved) and sends its own the same way, so each Match tab and panel shows the rig each player has now. Never logged.",
+    "client -> host in the lobby: replaces the sender's HELLO `participant.rig` and `game`; the host compares the fingerprint again and re-sends HELLO_ACK to every client; (I11.4.9) `stream3dWaitMs` says whether the sender's 3D connection is still being made. After MATCH_READY (A6.1, 2026-11-01) only `rig`, (B26) `advisory` and (B26.4) `midnightMode` count: the roster in the log stays final, and the host passes the update on to every other participant (`from` preserved) and sends its own the same way, so each Match tab and panel shows the rig each player has now. Never logged. In a lobby (A17) it counts in every phase for `rig`, `game`, `ballEndReady`, `midnightMode`, `stance`, `noCopy`, `ownGame`, `tableChange` and `pickCopy`: the host answers with HELLO_ACK to every member, and a match's logged roster and fingerprint stay what its MATCH_READY said.",
   );
 
 export const Refuse = z
@@ -435,10 +550,15 @@ export const NextGame = z
 
 export const MatchEnd = z
   .object({
-    games: GameNumber.describe('How many games the series had.'),
+    // A17 (2026-11-25): was GameNumber (1 or more). Never logged, so it may widen: a match whose only game was ended
+    // for everyone has none with a RESULT.
+    games: z.number().int().min(0).max(999).describe('How many games of the match have a RESULT.'),
     reason: z.string().max(200),
+    abandoned: GameNumber.nullable()
+      .optional()
+      .describe('A17: the game that was being played and was ended for everyone: no RESULT, a win for nobody. Null or absent: none.'),
   })
-  .describe('host -> all, between games: the series is over; the last RESULT stands. Never logged; the host closes the match afterwards.');
+  .describe('host -> all, between games: the series is over; the last RESULT stands. Never logged; the host closes the match afterwards. In a lobby (A17) it means "this match is over, back to the lobby": nobody leaves, no connection closes, and the next match starts a log of its own.');
 
 export const Pause = z
   .object({
@@ -470,7 +590,18 @@ export const Reconnect = z
     player: PlayerId.describe('Who is resuming; must equal the envelope from.'),
     logHash: Sha256Hex.describe('Hash of the last log entry this participant holds; 64 zeros when it holds none.'),
     logLength: z.number().int().min(0),
-    signature: Signature.describe("The participant's signature over canonicalJson({matchId, player, logHash, logLength}) with its roster key."),
+    signature: Signature.describe(
+      "The participant's signature over canonicalJson({lobby, host, player, match, logHash, logLength, seq}) with its key as the host holds it: the lobby's code, the player id of the PC the frame is sent to, the same `match` as below, and the envelope's own `seq`: the frame is good for one use, at the PC it was written for. Protocol 7 has this one body. Without a lobby (`match` is absent from the payload) `lobby` and `match` are both the match's id, as the envelope carries it. Up to protocol 6 a match without a lobby signed canonicalJson({matchId, player, logHash, logLength}); a protocol 7 host does not take that.",
+    ),
+    // A18 (2026-11-24): optional, never logged, not in the signed body; a peer that does not know it strips it, and
+    // absent reads as "does not" (a companion up to 0.2.50).
+    resends: z
+      .boolean()
+      .optional()
+      .describe('A18: true when the sender sends again, right after an accepted RECONNECT, its own BALL_END, GAME_OVER, FORFEIT and LOG_SIGN that the host never answered. Absent or false: it does not, and a ball end it reported into the dropped link comes back only for a grant the host issues again (after a PAUSE and its RESUME).'),
+    // A17 (2026-11-25): optional, for the lobby's RECONNECT (every phase, the lobby code in the envelope, a signed
+    // `seq`). A lobby's client always sends it (null when it holds no log); nobody else does.
+    match: MatchId.nullable().optional().describe('A17: the match the sender holds a log of; null: none. Absent: a RECONNECT from before the lobby, whose envelope names the match.'),
   })
   .describe('client -> host. First frame on a new socket to the current host, after a drop or a host transfer; never a fresh HELLO.');
 
@@ -478,14 +609,89 @@ export const ReconnectAck = z
   .object({
     accept: z.boolean(),
     code: z
-      .enum(['unknown_log_hash', 'unknown_player', 'bad_signature', 'match_not_started'])
+      // A17 step 6 (2026-11-25): two more values, sent by a lobby only (a peer up to 0.2.50 never meets them). Step 7
+      // (protocol 7): `protocol_version` is also what a host answers a RECONNECT of another version with, when the
+      // sender is on 7 or later (an older sender does not know the code and gets `unknown_player`).
+      .enum(['unknown_log_hash', 'unknown_player', 'bad_signature', 'match_not_started', 'protocol_version', 'stale_seq'])
       .nullable()
-      .describe('Why the RECONNECT was rejected; null when accepted.'),
+      .describe(
+        "Why the RECONNECT was rejected; null when accepted. A17: `protocol_version`: the sender speaks another version; `stale_seq`: the envelope's `seq` is not above the last this host took from that member (a RECONNECT sent a second time). In a lobby `unknown_player` means the member's place is gone: it joins again with a fresh HELLO, the first frame of a new link.",
+      ),
     entries: z.array(LogEntry).describe('Every log entry after the one the client named, in order; empty when it is current or rejected.'),
-    logHash: Sha256Hex.describe("The host's log head after these entries."),
+    logHash: Sha256Hex.describe("The host's log head after these entries. In a lobby's answer: the head of the log the answer carries (with `more`, at the end of this first page; for a `restart` or a refusal, which carry no log, 64 zeros and length 0)."),
     logLength: z.number().int().min(0),
+    // A17 (2026-11-25): three more optional keys; a host whose lobby is off sends none of them.
+    match: MatchId.nullable().optional().describe('A17: the match that is open now; null: none. Absent: not said (no lobby).'),
+    restart: z.boolean().optional().describe("A17: true: the sender's log is not of the open match (or none is open): drop it. The open match's log follows in MATCH_LOG. Absent: false."),
+    more: z.boolean().optional().describe('A17: true: `entries` holds only the first page (at most 100); the rest follows in MATCH_LOG, and the sender is current at its last page. Absent: false.'),
+    // A17 step 6, the review of 2026-11-25: two more optional keys, sent by a lobby only.
+    closed: z
+      .boolean()
+      .optional()
+      .describe("A17: true: the match the sender holds a log of (`RECONNECT.match`) ended while it was away, and is the last one the lobby closed: `entries` (and MATCH_LOG, with `more`) bring that log to its end, then that match's RESULTs and its MATCH_END follow as they were sent, and after them the lobby as it is now (the open match's log, if one is open, from entry 0). Nothing is reported into the closed match again. Absent: false."),
+    seqAbove: z
+      .number()
+      .int()
+      .min(0)
+      .optional()
+      .describe("A17: with `stale_seq`: the last `seq` the lobby took from this member. The member's next RECONNECT carries a `seq` above it (signed, as every one is), so a counter that fell behind is no reason to stay out, and the counter itself is never moved back."),
   })
   .describe('host -> client. Answers RECONNECT. A rejected client must re-join with a fresh HELLO; the host closes the socket after a rejection.');
+
+// A17 (2026-11-25): the lobby's own messages. None is logged. None is sent while the lobby is off, so a peer up to
+// 0.2.50, which cannot decode a type it does not know, never meets one.
+export const StartRequest = z
+  .object({
+    fromTable: z.boolean().describe("True: the sender's own game began on its table (A11). Taken from the starter only."),
+    newMatch: z.boolean().default(false).describe('True: end the open match and start one with everyone set to Play (the explicit press, never set with `fromTable`).'),
+    anyway: z.boolean().default(false).describe('A13: the sender confirmed a start with a table that cannot report ball ends.'),
+    now: z.boolean().default(false).describe('Do not wait: start without the 3D connections and without the people whose table is not ready (a second press).'),
+    nowFor: z
+      .object({ waitsFor: z.enum(['tables', 'other_tables', 'own_games', '3d']), waitsOn: z.array(PlayerId).max(64).default([]) })
+      .optional()
+      .describe("With `now`: what the announced start waited for when the sender pressed (its `waitsFor` and `waitsOn`, as the sender's last HELLO_ACK said them). The host starts without it only while the start still waits for exactly that; otherwise REJECT, and nothing changes. Absent: not checked."),
+  })
+  .describe('client -> host, in a lobby. A member asks for a start. The host announces it (HELLO_ACK `start`) or answers REJECT (`unexpected_state`) whose `message` is the sentence the asker is shown.');
+
+export const StartCancel = z.object({}).describe('client -> host, in a lobby. Take back the start that counts down or waits; answered by the HELLO_ACK without it, or by REJECT.');
+
+export const EndRequest = z.object({}).describe('client -> host, in a lobby, between games. End the open match; answered by MATCH_END, or by REJECT.');
+
+export const TablePick = z
+  .object({
+    game: GameFingerprint.describe("The picked table: its identity keys (`kind`, `tableName`, `tableHash`, `romName`); the other keys are facts of one PC's copy and are null or empty in a pick."),
+    // A17 step 10 (2026-11-26): optional; a lobby's PC that does not know the key strips it.
+    tableObjects: z
+      .object({ editables: z.number().int().min(0).max(0xffffffff), hash: z.string().regex(/^[0-9a-f]{16}$/) })
+      .nullable()
+      .optional()
+      .describe("A17: the identity the Castcade VPX build gives the picked table (as `HELLO_ACK.hostTableObjects`), as the picker's PC knows it for its own copy; null or absent: not known. In a lobby `HELLO_ACK.hostTableObjects` is the picked table's."),
+  })
+  .describe("client -> host, in a lobby, outside a game. A member picks the lobby's table; answered by the HELLO_ACK that carries it (`hostGame`, `tablePickedBy`), or by REJECT.");
+
+// A17 step 6, the review of 2026-11-25: Leave lobby. Until this message a member could only drop their link, which
+// a lobby reads as "away" and keeps a place for.
+export const LeaveLobby = z
+  .object({})
+  .describe("client -> host, in a lobby. The sender leaves on purpose: its row goes at once (a game it is playing it gives up first), a start it was in is looked at again, and its place is free. Sent before the link closes; nothing answers it but the HELLO_ACK the others get. Never logged.");
+
+export const LobbyClosed = z
+  .object({ reason: z.string().max(200) })
+  .describe('host -> all. The lobby is closed: every member tears down, and nobody reconnects afterwards. Never logged.');
+
+/** A17: the most log entries in one MATCH_LOG (and in the RECONNECT_ACK that says `more`): about 50 KB, far under the relay's 256 KB a frame. */
+export const MATCH_LOG_PAGE_SIZE = 100;
+
+export const MatchLogPage = z
+  .object({
+    match: MatchId.describe('The match the entries belong to.'),
+    restart: z.boolean().describe('True on the first page of a whole log: the receiver starts an empty log for `match`. False: the entries follow the ones the receiver holds.'),
+    entries: z.array(LogEntry).max(MATCH_LOG_PAGE_SIZE).describe('The next entries of the log, in order, verbatim.'),
+    logHash: Sha256Hex.describe("The head of the log at the end of this page: the receiver's head once it has appended the entries (64 zeros for an empty log). Every page names the head of the log it carries."),
+    logLength: z.number().int().min(0),
+    more: z.boolean().describe('Another page follows. False: the receiver is current, and the logged messages reach it live from here on.'),
+  })
+  .describe("host -> client, in a lobby. The open match's log, to a member who does not hold it (it joined while the match was open, or its RECONNECT_ACK said `more`), in pages. The host sends such a member no logged message until the last page went out. Never logged.");
 
 // D2 (2026-10-30): the WebRTC signalling for a match's video and voice rides the match channel; the media itself
 // goes peer to peer, never through the host's match socket or ArcAid.
@@ -576,6 +782,13 @@ export const payloadSchemas = {
   PARTICIPANT_UPDATE: ParticipantUpdate,
   NEXT_GAME: NextGame,
   MATCH_END: MatchEnd,
+  START_REQUEST: StartRequest,
+  START_CANCEL: StartCancel,
+  END_REQUEST: EndRequest,
+  TABLE_PICK: TablePick,
+  LOBBY_CLOSED: LobbyClosed,
+  MATCH_LOG: MatchLogPage,
+  LEAVE_LOBBY: LeaveLobby,
 } as const;
 
 export type MessageType = keyof typeof payloadSchemas;
@@ -610,4 +823,11 @@ export const MESSAGE_DIRECTION: Record<MessageType, 'client->host' | 'host->clie
   PARTICIPANT_UPDATE: 'client->host',
   NEXT_GAME: 'host->all',
   MATCH_END: 'host->all',
+  START_REQUEST: 'client->host',
+  START_CANCEL: 'client->host',
+  END_REQUEST: 'client->host',
+  TABLE_PICK: 'client->host',
+  LOBBY_CLOSED: 'host->all',
+  MATCH_LOG: 'host->client',
+  LEAVE_LOBBY: 'client->host',
 };

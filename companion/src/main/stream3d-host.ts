@@ -158,6 +158,8 @@ export interface Stream3dView {
   /** This PC's VPX on the control connection (`match/stream3d.ts` `Stream3dStatus.fork`), and its build. */
   fork: Stream3dStatus['fork'];
   build: string | null;
+  /** I11.4.15: the table objects that VPX named in its `hello` (`<editables> <table hash>`), while it is ready; else null. */
+  table: string | null;
   /** The player shown in 3D now (the fork is aimed at them), or null. */
   watching: string | null;
   /** I11.4.12: a match table was started in the Castcade VPX build and its VPX has not connected yet (it may still be loading). */
@@ -246,6 +248,22 @@ export interface Stream3dHost {
   stop(): Promise<void>;
 }
 
+/** A17 step 3: what the shell's table closer (`launch/vpx-close.ts`) asks of the control connection. The match host never does. */
+export interface ForkQuit {
+  /**
+   * Rung 1: the line `quit` to the Castcade VPX build on the control connection: it closes its table and exits the
+   * way its held exit button does (§3). Only when that build is proven to be the process `pid`: Castcade started it
+   * (`ForkLaunch.spawned`) and the `hello` on the connection names the stream port that start asked for. False, and
+   * nothing sent, for anything else: no build connected, a build started by hand or by an earlier run of Castcade,
+   * another process. A build from before the line ignores it (rule 13) and stays open: the caller asks its window
+   * next, as it does when this answers false.
+   */
+  quitFork(pid: number): boolean;
+}
+
+/** A17 step 3: the control line that closes the Castcade VPX build's table and the program with it. */
+export const QUIT_COMMAND = 'quit';
+
 const describe = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
 /** The control port a ports file names (the file of an earlier build also named a stream port: not read any more). */
@@ -259,7 +277,7 @@ function savedControlPort(text: string | null): number | null {
   }
 }
 
-export function createStream3dHost(o: Stream3dHostOptions): Stream3dHost {
+export function createStream3dHost(o: Stream3dHostOptions): Stream3dHost & ForkQuit {
   const info = (line: string): void => o.log.info(line);
   /** The fork on the control connection (it said `hello`), and the stream port that `hello` named. */
   let conn: ControlConnection | null = null;
@@ -284,6 +302,28 @@ export function createStream3dHost(o: Stream3dHostOptions): Stream3dHost {
   /** I11.4.12: the fork was tried for the current match's table and did not start; when the fork last left the control connection. */
   let forkFailed = false;
   let lostAt: number | null = null;
+  /**
+   * I11.4.15: the last table started in the fork whose `hello` has not come yet: the stream port that start asked for
+   * (the `hello` that names it is that table's own), and where its table objects go. One at a time: a new start, the
+   * exit of that VPX or a start that did not take answers null.
+   */
+  let awaited: { streamPort: number; tell(objects: { editables: number; hash: string } | null): void } | null = null;
+  const awaitObjects = (streamPort: number): { objects: Promise<{ editables: number; hash: string } | null>; gone(): void } => {
+    awaited?.tell(null);
+    let resolve: (v: { editables: number; hash: string } | null) => void = () => undefined;
+    const objects = new Promise<{ editables: number; hash: string } | null>((r) => (resolve = r));
+    const mine = {
+      streamPort,
+      tell(v: { editables: number; hash: string } | null): void {
+        if (awaited === mine) awaited = null;
+        resolve(v);
+      },
+    };
+    awaited = mine;
+    return { objects, gone: () => mine.tell(null) };
+  };
+  /** A17 step 3: the process of each start in the fork that is still running, by the stream port that start asked for. */
+  const startedPids = new Map<number, number>();
   const names = new Map<string, string>();
   const listeners = new Set<() => void>();
   let queued = false;
@@ -423,6 +463,10 @@ export function createStream3dHost(o: Stream3dHostOptions): Stream3dHost {
       for (const settle of [...starts]) settle(false);
       machine.forkConnected();
       machine.forkLine(text);
+      // I11.4.15: the table Castcade started last says what its objects are (the same port: that table's own hello).
+      if (awaited && connPort !== null && connPort === awaited.streamPort) {
+        awaited.tell(/^\d{1,10}$/.test(l.editables) && /^[0-9a-fA-F]{16}$/.test(l.tableHash) ? { editables: Number(l.editables), hash: l.tableHash.toLowerCase() } : null);
+      }
     },
     close(c, why) {
       if (dropPending(c) || c !== conn) return;
@@ -511,6 +555,8 @@ export function createStream3dHost(o: Stream3dHostOptions): Stream3dHost {
       // hello names (rule 9), so nothing is known of this table until its VPX says so.
       info(`stream3d: the match table starts in the Castcade VPX build (${exe}): asked to stream on 127.0.0.1:${streamPort}, control on 127.0.0.1:${controlPort}`);
       const start = watchStart();
+      // I11.4.15: what this table's VPX says its objects are is kept for the file (the caller knows which file).
+      const said = awaitObjects(streamPort);
       // I11.4.9: this VPX is expected on the control connection: until it is there (or is known not to come), the
       // match's first start waits for this PC. I11.4.13: not for a build that never connected this run.
       lastExe = exe;
@@ -530,15 +576,21 @@ export function createStream3dHost(o: Stream3dHostOptions): Stream3dHost {
           what: 'for the match, in the Castcade VPX build',
           onExit: (code) => {
             info(`stream3d: the match table's VPX closed (exit ${code ?? 'unknown'})`);
+            startedPids.delete(streamPort);
             start.ended();
+            said.gone();
             machine.forkGone();
           },
         },
         didNotStart: start.didNotStart,
         notStarted: () => {
+          startedPids.delete(streamPort);
           start.ended();
+          said.gone();
           machine.forkGone();
         },
+        objects: said.objects,
+        spawned: (pid) => void startedPids.set(streamPort, pid),
       };
     },
 
@@ -643,6 +695,7 @@ export function createStream3dHost(o: Stream3dHostOptions): Stream3dHost {
             setting: st.setting,
             fork: st.fork,
             build: st.build,
+            table: st.fork === 'ready' ? st.table : null,
             watching: st.showing3d ? st.target : null,
             expecting: machine.expectingFork(),
             forkInstalled: installed,
@@ -689,6 +742,18 @@ export function createStream3dHost(o: Stream3dHostOptions): Stream3dHost {
 
     controlPort: async () => (await ensureControl()).port,
 
+    quitFork(pid) {
+      if (stopped || !conn) return false;
+      // The build on the connection is that process only when its hello names the stream port Castcade gave that start.
+      if (connPort === null || startedPids.get(connPort) !== pid) {
+        info(`stream3d: quit is not sent: the Castcade VPX build on the control port is not known to be the VPX that is asked to close (pid ${pid}); its window is asked instead`);
+        return false;
+      }
+      const sent = conn.send(QUIT_COMMAND);
+      info(sent ? `stream3d: quit sent to the Castcade VPX build on the control port (pid ${pid}; it closes its table and exits; a build from before the line ignores it)` : 'stream3d: quit could not be sent: the control connection is gone');
+      return sent;
+    },
+
     async stop() {
       stopped = true;
       if (current) await closeMatch(current);
@@ -697,6 +762,7 @@ export function createStream3dHost(o: Stream3dHostOptions): Stream3dHost {
         c.close();
       }
       for (const settle of [...starts]) settle(false);
+      awaited?.tell(null);
       const c = control;
       control = null;
       // The fork falls back to its own table when the control connection goes (§2 fail-safe).

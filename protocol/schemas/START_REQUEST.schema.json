@@ -1,0 +1,66 @@
+{
+  "$id": "https://castcade.dev/protocol/v7/START_REQUEST.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "fromTable": {
+      "type": "boolean",
+      "description": "True: the sender's own game began on its table (A11). Taken from the starter only."
+    },
+    "newMatch": {
+      "default": false,
+      "description": "True: end the open match and start one with everyone set to Play (the explicit press, never set with `fromTable`).",
+      "type": "boolean"
+    },
+    "anyway": {
+      "default": false,
+      "description": "A13: the sender confirmed a start with a table that cannot report ball ends.",
+      "type": "boolean"
+    },
+    "now": {
+      "default": false,
+      "description": "Do not wait: start without the 3D connections and without the people whose table is not ready (a second press).",
+      "type": "boolean"
+    },
+    "nowFor": {
+      "description": "With `now`: what the announced start waited for when the sender pressed (its `waitsFor` and `waitsOn`, as the sender's last HELLO_ACK said them). The host starts without it only while the start still waits for exactly that; otherwise REJECT, and nothing changes. Absent: not checked.",
+      "type": "object",
+      "properties": {
+        "waitsFor": {
+          "type": "string",
+          "enum": [
+            "tables",
+            "other_tables",
+            "own_games",
+            "3d"
+          ]
+        },
+        "waitsOn": {
+          "default": [],
+          "maxItems": 64,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_.:-]+$",
+            "description": "Stable participant id for this match: the ArcAid user id, or a fakeclient label."
+          }
+        }
+      },
+      "required": [
+        "waitsFor",
+        "waitsOn"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "fromTable",
+    "newMatch",
+    "anyway",
+    "now"
+  ],
+  "additionalProperties": false,
+  "description": "client -> host, in a lobby. A member asks for a start. The host announces it (HELLO_ACK `start`) or answers REJECT (`unexpected_state`) whose `message` is the sentence the asker is shown."
+}

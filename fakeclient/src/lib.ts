@@ -58,6 +58,8 @@ export interface FakePlayerOptions {
   endpointOf?: (player: PlayerId) => string | null;
   /** Client role: reconnect budget after a dropped host link (A3). */
   reconnect?: { attempts?: number; delayMs?: number };
+  /** A18: either role: how long a dropped link is not yet a disconnect. Default: the engines' own (5 s); 0: at once. */
+  disconnectGraceMs?: number;
   hooks?: FakeHooks;
   companionVersion?: string;
 }
@@ -148,6 +150,7 @@ export class FakePlayer {
         ballEndTimeoutMs: scenario.ballEndTimeoutMs,
         logSignTimeoutMs: scenario.logSignTimeoutMs,
         companionVersion: opts.companionVersion,
+        disconnectGraceMs: opts.disconnectGraceMs,
       });
     } else {
       engine = new ClientMatch({
@@ -161,6 +164,7 @@ export class FakePlayer {
         companionVersion: opts.companionVersion,
         hostTimeouts: { ballEndTimeoutMs: scenario.ballEndTimeoutMs, logSignTimeoutMs: scenario.logSignTimeoutMs },
         reconnect: opts.reconnect,
+        disconnectGraceMs: opts.disconnectGraceMs,
       });
     }
     this.out = {
@@ -448,8 +452,10 @@ export class FakePlayer {
   }
 
   private reportBallEnd(finalScore: number, shootAgain: boolean, override?: { grantSeq: number; ballNumber: number }): void {
-    if (this.host) this.host.localBallEnd(finalScore, 'script', shootAgain, override);
-    else if (this.client) this.client.reportBallEnd(finalScore, 'script', shootAgain, override);
+    // A17 step 4: a player who ends its balls by hand says so; to a host it is a ball end like any other.
+    const reason = this.opts.script.endsByHand ? 'manual' : 'script';
+    if (this.host) this.host.localBallEnd(finalScore, reason, shootAgain, override);
+    else if (this.client) this.client.reportBallEnd(finalScore, reason, shootAgain, override);
     else throw new Error('no engine');
   }
 
@@ -519,6 +525,8 @@ export interface RunLocalOptions {
   hooks?: FakeHooks;
   /** Real-time guard for the whole scenario. Default 15 s. */
   timeoutMs?: number;
+  /** A18: every player's grace before a dropped link is a disconnect (`FakePlayerOptions.disconnectGraceMs`). */
+  disconnectGraceMs?: number;
 }
 
 export interface LocalRun {
@@ -543,6 +551,7 @@ export async function runLocalScenario(scenario: Scenario, opts: RunLocalOptions
         hostId: scenario.host,
         expectedJoins: scenario.players.length - 1,
         hooks: opts.hooks,
+        disconnectGraceMs: opts.disconnectGraceMs,
         onHostLeft: () => bus.disconnect(script.playerId),
       }),
   );
@@ -582,7 +591,7 @@ export interface WsRun {
 export async function runWsScenario(
   scenario: Scenario,
   transports: Map<PlayerId, WsPeerTransport>,
-  opts: { timeoutMs?: number; hooks?: FakeHooks; reconnect?: { attempts?: number; delayMs?: number }; players?: (players: FakePlayer[]) => void } = {},
+  opts: { timeoutMs?: number; hooks?: FakeHooks; reconnect?: { attempts?: number; delayMs?: number }; disconnectGraceMs?: number; ballMs?: number; players?: (players: FakePlayer[]) => void } = {},
 ): Promise<WsRun> {
   const endpoints = new Map<PlayerId, string>();
   // Every participant listens, so any of them can become host.
@@ -601,6 +610,8 @@ export async function runWsScenario(
       endpointOf: (id) => endpoints.get(id) ?? null,
       hooks: opts.hooks,
       reconnect: opts.reconnect,
+      disconnectGraceMs: opts.disconnectGraceMs,
+      ballMs: opts.ballMs,
     });
   });
   opts.players?.(fakes);

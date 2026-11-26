@@ -54,6 +54,11 @@ export const IPC = {
   launchBrowse: 'launch:browse',
   launchHost: 'launch:host',
   launchStartTable: 'launch:startTable',
+  /** A17 step 3: Open it: the lobby's new table on this PC, when "Change tables for me" is off. */
+  launchOpenPick: 'launch:openPick',
+  /** A17 step 10: make a table of this PC's lists, or the table that is open here, the lobby's table. */
+  launchPick: 'launch:pick',
+  launchPickOpen: 'launch:pickOpen',
   launchConfirm: 'launch:confirm',
   launchDismiss: 'launch:dismiss',
   launchCopy: 'launch:copy',
@@ -77,6 +82,8 @@ export const IPC = {
   matchResume: 'match:resume',
   /** A13: the host's Pass the turn. */
   matchPassTurn: 'match:passTurn',
+  /** A17 step 4: End my ball, by the player who is up. */
+  matchEndMyBall: 'match:endMyBall',
   /** D7.6.3: save 2 s of eye frames to the logs folder. */
   matchSaveFrames: 'match:saveFrames',
   /** D7.6: the VR test bench. */
@@ -85,6 +92,13 @@ export const IPC = {
   matchBenchView: 'match:bench:view',
   matchBenchClips: 'match:bench:clips',
   matchLeave: 'match:leave',
+  /** A17 step 7: the lobby: take back a start, end the match, Play or Watch, give up a game, the answers about a player who is away. */
+  matchCancelStart: 'match:cancelStart',
+  matchEnd: 'match:end',
+  matchStance: 'match:stance',
+  matchGiveUp: 'match:giveUp',
+  matchAnswerAway: 'match:answerAway',
+  matchPlayOnWithout: 'match:playOnWithout',
   matchRejoin: 'match:rejoin',
   matchForgetResume: 'match:forgetResume',
   matchSettingsSet: 'match:settings:set',
@@ -278,10 +292,31 @@ export interface CastcadeApi {
      * I11.4.9 (2026-11-20): in the lobby, while a PC's 3D connection is still being made, the first call holds the
      * start until it is settled (the status comes back still in the lobby, `wait3d.armed: 'tab'`); a second call
      * starts now.
+     * A17 step 7 (2026-11-25): every member asks (the start counts down for everyone, or waits: `lobby.start`);
+     * `newMatch`: end the open match and start one with everyone set to Play; `now`: start without what the
+     * announced start waits for.
      */
-    start(opts?: { anyway?: boolean }): Promise<MatchStatus>;
+    start(opts?: { anyway?: boolean; newMatch?: boolean; now?: boolean; without?: string | null }): Promise<MatchStatus>;
+    /** A17 step 7: take back the start that counts down or waits (anybody in the lobby). */
+    cancelStart(): Promise<MatchStatus>;
+    /**
+     * A17 step 7: End match (`everyone: false`; between games: anyone, everyone stays in the lobby) or End match for
+     * everyone (`true`; during a game: the lobby's PC, no result). The review of PR 136: two requests, and `about` is
+     * `lobby.gameKey` at the press: the main process does nothing when the match or its game is another by now.
+     */
+    endMatch(o: { everyone: boolean; about: string | null }): Promise<MatchStatus>;
+    /** A17 step 7: this person's choice for the next start, Play or Watch. */
+    setStance(stance: 'play' | 'watch'): Promise<MatchStatus>;
+    /** A17 step 7: Give up this game: this player's own game ends; they stay in the lobby and watch. */
+    giveUp(o: { about: string | null }): Promise<MatchStatus>;
+    /** A17 step 7: the lobby's PC, about the player who is up and out of reach (`lobby.awayQuestion`). */
+    answerAway(answer: 'wait' | 'end_ball' | 'play_on', o: { player: string | null }): Promise<MatchStatus>;
+    /** A17 step 7: the lobby's PC: Play on without the player the game waits for (`lobby.waitedFor`). */
+    playOnWithout(o: { player: string | null }): Promise<MatchStatus>;
     /** A13: host only, during a game: end the turn holder's ball at its last known score and grant the next turn (TURN_PASS). */
     passTurn(): Promise<MatchStatus>;
+    /** A17 step 4 (2026-11-24): the player who is up ends their own ball at the score as it stands; the turn passes (BALL_END, `manual`). */
+    endMyBall(grantSeq: number): Promise<MatchStatus>;
     /** A8 (2026-10-31): host only: end a pause nobody resumed. */
     resume(): Promise<MatchStatus>;
     /** D7.6.3 (2026-11-03): save the next 2 s of layer-camera and theater frames to `<logs>/frames/<date>/`. */
@@ -338,6 +373,15 @@ export interface CastcadeApi {
     host(opts: { tablePath: string | null; startTable?: boolean; port?: number; ballsPerGame: 3 | 5; displayName: string }): Promise<MatchStatus>;
     /** A14.7: start the table Host held back. */
     startTable(): Promise<OneStepStatus>;
+    /** A17 step 3: Open it: close the table that is open here and open the lobby's new one (`OneStepStatus.change`). */
+    openPick(): Promise<OneStepStatus>;
+    /**
+     * A17 step 10: make `tablePath` (a `path` from `tables()` or `browse()`) the lobby's table. `about`: the lobby as
+     * the press saw it (`MatchStatus.lobby.gameKey`). Rejects with the sentence why not.
+     */
+    pick(tablePath: string, about: string | null): Promise<MatchStatus>;
+    /** A17 step 10: "Make <table> the lobby's table": the table that is open on this PC. */
+    pickOpen(about: string | null, name: string | null): Promise<MatchStatus>;
     /** Join the match of the link that waits (`status.pending`) and start its table here. */
     confirm(): Promise<OneStepStatus>;
     dismiss(): Promise<OneStepStatus>;

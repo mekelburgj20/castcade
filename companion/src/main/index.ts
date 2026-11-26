@@ -20,6 +20,8 @@ import { PROTOCOL_VERSION } from '@castcade/protocol';
 import { isAllowedExternalUrl } from './allowlist.js';
 import { IPC, type AppVersions, type LoginItemState, type TablesPatchNowResult } from './ipc-types.js';
 import { createLogger, describeError, type Logger } from './log.js';
+import { kitLoad, kitSmokeLine, setKitLog } from '../media/aw-kit.js';
+import { ArcaidClient, ArcaidError } from '../witness/arcaid-client.js';
 import { featuresFor, resolveEdition } from './edition.js';
 import { removeFullEditionLeftovers } from './edition-leftovers.js';
 import { writeVrReport } from './vr-report-host.js';
@@ -63,14 +65,18 @@ import { createOverlayServer, overlayStateFrom, type OverlayServer } from '../me
 import { resolveFfmpeg } from '../media/ffmpeg-path.js';
 import { createStreamHost, type StreamHost } from './stream-host.js';
 import { createMatchHost, type MatchHost } from './match-host.js';
+import { readAbout, readAwayAnswer, readEndMatch, readPlayer, readStance } from './match-ipc.js';
 import { matchSignalling } from './match-setup.js';
 import { linkFromArgv, linkIsTrusted, looksLikePastedLink, registerLinkProtocol } from './deep-link.js';
+import { askLeave, askQuit, oneAtATime, type QuitAnswer } from './quit-question.js';
 import { createOneStep, type OneStep } from './one-step.js';
 import { createRecentTables, listKnownTables, listTableFiles } from '../launch/known-tables.js';
 import { createTableHasher } from '../launch/table-hash.js';
+import { createTableObjects, objectsDisagreeLine } from '../launch/table-objects.js';
+import { askVpxWindowToClose, createVpxCloser } from '../launch/vpx-close.js';
 import { createVpxLauncher } from '../launch/vpx-launch.js';
 import { createWatchHost, type WatchHost } from './watch-host.js';
-import { createStream3dHost, type Stream3dHost } from './stream3d-host.js';
+import { createStream3dHost, type ForkQuit, type Stream3dHost } from './stream3d-host.js';
 import { createTunnelEnd, freeLoopbackPort } from '../watch/tunnel-end.js';
 import { HiddenVpx } from '../witness/hidden-vpx.js';
 import type { VrOverlay } from '../media/match-media-types.js';
@@ -78,6 +84,7 @@ import { createMediaSettingsStore, iceServers, type MediaSettingsStore } from '.
 import { usableBounds } from '../media/panel-placement.js';
 import { readIniStereo } from '../media/preview-stereo.js';
 import { nodeFs } from '../witness/fs.js';
+import { readVpxFacts } from '../witness/vpx-file.js';
 import { createRtcHost, type RtcHost } from '../media/rtc-host.js';
 import { createTableAudioHelper, resolveAudioHelper, type TableAudioHelper } from '../media/audio-helper.js';
 import { createVideoHelper, resolveVideoHelper, type VideoHelper } from '../media/video-helper.js';
@@ -86,6 +93,7 @@ import { createLayerAgeWatch, readRegisteredAt, sha256File, stageVrLayer, versio
 import { createVrOverlay, resolveVrOverlay } from '../media/vr-overlay.js';
 import { watchFocus } from '../media/focus-watch.js';
 import { probeWindows } from '../media/window-geometry.js';
+import { createVpxForeground } from './vpx-foreground.js';
 
 const here = dirname(fileURLToPath(import.meta.url)); // <companion>/dist/main
 const companionDir = resolve(here, '..', '..');
@@ -112,6 +120,16 @@ const NOT_IN_WITNESS = 'not part of the Castcade Witness edition';
 
 let quitting = false;
 let win: BrowserWindow | null = null;
+
+// I11.4.18: how VPX gets the foreground back from a Castcade window, and what the player is doing in that window:
+// every key that goes down in one of Castcade's pages is noted (the time only, never the key), so a grant does not
+// take the keyboard from somebody who is typing here.
+const vpxForeground = createVpxForeground({ focusedPage: () => BrowserWindow.getFocusedWindow()?.webContents ?? null, ownerPid: process.pid });
+app.on('web-contents-created', (_e, contents) => {
+  contents.on('before-input-event', (_ev, input) => {
+    if (input.type === 'keyDown') vpxForeground.keyPressed();
+  });
+});
 let log: Logger | null = null;
 let tray: TrayHandle | null = null;
 let sidecarWatch: SidecarWatch | null = null;
@@ -145,7 +163,7 @@ let oneStep: OneStep | null = null;
 /** I11.4.1: the standalone 3D watch session (the VPX fork's state stream through the companion); null when it could not be set up. */
 let watch3d: WatchHost | null = null;
 /** I11.4.2: the state stream inside a match (the control port the VPX fork connects to, the tunnel, 3D or 2D). */
-let stream3d: Stream3dHost | null = null;
+let stream3d: (Stream3dHost & ForkQuit) | null = null;
 /** I11.4.1: a PC is in one ArcAid room at a time: a match is refused while a 3D watch session is on. */
 const WATCH_BLOCKS_MATCH = 'Leave the 3D watch session first: a PC is in one ArcAid room at a time.';
 /** A14: the renderer's word on whether the Match tab is showing (`launch:viewing`). */
@@ -159,6 +177,10 @@ if (argv.includes('--smoke')) {
   // D1.6: which ffmpeg this build would stream with (`bundled <build>` from the installer, else `path`).
   const ff = resolveFfmpeg({ packaged: app.isPackaged, resourcesPath: process.resourcesPath, companionDir });
   process.stdout.write(`castcade ${appVersion} protocol ${PROTOCOL_VERSION} ffmpeg ${ff.source === 'bundled' ? `bundled ${ff.build ?? '?'}` : 'path'} edition ${edition}\n`);
+  // The Arcaid look: the kit the headset's pages carry inside themselves (media/aw-kit.ts), read as this build reads it
+  // (inside the asar when packaged). `kit ok`, or `kit fallback <file>: <why>` and the smoke fails (exit 1).
+  const kit = kitSmokeLine(kitLoad());
+  process.stdout.write(`${kit.line}\n`);
   // C16.2: the journal pipe's worker starts from this build (inside the asar when packaged) and writes a line it is sent;
   // on a pipe and in a folder of its own, never the hooks' pipe or the player's journals. A failure, a throw or no
   // answer within 30 s fails the smoke (exit 1); it never keeps running.
@@ -168,7 +190,7 @@ if (argv.includes('--smoke')) {
     smokeEnded = true;
     clearTimeout(smokeGiveUp);
     process.stdout.write(`journal-pipe ${ok ? 'ok' : 'FAILED'} ${detail}\n`);
-    app.exit(ok ? 0 : 1);
+    app.exit(ok && kit.ok ? 0 : 1);
   };
   const smokeGiveUp = setTimeout(() => smokeDone(false, '(no answer within 30 s)'), 30_000);
   void smokeJournalPipe().then(
@@ -249,7 +271,9 @@ function createWindow(): BrowserWindow {
     show: false,
     autoHideMenuBar: true,
     icon: join(app.getAppPath(), 'build', 'icon.png'),
-    backgroundColor: '#14161a',
+    // The Arcaid look: the kit's canvas (--aw-canvas, renderer/src/aw-theme/aw-theme.css), so the window opens on the
+    // colour its page is drawn on.
+    backgroundColor: '#07090F',
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -326,8 +350,26 @@ function setLoginItem(openAtLogin: boolean): LoginItemState {
   return loginItemState();
 }
 
+/** The quit question, asked once at a time (quit-question.ts). */
+const quitAsked = oneAtATime<QuitAnswer | null>();
+
 /** The orderly shutdown; `install` swaps the final app.quit() for the updater's quit-and-install (E6). */
 async function quit(host: WitnessHost, install = false): Promise<void> {
+  // A17 step 8 (the review of PR 138): Castcade is closed by its owner on the lobby's PC while others are present in
+  // the lobby: asked first. "Close" tells everyone the lobby is closed; "Keep" tells them Castcade was closed here
+  // and the lobby is kept for them to wait in, and it is offered again at the next start; Cancel closes nothing. An
+  // update restart is never asked (it keeps the lobby and goes back in by itself).
+  // Step 9: the words and the three answers are quit-question.ts (tested there without Electron).
+  // The final review (finding 8): one question at a time (Quit chosen again while it is up does nothing); and a member
+  // who is a player of the game being played is asked too, since their quit gives that game up.
+  const asked = await quitAsked(async () => {
+    const owner = await askQuit(install ? null : (match?.quitQuestion() ?? null), (box) => dialog.showMessageBox(box));
+    if (owner !== null) return owner;
+    const member = await askLeave(install ? null : (match?.quitGameQuestion() ?? null), (box) => dialog.showMessageBox(box));
+    return member === 'cancel' ? 'cancel' : null;
+  });
+  if (asked === 'busy' || asked === 'cancel') return;
+  const lobby: 'close' | 'keep' | undefined = asked ?? undefined;
   quitting = true;
   sidecarWatch?.stop();
   await overlay?.stop();
@@ -336,7 +378,7 @@ async function quit(host: WitnessHost, install = false): Promise<void> {
   await watch3d?.stop().catch(() => undefined); // I11.4.1: leaves the 3D watch session; a VPX it started stays open
   // Forfeits a match in progress and removes the turn lock. A15: not when Castcade restarts itself for an update: the
   // match is kept and rejoined at the next start.
-  await match?.stop({ keepForRestart: install && !!updater?.pendingVersion() }).catch(() => undefined);
+  await match?.stop({ keepForRestart: install && !!updater?.pendingVersion(), ...(lobby ? { lobby } : {}) }).catch(() => undefined);
   await stream3d?.stop().catch(() => undefined); // I11.4.2: the control port closes; a fork left open goes on as plain VPX
   await matchMedia?.detach().catch(() => undefined); // the match detached it if one was running; this closes the panel window
   await matchOverlay?.stop().catch(() => undefined); // ends the helper's stdin, so it hides the overlay and exits
@@ -416,10 +458,12 @@ function updateBalloon(n: UpdateNotice, host: WitnessHost): void {
 /** E9: a small window for the moments before the main one exists (an update at start, a start during an install). */
 function showNotice(text: string): { close(): void } {
   const esc = (s: string): string => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c] ?? c);
+  // The Arcaid look: the kit's canvas, ice text and panel border (renderer/src/aw-theme/aw-theme.css); a data: page
+  // loads no font file, so the system face stands in for Chakra Petch.
   const html =
     '<!doctype html><meta charset="utf-8"><title>Castcade</title>' +
-    '<body style="margin:0;padding:18px 20px;background:#14161a;color:#e6e6e6;font:14px system-ui,sans-serif;border:1px solid #262a31;height:100vh;box-sizing:border-box">' +
-    `<div style="font-weight:700;letter-spacing:.04em;margin-bottom:8px">Castcade</div><div>${esc(text)}</div></body>`;
+    '<body style="margin:0;padding:18px 20px;background:#07090F;color:#EAF6FF;font:14px system-ui,sans-serif;border:1px solid rgba(79,214,255,.28);height:100vh;box-sizing:border-box">' +
+    `<div style="font-weight:700;letter-spacing:.12em;text-transform:uppercase;margin-bottom:8px;color:#4FD6FF">Castcade</div><div>${esc(text)}</div></body>`;
   const w = new BrowserWindow({
     width: 440,
     height: 140,
@@ -431,7 +475,7 @@ function showNotice(text: string): { close(): void } {
     center: true,
     show: false,
     title: 'Castcade',
-    backgroundColor: '#14161a',
+    backgroundColor: '#07090F',
     icon: join(app.getAppPath(), 'build', 'icon.png'),
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
@@ -472,7 +516,7 @@ async function updaterAtStart(logger: Logger, userData: string): Promise<{ hidde
     busy: updateWaitReason,
     busyAtStart: async () => {
       const rec = resume.read();
-      if (rec && resumeFreshness(rec, Date.now()) !== 'stale') return `Castcade was in match ${rec.code} when it closed`;
+      if (rec && resumeFreshness(rec, Date.now()) !== 'stale') return `Castcade was in the lobby ${rec.code} when it closed`;
       const vpx = (await lister.list()).find((p) => isVpxExe(p.exe));
       return vpx ? `VPX is open (${basename(vpx.exe)}, pid ${vpx.pid})` : null;
     },
@@ -693,6 +737,12 @@ function registerIpc(
     });
   });
   ipcMain.handle(IPC.launchStartTable, () => os().startTable());
+  // A17 step 3: Open it (the lobby's new table, with "Change tables for me" off).
+  ipcMain.handle(IPC.launchOpenPick, () => os().openPick());
+  // A17 step 10: the lobby's table is picked: a path that is a key into this PC's own lists, never a path to run;
+  // `about` is the lobby as the press saw it, a string or nothing.
+  ipcMain.handle(IPC.launchPick, (_e, tablePath: unknown, about: unknown) => os().pick(str(tablePath, 'table'), typeof about === 'string' ? about : null));
+  ipcMain.handle(IPC.launchPickOpen, (_e, about: unknown, name: unknown) => os().pickOpen(typeof about === 'string' ? about : null, typeof name === 'string' ? name.slice(0, 300) : null));
   ipcMain.handle(IPC.launchConfirm, () => {
     noWatch();
     return os().confirm();
@@ -702,8 +752,25 @@ function registerIpc(
   ipcMain.handle(IPC.launchViewing, (e, on: unknown) => {
     if (win && !win.isDestroyed() && e.sender === win.webContents) matchTabShowing = on === true;
   });
-  ipcMain.handle(IPC.matchStart, (_e, o: unknown) => mh().start({ anyway: (o as { anyway?: unknown } | null | undefined)?.anyway === true }));
+  // A17 step 7: every member may ask for a start; what comes from the renderer is read flag by flag.
+  ipcMain.handle(IPC.matchStart, (_e, o: unknown) => {
+    const x = (o ?? {}) as { anyway?: unknown; newMatch?: unknown; now?: unknown; without?: unknown };
+    return mh().start({ anyway: x.anyway === true, newMatch: x.newMatch === true, now: x.now === true, ...(typeof x.without === 'string' ? { without: x.without.slice(0, 200) } : {}) });
+  });
+  ipcMain.handle(IPC.matchCancelStart, () => mh().cancelStart());
+  // The review of PR 136: a value that is not one of the choices is refused (`match-ipc.ts`), never read as one of
+  // them; and each press says what it was made against, which the match host checks before it does anything.
+  ipcMain.handle(IPC.matchEnd, (_e, o: unknown) => mh().endMatch(readEndMatch(o)));
+  ipcMain.handle(IPC.matchStance, (_e, stance: unknown) => mh().setStance(readStance(stance)));
+  ipcMain.handle(IPC.matchGiveUp, (_e, o: unknown) => mh().giveUp(readAbout(o, 'Give up this game')));
+  ipcMain.handle(IPC.matchAnswerAway, (_e, answer: unknown, o: unknown) => {
+    const r = readAwayAnswer(answer, o);
+    return mh().answerAway(r.answer, { player: r.player });
+  });
+  ipcMain.handle(IPC.matchPlayOnWithout, (_e, o: unknown) => mh().playOnWithout(readPlayer(o, 'Play on without')));
   ipcMain.handle(IPC.matchPassTurn, () => mh().passTurn());
+  // The review of PR 131: the grant the Match tab's question was about; anything else names no grant and ends nothing.
+  ipcMain.handle(IPC.matchEndMyBall, (_e, grantSeq: unknown) => mh().endMyBall(typeof grantSeq === 'number' && Number.isSafeInteger(grantSeq) ? grantSeq : -1));
   ipcMain.handle(IPC.matchResume, () => mh().resume());
   ipcMain.handle(IPC.matchSaveFrames, () => mh().saveFrames());
   ipcMain.handle(IPC.matchBenchStart, (_e, req: unknown) => mh().startBench(req));
@@ -780,6 +847,8 @@ async function main(): Promise<void> {
     mirrorToStderr: !app.isPackaged,
   });
   log = logger;
+  // The Arcaid look: a kit the headset's pages cannot read is said once, in this log (media/aw-kit.ts).
+  setKitLog((line) => logger.warn(line));
   logger.info(`castcade ${appVersion} protocol ${PROTOCOL_VERSION} electron ${process.versions.electron} packaged=${app.isPackaged} edition ${edition}`);
   if (editionPick.ignored !== null) logger.warn(`edition: '${editionPick.ignored}' (${editionPick.source === 'env' ? 'CASTCADE_EDITION' : 'package.json castcadeEdition'}) is not an edition; running the full app`);
 
@@ -1026,10 +1095,22 @@ async function main(): Promise<void> {
     logger.error(`stream3d: could not set up (${describeError(e)}); matches show the 2D video this run`);
   }
 
+  // I11.4.15: the table objects of this PC's table files (what the Castcade VPX build names for each: the thing two
+  // PCs must share for the 3D view), computed from the file or learned from the build, kept by path, size and time.
+  const objectsFile = join(userData, 'table-objects.json');
+  const tableObjects = createTableObjects({
+    fs: nodeFs,
+    io: { read: () => (existsSync(objectsFile) ? readFileSync(objectsFile, 'utf8') : null), write: (text) => writeFileSync(objectsFile, text) },
+    // The build spoke for a file while it was still being read, and the read then gave another identity: in the log.
+    onDisagree: (vpxPath, said, computed) => logger.warn(objectsDisagreeLine(basename(vpxPath).replace(/\.vpx$/i, ''), said, computed)),
+  });
+
   // A6 + C3: the match (host or join by invite). A failure here turns matches off for this run; it never stops the witness.
   let matchHost: MatchHost | null = null;
   if (features.match) try {
     matchHost = createMatchHost({
+      // I11.4.15: a host says its table's objects with its fingerprint, so a joining PC can pick a copy 3D works with.
+      tableObjects: (vpxPath) => tableObjects.objectsOf(vpxPath),
       file: join(userData, 'match.json'),
       keysFile: join(userData, 'match-keys.json'),
       witness: host,
@@ -1055,6 +1136,23 @@ async function main(): Promise<void> {
         const cur = store.get();
         return cur.token ? { baseUrl: cur.arcaidBaseUrl, deviceId: cur.deviceId, deviceToken: cur.token } : null;
       },
+      // A17 step 8 (the review of PR 138): whether ArcAid itself still knows this device, asked on its own
+      // authenticated route (the Witness heartbeat). Only its 401 says "not paired"; a server that does not answer,
+      // or answers anything else, says nothing about the pairing.
+      pairingCheck: async () => {
+        const cur = store.get();
+        if (!cur.token) return 'unpaired';
+        try {
+          await new ArcaidClient({ baseUrl: cur.arcaidBaseUrl, timeoutMs: 8000 }).heartbeat(cur.token, cur.deviceId);
+          return 'paired';
+        } catch (e) {
+          return e instanceof ArcaidError && e.kind === 'auth' ? 'unpaired' : 'unknown';
+        }
+      },
+      // I11.4.18: VPX gets the foreground back when a Castcade window (this one, the desktop panel) holds it and this
+      // PC's table is the one to play. This process owns those windows, so Windows lets it hand the foreground on.
+      // At a grant it is not handed on while the player types in Castcade (`vpxForeground`, above).
+      foreground: vpxForeground,
       appVersion,
       log: logger,
     });
@@ -1095,9 +1193,33 @@ async function main(): Promise<void> {
         fs: nodeFs,
         io: { read: () => (existsSync(hashesFile) ? readFileSync(hashesFile, 'utf8') : null), write: (text) => writeFileSync(hashesFile, text) },
       });
+      // A17 step 3: a table that is open and wrong is asked to close, never ended: the Castcade VPX build by `quit`
+      // on its control connection (only when that build is proven to be the process asked about), any other VPX by
+      // its window. The process is the one one-step names (the witness's, for the table); it is closed when the
+      // witness's process watch has seen it end.
+      const forkQuit = stream3d;
+      const mh = matchHost;
+      const closer = createVpxCloser({
+        quitFork: (pid) => forkQuit?.quitFork(pid) ?? false,
+        askWindow: (pid, mayClose) => askVpxWindowToClose(pid, mayClose),
+        alive: (pid) => host.vpxAlive?.(pid) ?? true,
+        onChange: (cb) => {
+          const offStatus = host.onStatus(() => cb());
+          const offExit = host.onEvent((e) => {
+            if (e.kind === 'table_exit') cb();
+          });
+          return () => {
+            offStatus();
+            offExit();
+          };
+        },
+        log: logger,
+      });
       oneStep = createOneStep({
         match: matchHost,
         witness: host,
+        closer,
+        changeTablesForMe: () => mh.status().settings.changeTablesForMe,
         launcher: createVpxLauncher({
           spawn: (command, args, options) => spawn(command, [...args], options),
           exists: async (p) => existsSync(p),
@@ -1109,6 +1231,11 @@ async function main(): Promise<void> {
         tableFiles: (have) => listTableFiles(nodeFs, tables.resolveTablesDir(null), have),
         // I11.4.11: the host's identical file is found among the copies of its title that nothing has hashed yet.
         hashTable: (vpxPath) => tableHasher.hashOf(vpxPath),
+        // I11.4.15: and among copies that are not the identical file, one with the host's table objects is.
+        tableObjects: (vpxPath, signal) => tableObjects.objectsOf(vpxPath, signal),
+        learnObjects: (vpxPath, objects) => tableObjects.learn(vpxPath, objects),
+        // A17 step 10: a picked file the witness never read is named by its own TableInfo, as every row names it.
+        tableInfoName: async (vpxPath) => (await readVpxFacts(nodeFs, vpxPath)).tableInfo.tableName?.trim() || null,
         arcaidBaseUrl: () => store.get().arcaidBaseUrl ?? null,
         log: logger,
       });

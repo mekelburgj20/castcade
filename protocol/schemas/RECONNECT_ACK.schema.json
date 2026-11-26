@@ -1,5 +1,5 @@
 {
-  "$id": "https://castcade.dev/protocol/v6/RECONNECT_ACK.schema.json",
+  "$id": "https://castcade.dev/protocol/v7/RECONNECT_ACK.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "properties": {
@@ -14,14 +14,16 @@
             "unknown_log_hash",
             "unknown_player",
             "bad_signature",
-            "match_not_started"
+            "match_not_started",
+            "protocol_version",
+            "stale_seq"
           ]
         },
         {
           "type": "null"
         }
       ],
-      "description": "Why the RECONNECT was rejected; null when accepted."
+      "description": "Why the RECONNECT was rejected; null when accepted. A17: `protocol_version`: the sender speaks another version; `stale_seq`: the envelope's `seq` is not above the last this host took from that member (a RECONNECT sent a second time). In a lobby `unknown_player` means the member's place is gone: it joins again with a fresh HELLO, the first frame of a new link."
     },
     "entries": {
       "type": "array",
@@ -141,9 +143,41 @@
     "logHash": {
       "type": "string",
       "pattern": "^[0-9a-f]{64}$",
-      "description": "The host's log head after these entries."
+      "description": "The host's log head after these entries. In a lobby's answer: the head of the log the answer carries (with `more`, at the end of this first page; for a `restart` or a refusal, which carry no log, 64 zeros and length 0)."
     },
     "logLength": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "match": {
+      "description": "A17: the match that is open now; null: none. Absent: not said (no lobby).",
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "description": "The Throwdown code from ArcAid, or any unique string in a local/fake match."
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "restart": {
+      "description": "A17: true: the sender's log is not of the open match (or none is open): drop it. The open match's log follows in MATCH_LOG. Absent: false.",
+      "type": "boolean"
+    },
+    "more": {
+      "description": "A17: true: `entries` holds only the first page (at most 100); the rest follows in MATCH_LOG, and the sender is current at its last page. Absent: false.",
+      "type": "boolean"
+    },
+    "closed": {
+      "description": "A17: true: the match the sender holds a log of (`RECONNECT.match`) ended while it was away, and is the last one the lobby closed: `entries` (and MATCH_LOG, with `more`) bring that log to its end, then that match's RESULTs and its MATCH_END follow as they were sent, and after them the lobby as it is now (the open match's log, if one is open, from entry 0). Nothing is reported into the closed match again. Absent: false.",
+      "type": "boolean"
+    },
+    "seqAbove": {
+      "description": "A17: with `stale_seq`: the last `seq` the lobby took from this member. The member's next RECONNECT carries a `seq` above it (signed, as every one is), so a counter that fell behind is no reason to stay out, and the counter itself is never moved back.",
       "type": "integer",
       "minimum": 0,
       "maximum": 9007199254740991

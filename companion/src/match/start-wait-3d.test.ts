@@ -10,7 +10,7 @@ import type { GameFingerprint, ParticipantInfo, PayloadOf } from '@castcade/prot
 import { HelloAck, PROTOCOL_VERSION, ParticipantUpdate } from '@castcade/protocol';
 import { ClientMatch } from './client.js';
 import { ManualClock } from './clock.js';
-import { FILES_DIFFER_COST, MatchController, TABLE_BY_HAND_NOTE, lobbyLineKey, type ControllerFeed } from './controller.js';
+import { FILES_GIVE_3D, MatchController, TABLE_BY_HAND_NOTE, lobbyLineKey, tableObjectsNote, type ControllerFeed } from './controller.js';
 import { HostMatch, STREAM3D_WAIT_GRACE_MS } from './host.js';
 import { generateKeys, type KeyPair } from './keys.js';
 import { MemoryBus } from './transport.js';
@@ -154,7 +154,8 @@ describe('the host engine: who is still making a 3D connection (I11.4.9)', () =>
   });
 
   it("the new keys are optional and bounded, and this build's parser drops a key it does not know (what a 0.2.46 peer does with these two: its schemas are not strict either)", () => {
-    expect(PROTOCOL_VERSION).toBe(6);
+    // A17 step 7: the version is 7 now; these two keys came in on 6 and did not change it.
+    expect(PROTOCOL_VERSION).toBe(7);
     // What a 0.2.46 peer sends: no key at all.
     const key = generateKeys().publicKeyB64;
     const ack = HelloAck.safeParse({ hostPlayerId: 'h', hostPublicKey: key, participants: [] });
@@ -542,31 +543,39 @@ describe('the controller: the start waits for the 3D connections (I11.4.9)', () 
   });
 });
 
-describe('what the lobby says about 3D before the start (I11.4.11, I11.4.12)', () => {
+describe('what the lobby says about 3D before the start (I11.4.11, I11.4.12, I11.4.15)', () => {
   /** The same table in another file: only the hash differs (a re-save, a modified copy). */
   const OTHER_FILE: GameFingerprint = { ...game, tableHash: 'cd'.repeat(32) };
 
-  it('I11.4.11: two different files of the table: with 3D in play the table line says what that costs and how to fix it, on both PCs, before the start', async () => {
+  it('I11.4.15: two different files of the table: the bytes alone say nothing of 3D; where both VPX name the same table objects the table line says 3D works, on both PCs, before the start; where they do not, the lobby note says so with the name', async () => {
     const r = await rig([]);
     await r.add('c', OTHER_FILE);
     const { H } = r;
     const c = r.cs['c']!;
-    // As it was: the difference is named, and nothing says what it means for 3D.
+    // The difference is named, and nothing is said of 3D while nothing is known (I11.4.11 warned here, wrongly on two
+    // tables of two on 2026-11-23: other bytes, the same table objects, 3D ran).
     expect(H.line()).toBe('same table, different file (a re-save or another download): Krobs');
     expect(c.line()).toBe('same table, different file (a re-save or another download): you');
-    // This PC's VPX is the Castcade build on the control connection (the shell's word).
-    H.ctl.set3dInPlay(true);
-    c.ctl.set3dInPlay(true);
-    expect(H.line()).toBe(`same table, different file (a re-save or another download): Krobs · ${FILES_DIFFER_COST}`);
-    expect(c.line()).toBe(`same table, different file (a re-save or another download): you · ${FILES_DIFFER_COST}`);
-    expect(FILES_DIFFER_COST).toBe("the other player's turns are shown as the flat video, not in 3D: use the identical table file on both PCs");
+    // Both VPX are the Castcade build and name the same table objects (the shell's word, from the stream's decision).
+    H.ctl.setFilesGive3d(true);
+    c.ctl.setFilesGive3d(true);
+    expect(H.line()).toBe(`same table, different file (a re-save or another download): Krobs · ${FILES_GIVE_3D}`);
+    expect(c.line()).toBe(`same table, different file (a re-save or another download): you · ${FILES_GIVE_3D}`);
+    expect(FILES_GIVE_3D).toBe('3D works all the same: the files hold the same table objects');
+    // The other case: the two tables hold other objects. Said by the shell's note, which names who it is about.
+    H.ctl.setFilesGive3d(false);
+    H.ctl.setLobbyNote(tableObjectsNote(['Krobs']));
+    expect(H.line()).toBe('same table, different file (a re-save or another download): Krobs · Not in 3D with Krobs: the two table files do not hold the same table objects, so their turns are shown as the flat video');
+    expect(tableObjectsNote(null)).toBe('Not in 3D with the host: the two table files do not hold the same table objects, so their turns are shown as the flat video');
+    expect(tableObjectsNote(['Krobs', 'Chuck'])).toContain('Not in 3D with Krobs, Chuck:');
     // Once the match runs the table line is what it always was (the turn prompts need the room).
     r.host.start();
     await flush();
-    expect(H.line()).not.toContain('flat video');
+    expect(H.line()).not.toContain('3D');
+    expect(c.line()).not.toContain('3D');
     // The identical file: nothing is said at all.
     const same = await rig();
-    same.H.ctl.set3dInPlay(true);
+    same.H.ctl.setFilesGive3d(true);
     expect(same.H.line()).toBe('Everyone in? Start a game on your table (or press Start match)');
   });
 
@@ -574,7 +583,7 @@ describe('what the lobby says about 3D before the start (I11.4.11, I11.4.12)', (
     const { host, clock, H, c } = await rig();
     c.ctl.setLobbyNote(TABLE_BY_HAND_NOTE);
     expect(c.line()).toBe(`Waiting for Hosty to start a game on the table · ${TABLE_BY_HAND_NOTE}`);
-    expect(TABLE_BY_HAND_NOTE).toBe('Not in 3D: this table is not running in the Castcade VPX build. For 3D it has to be started again by Castcade: close VPX, then host or join again');
+    expect(TABLE_BY_HAND_NOTE).toBe('Not in 3D: this table is not running in the Castcade VPX build. For 3D it has to be started again by Castcade: close VPX, then open or join a lobby again');
     // Only on the PC it is about.
     expect(H.line()).toBe('Everyone in? Start a game on your table (or press Start match)');
     let changes = 0;

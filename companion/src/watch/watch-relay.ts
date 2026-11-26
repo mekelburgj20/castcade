@@ -197,10 +197,14 @@ export class WatchRelayClient extends RelayBase {
 
   /** Join the room of `code`. Rejects with a `RelayError` (`no_such_match`, `locked`, `full`, `unauthorized`, …). */
   async join(code: string): Promise<void> {
-    this.code = code;
     const socket = await this.whenConnected();
     await this.request(socket, 'match:join', code);
     if (this.socket !== socket || !socket.connected) throw new RelayError('unreachable', 'the connection to ArcAid dropped while joining');
+    // The room is named only now that this client is in it (2026-11-24). Named before the socket was up, the socket
+    // coming up looked like a reconnect of a client out of its room (`onSocketUp`), and a second `match:join` went out
+    // beside the first: every join was asked twice, and a mistyped code counted as two of the eight misses that lock
+    // a PC out. A first join that fails is the caller's to try again; only a room once joined is asked for again.
+    this.code = code;
     this.joined = true;
   }
 
@@ -285,6 +289,8 @@ export class WatchRelayClient extends RelayBase {
     const code = this.code;
     if (code === null || this.closed || this.ended !== null || this.joined) return;
     this.rejoining = true;
+    /** How long until the next ask; null: no next ask from here (in the room, over for good, or socket.io's turn). */
+    let againIn: number | null = null;
     try {
       await this.join(code);
       this.misses = 0;
@@ -301,10 +307,14 @@ export class WatchRelayClient extends RelayBase {
       // A dropped socket is socket.io's to fix (it reconnects and `onSocketUp` asks again); a miss waits a little longer
       // each time; a device held back waits out the server's minute.
       const gap = word === 'rate_limited' ? 15_000 : (this.gaps[Math.max(0, Math.min(this.misses, this.gaps.length) - 1)] ?? 2_000);
-      if (word !== 'unreachable' || this.socket?.connected) this.scheduleRejoin(gap);
+      if (word !== 'unreachable' || this.socket?.connected) againIn = gap;
     } finally {
       this.rejoining = false;
     }
+    // Only now, with `rejoining` down again (2026-11-24): `scheduleRejoin` refuses while an ask is running, so the
+    // next ask scheduled from inside the catch above was never scheduled, and a client told `no_such_match` once (it
+    // asked for the room before its host had opened it again, after an ArcAid restart) stayed out of the session.
+    if (againIn !== null) this.scheduleRejoin(againIn);
   }
 
   close(): void {

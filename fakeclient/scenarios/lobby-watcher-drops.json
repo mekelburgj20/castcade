@@ -1,0 +1,16 @@
+{
+  "name": "lobby-watcher-drops",
+  "description": "A17 step 6: a watcher's link drops in the middle of a game and comes back. No player sees anything of it: nothing is paused, nothing is logged, the grants go on; the watcher returns by RECONNECT and holds the log everyone holds.",
+  "matchId": "WDROPS",
+  "ballsPerGame": 2,
+  "lobby": true,
+  "host": "p1",
+  "players": [
+    { "playerId": "p1", "displayName": "Lobby PC", "stance": "play", "scores": [1000, 2000] },
+    { "playerId": "p2", "displayName": "Player Two", "stance": "play", "scores": [1500, 3000] },
+    { "playerId": "p3", "displayName": "Watcher", "stance": "watch", "scores": [9, 9], "drops": { "match": 1, "afterGrants": 2, "forMs": 80 } }
+  ],
+  "matches": [
+    { "games": 2 }
+  ]
+}

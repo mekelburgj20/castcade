@@ -458,6 +458,10 @@ export function peerChanges(before: PanelPageStatus['peers'] | null | undefined,
   for (const [id, p] of Object.entries(after)) {
     const b = before?.[id];
     if (b && b.ice === p.ice && b.signaling === p.signaling && (b.reopens ?? 0) === (p.reopens ?? 0)) continue;
+    // I11.12 (2026-11-24): a peer the page restarts ICE for every 30 s (its scheduled restarts are used up: `quiet`)
+    // goes through checking, have-local-offer, stable and disconnected each time: four lines a round, for as long as
+    // the match lasts. The page's own line per restart says it; a reopen, and the state it leaves this with, are written.
+    if (b?.quiet && p.quiet && (b.reopens ?? 0) === (p.reopens ?? 0)) continue;
     const reopened = (p.reopens ?? 0) > (b?.reopens ?? 0) ? `, connection replaced (${p.reopens} so far)` : '';
     out.push(`media: peer ${id}: ice ${p.ice}, signalling ${p.signaling ?? '?'}${reopened}`);
   }
@@ -631,6 +635,8 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
   let volume: { voice: number; table: number } | null = null;
   /** D10.5: the native video's footer line (`setVideoLine`); null = none shown. */
   let videoLine: string | null = null;
+  /** I11.12 (2026-11-24): the players the native video reaches directly (`setVideoDirect`); the page is told on every change and at each attach. */
+  let videoDirect: string[] = [];
 
   /** D2.6: where the desktop panel went at its last `showPanel` (the Match tab says so). */
   let panelSide: PanelSide = 'edge';
@@ -1648,6 +1654,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     if (tableFlags) toPage(PANEL_CHANNELS.tableAudio, tableFlags);
     if (volume) toPage(PANEL_CHANNELS.volume, { ...volume, note: null } satisfies PanelVolume);
     if (videoLine !== null) toPage(PANEL_CHANNELS.videoLine, videoLine);
+    if (videoDirect.length > 0) toPage(PANEL_CHANNELS.videoDirect, videoDirect);
     try {
       const file = join(opts.userData, PAGE_FILE);
       mkdirSync(opts.userData, { recursive: true });
@@ -1718,6 +1725,11 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     attach: (sig, initial) => attach(sig, initial),
     addPeer(peer) {
       if (!attached || !signalling || peer === signalling.localId) return;
+      // A17 (2026-11-24): a peer the page already holds is left as it is. The page's `mesh.add` closes the connection
+      // and makes a new one (that is what `reset` and a stale offer need), so passing this on would rebuild a voice
+      // connection that is up: the peers are added at the join now, and the match's start names them again. A caller
+      // that does want the connection made again says so: `removePeer`, then `addPeer`.
+      if (peers.has(peer)) return;
       peers.add(peer);
       toPage(PANEL_CHANNELS.addPeer, peer);
     },
@@ -1825,6 +1837,13 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
       if (line === videoLine) return;
       videoLine = line;
       if (attached) toPage(PANEL_CHANNELS.videoLine, line);
+    },
+    // I11.12 (2026-11-24): who the native video reaches directly (kept for the next attach; an empty list clears it).
+    setVideoDirect(peers) {
+      const next = [...new Set(peers)].sort();
+      if (next.join('\n') === videoDirect.join('\n')) return;
+      videoDirect = next;
+      if (attached) toPage(PANEL_CHANNELS.videoDirect, next);
     },
     startBench,
     async stopBench() {

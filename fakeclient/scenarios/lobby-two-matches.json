@@ -1,0 +1,16 @@
+{
+  "name": "lobby-two-matches",
+  "description": "A17 step 5: one lobby, two matches one after the other by the same two players. Each match has an id of its own (TWOMAT-1, TWOMAT-2) and a log of its own from entry 0; End match brings everyone back to the lobby, and the lobby is closed at the end.",
+  "matchId": "TWOMAT",
+  "ballsPerGame": 2,
+  "lobby": true,
+  "host": "p1",
+  "players": [
+    { "playerId": "p1", "displayName": "Lobby PC", "stance": "play", "scores": [1000, 2000] },
+    { "playerId": "p2", "displayName": "Player Two", "stance": "play", "scores": [1500, 3000] }
+  ],
+  "matches": [
+    {},
+    {}
+  ]
+}

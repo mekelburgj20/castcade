@@ -1,0 +1,16 @@
+{
+  "name": "lobby-player-up-drops",
+  "description": "A17 step 6: the link of the player who is up drops for a moment longer than the grace. The game is paused for them, at their own turn; they come back by RECONNECT, the ball end they reported into the dead link is sent again, their own RESUME clears the pause and the game goes on. Nobody is forfeited.",
+  "matchId": "UDROPS",
+  "ballsPerGame": 2,
+  "lobby": true,
+  "host": "p1",
+  "players": [
+    { "playerId": "p1", "displayName": "Lobby PC", "stance": "play", "scores": [1000, 2000] },
+    { "playerId": "p2", "displayName": "Player Two", "stance": "play", "scores": [1500, 3000], "drops": { "match": 1, "afterGrants": 2, "forMs": 80 } },
+    { "playerId": "p3", "displayName": "Watcher", "stance": "watch", "scores": [9, 9] }
+  ],
+  "matches": [
+    {}
+  ]
+}

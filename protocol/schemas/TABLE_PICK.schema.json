@@ -1,0 +1,144 @@
+{
+  "$id": "https://castcade.dev/protocol/v7/TABLE_PICK.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "game": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "vpx",
+            "arcade"
+          ],
+          "description": "Emulator family."
+        },
+        "tableName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "Human name of the table or ROM set."
+        },
+        "tableHash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "SHA-256 of the ORIGINAL .vpx (never the patched copy), or of the arcade ROM zip."
+        },
+        "romName": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 64
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "PinMAME ROM set name (e.g. mm_109c) or arcade ROM name; null for originals."
+        },
+        "romHash": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$",
+              "description": "Lower-case hex SHA-256."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "SHA-256 of the ROM zip; null for originals."
+        },
+        "physicsHash": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$",
+              "description": "Lower-case hex SHA-256."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Hash of the physics-relevant table settings; null when not computed."
+        },
+        "recipeVersion": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 32
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Castcade patch recipe version applied to this table (ADR 0004); null for arcade."
+        },
+        "sidecarHash": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$",
+              "description": "Lower-case hex SHA-256."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "SHA-256 of the generated sidecar .vbs; proves both players run the same patch."
+        },
+        "emulatorVersion": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "VPX or RetroArch core version string."
+        }
+      },
+      "required": [
+        "kind",
+        "tableName",
+        "tableHash",
+        "romName",
+        "romHash",
+        "physicsHash",
+        "recipeVersion",
+        "sidecarHash",
+        "emulatorVersion"
+      ],
+      "additionalProperties": false,
+      "description": "The picked table: its identity keys (`kind`, `tableName`, `tableHash`, `romName`); the other keys are facts of one PC's copy and are null or empty in a pick."
+    },
+    "tableObjects": {
+      "description": "A17: the identity the Castcade VPX build gives the picked table (as `HELLO_ACK.hostTableObjects`), as the picker's PC knows it for its own copy; null or absent: not known. In a lobby `HELLO_ACK.hostTableObjects` is the picked table's.",
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "editables": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295
+            },
+            "hash": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{16}$"
+            }
+          },
+          "required": [
+            "editables",
+            "hash"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "game"
+  ],
+  "additionalProperties": false,
+  "description": "client -> host, in a lobby, outside a game. A member picks the lobby's table; answered by the HELLO_ACK that carries it (`hostGame`, `tablePickedBy`), or by REJECT."
+}

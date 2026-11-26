@@ -174,12 +174,20 @@ function make(name: string, w: WitnessHost): { mh: MatchHost; lock: string; logs
     publicIp: () => Promise.resolve('127.0.0.1'),
     lockFile: lock,
     listenAddress: '127.0.0.1',
+    // 2026-11-24: the host listens on a port the system picks (`host({ port: 0 })`): a port picked here (49000 to
+    // 50999, at random) is inside the range Windows hands out and reserves from (49152 and up), and the Windows CI
+    // job failed on it (`listen EACCES 127.0.0.1:49767`).
+    ephemeralPort: true,
+    // A17 step 7: every match is in a lobby, and every start of a lobby counts down (5 s in the app); here it is short.
+    lobby: { countdownMs: 20 },
+    // And no search of the network the tests run on (D10.8): left at its default, every hosted match here asked the
+    // router of whoever runs the tests to open a port.
+    openPort: null,
   });
   hosts.push(mh);
   return { mh, lock, logs };
 }
 
-const port = (): number => 49000 + Math.floor(Math.random() * 2000);
 const scoreOf = (mh: MatchHost, name: string): number | null | undefined => mh.status().panel?.players.find((p) => p.name === name)?.score;
 
 describe('the witness rebuilt during a match (A15)', () => {
@@ -190,7 +198,7 @@ describe('the witness rebuilt during a match (A15)', () => {
     await until(() => hr.ready());
     const H = make('ball-host', hr.wh);
     const C = make('ball-guest', cr.w);
-    const hs = await H.mh.host({ port: port(), ballsPerGame: 3, displayName: 'Host' });
+    const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Host' });
     await C.mh.join(hs.invite!, 'Guest');
     await until(() => H.mh.status().participants.length === 2);
     await H.mh.start();
@@ -236,9 +244,10 @@ describe('the witness rebuilt during a match (A15)', () => {
     await until(() => hr.ready() && hr.reads(200));
     const H = make('lobby-host', hr.wh);
     const C = make('lobby-guest', cr.w);
-    const hs = await H.mh.host({ port: port(), ballsPerGame: 3, displayName: 'Host' });
+    const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Host' });
     await C.mh.join(hs.invite!, 'Guest');
-    const waiting = 'Everyone is in: finish the game on your table, then press Start on it to start the match';
+    // A17 step 7: the lobby's line for a starter whose own game is running (A12's rule, in the lobby's words).
+    const waiting = 'Everyone in? Finish the game on your table, then start a game on it (or Start match in the menu)';
     await until(() => H.mh.status().panel?.message === waiting);
 
     await hr.wh.restart('settings changed');
@@ -251,7 +260,7 @@ describe('the witness rebuilt during a match (A15)', () => {
 
     // The game ends and the next Start on the table starts the match, as without a restart.
     hr.gameEnd(200);
-    await until(() => H.mh.status().panel?.message === 'Everyone in? Start a game on your table (or press Start match)');
+    await until(() => H.mh.status().panel?.message === 'Everyone in? Start a game on your table (or Start match in the menu)');
     hr.gameStart();
     await until(() => H.mh.status().phase === 'playing' && C.mh.status().phase === 'playing', 9000);
   }, 30_000);

@@ -162,6 +162,31 @@ export interface WitnessStatus {
    * ends: " in a match lobby (`noBallEndsReason`). Null otherwise; basic mode says why in `note`.
    */
   ballEndsNote?: string | null;
+  /**
+   * A17 step 3: whether a game on the open table would be seen by the companion: true only with evidence for it.
+   * `captureMode: 'live'` does not say it. True when the table is followed, the journal's `table_loaded` of this
+   * VPX process was read, and its game start and end are known to be journaled: a ROM machine whose map gives the
+   * ball (`ballEnds`), or an original whose import manifest says the patch is whole. False for anything else that is
+   * open: basic mode, a machine followed without its ball ends (Stern SAM names a game start late), a patch that is
+   * partial or whose manifest is missing, a journal session of an earlier process. Null with no table open.
+   * Whoever would close a table by itself asks this first, and asks the person when it is not true.
+   */
+  gamesSeen?: boolean | null;
+  /**
+   * A17 step 3: the VPX process `currentTable` is named from (the session it belongs to), its exe, and how many VPX
+   * processes the witness holds. With more than one, nothing here says which of them a person is playing on.
+   */
+  currentPid?: number | null;
+  currentVpxExe?: string | null;
+  vpxOpen?: number;
+  /**
+   * A17 step 10 (review of PR 139): the witness is watching: it runs, and it has looked at this PC's processes at
+   * least once since it was started. Only then is "no table, no VPX" something it knows, and only then can
+   * `gamesSeen` be true. False while watching is paused (what the status names is then what was open at the pause),
+   * and in the moment a witness that was just made, or made again after a settings change, has not looked yet.
+   * Whoever would close or start a table by itself asks this first, and asks the person when it is false.
+   */
+  watching?: boolean;
   /** The game in progress on a limited-attempts board (live mode only); null otherwise. */
   attempt: AttemptStatus | null;
   /**
@@ -191,7 +216,8 @@ export interface WitnessEvents {
    * process's own start, epoch ms, when the lister knows it (`at` is when the watch first saw it).
    */
   launch: (info: { table: string | null; exe: string; pid: number; at: string; startedAt: number | null }) => void;
-  exit: (info: { table: string | null; at: string; durationSec: number }) => void;
+  /** `pid` (A17 step 3): the process that ended; said as soon as it is seen gone, before the close-time capture. */
+  exit: (info: { table: string | null; at: string; durationSec: number; pid?: number }) => void;
   capture: (capture: LastCapture) => void;
   error: (message: string) => void;
   /** Something the player should hear once (a desktop notification in the shell), e.g. a table opened without a Castcade patch. */
@@ -312,6 +338,18 @@ export interface Witness {
    * no way to tell: no live table, not a ROM table, no map, no `high_scores` in it.
    */
   highScoreQualifies(score: number): boolean;
+  /**
+   * A17 step 3: the same question with its third answer: true or false when the machine's list could be compared,
+   * null when there is no way to tell (the cases `highScoreQualifies` answers false for want of a list). Logs nothing.
+   */
+  highScoreKnown(score: number): boolean | null;
+  /**
+   * A17 step 3: whether the VPX process `pid` is one the witness holds. False from the moment the process watch sees
+   * it gone, which is seconds before `status()` lets go of its table (the close-time capture comes between).
+   */
+  holdsVpx(pid: number): boolean;
+  /** The witness is watching (`WitnessStatus.watching`): only then does `holdsVpx` answering false mean the process has ended. */
+  watching(): boolean;
   /**
    * B26.4: how the adjustment that enables Midnight Madness reads on the open table (the journal's NVRAM, which
    * starts as the hook's snapshot at table load and follows the bytes after): ON or OFF, and which adjustment. Null

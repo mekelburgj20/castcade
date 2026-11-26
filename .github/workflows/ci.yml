@@ -45,6 +45,11 @@ jobs:
       - run: npm run test
       - name: Electron smoke (prints version and quits before any window)
         run: npx electron companion --smoke
+      # I11.12: two real RTCPeerConnections in one hidden page with the pages' own negotiator (host candidates, nothing
+      # leaves the runner): a restart led by the polite side changes both sides' ICE credentials and reconnects, and
+      # after a rollback Chromium offers it again by itself. The unit tests assume both of a fake.
+      - name: ICE restart smoke (a polite-led restart in real Chromium)
+        run: npx electron companion/scripts/ice-restart-smoke.mjs
 
   fixtures:
     name: fixture replay (detector)

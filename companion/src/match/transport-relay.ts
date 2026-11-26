@@ -30,9 +30,10 @@
  *             (`peers`, and `match:peer joined` again for each)
  *
  * A link here behaves like a socket of `WsPeerTransport`:
- * - host: a relay peer becomes a link with its first frame, which must be HELLO or RECONNECT (`match:peer joined`,
- *   also the one re-sent after a host resume, is not needed: a socket in the room is not yet a player);
- *   `match:peer left` closes it (a leave).
+ * - host: a relay peer becomes a link once the engine has accepted its first frame, which must be HELLO or RECONNECT
+ *   (2026-11-25, `LinkCandidate` in transport.ts: until that verdict the peer is nobody's link, and the player its
+ *   frame names keeps the link they have; `match:peer joined`, also the one re-sent after a host resume, is not
+ *   needed: a socket in the room is not yet a player); `match:peer left` closes it (a leave).
  * - client: the host's id is learned from its first frame; the link closes (a leave) when this socket drops, on
  *   `match:closed`, and when the host says so (below). `connectTo` re-joins the room if the socket changed and sends
  *   RECONNECT as the opening frame, so the engine resumes from the log head as it does over WebSocket.
@@ -55,11 +56,19 @@
  * bucket per `to` (amended 2026-11-12: the first contract counted the host's socket as a whole, which a host that is
  * the player up reached with three clients). STATE at 10 Hz is half a bucket, so nothing is shed in a normal match
  * at any size; the pacer is there for a burst of signalling.
+ *
+ * A18 (2026-11-24): a dropped socket is still what it was here (every link closes, the engine sees a leave for each);
+ * that a short one is no disconnect is the engines' rule (`host.ts` / `client.ts`, a grace of 5 s), so it holds for the
+ * WebSocket transport too. Two things here: every drop says why (`dropWords`: socket.io's reason, the WebSocket close
+ * code, how long the connection had been up and when ArcAid's last ping came), because on 2026-11-23 three drops of
+ * one PC's socket left nothing in either log to tell a network cut from a proxy closing the connection; and the first
+ * reconnect is tried after about a quarter of a second, not half a second (`RECONNECT_FIRST_MS`).
  */
 import { io, type Socket } from 'socket.io-client';
 import { decodeFrame, encodeFrame, type AnyMessage, type PlayerId } from '@castcade/protocol';
+import { openCandidate, refusedOpening, ReportGate, undecodedFrames, type OpenedCandidate } from './transport.js';
 import type { MessageHandler, PeerHandler, Transport } from './transport.js';
-import { foreignVersionRefusal, type ErrorHandler } from './transport-ws.js';
+import { foreignVersionRefusal, undecodable, type ErrorHandler } from './transport-ws.js';
 
 /** Host -> client, in `data`: "your link to me is gone; open it again with RECONNECT". Never a protocol frame. */
 export const RELINK = 'castcade-relay:relink';
@@ -67,6 +76,8 @@ export const RELINK = 'castcade-relay:relink';
 export const RELAY_MAX_BYTES = 256 * 1024;
 /** The server's rate limit: messages per window per socket. */
 export const RELAY_RATE = { limit: 200, windowMs: 10_000 } as const;
+
+const seconds = (ms: number): number => Math.round(ms / 100) / 10;
 
 export type RelayErrorCode =
   /** No connection to ArcAid (network, DNS, the server down, or a server without the relay: no ack). */
@@ -112,8 +123,31 @@ export interface RelayOptions {
   pace?: Partial<PacerOptions>;
   /** Test seam: how a client asks again for a room that is not there (`DEFAULT_REJOIN`). */
   rejoin?: Partial<RejoinPolicy>;
+  /**
+   * A17 step 7 (the review of PR 136): the times ArcAid answered this DEVICE `no_such_match`, whichever transport
+   * asked (a mistyped code is a miss of the device as much as an ask for a room that is gone). A client transport
+   * that is given the list writes its own misses into it, a first join's too, and holds its asks back by all of
+   * them (`RejoinPolicy.maxMisses`), not only by its own. The shell keeps one list for all the transports it makes.
+   */
+  missLog?: number[];
+  /**
+   * A17 step 8 (the review of PR 138): a host that is answered `unauthorized` does not know from that alone that
+   * its device is no longer paired: the relay answers the same when it could not read the device just then. This is
+   * the second, independent question (the shell asks ArcAid's own authenticated pairing check): true only when that
+   * also says the device is not paired. False, a throw, or no such option: the room is asked for again, as after
+   * any absence of ArcAid.
+   */
+  confirmUnpaired?: () => Promise<boolean>;
+  /**
+   * The final review (2026-11-28, finding 6): this device's credentials as they are now (the settings after a new
+   * pairing). Asked for when the relay says `unauthorized` and the pairing check says paired: the socket was made
+   * with what the device had when the lobby opened. Null or absent: there are no others.
+   */
+  freshAuth?: () => { deviceId: string; deviceToken: string } | null;
   /** Test seam: how long a host that had to open its room again waits for its players before it locks it again. Default 60 s. */
   relockWaitMs?: number;
+  /** Test seam: how long a relay peer's opening frame may wait for the engine's verdict (`CANDIDATE_VERDICT_MS`). */
+  verdictMs?: number;
 }
 
 /**
@@ -131,10 +165,53 @@ export interface RejoinPolicy {
 /** Five asks over about 18 s from the first miss; three misses are left for the player's own tries. */
 export const DEFAULT_REJOIN: RejoinPolicy = { gapsMs: [1_500, 3_000, 5_000, 8_000], maxMisses: 5, windowMs: 10 * 60_000 };
 
+/**
+ * A17 step 7 (2026-11-25, alpha-match.md section 11.8a; it replaces the shell's `HOST_WAIT_REJOIN` of A15, five asks
+ * in 88 s and then none): how a member of a lobby asks for a room that is gone, while it waits for the lobby's PC
+ * (twenty minutes, `LOBBY_HOST_WAIT_MS` in client.ts): at once, 5 s after the first miss, 25 s after the second
+ * (half a minute in: a lobby's PC whose connection blinked, or an ArcAid that restarted, is back by then more often
+ * than not), and then every 150 s for as long as the engine goes on trying. That is six asks in the first ten
+ * minutes and four in every ten after, two under the server's lockout (eight misses in ten minutes); `maxMisses`
+ * is the cap that keeps it under whatever else this device was answered (`RelayOptions.missLog`). A lobby's PC
+ * that comes back is found within two and a half minutes at the worst; that this costs a member nothing of the
+ * three minutes of a clock is the lobby PC's doing (`LOBBY_RETURN_ALLOW_MS`).
+ */
+export const LOBBY_REJOIN: RejoinPolicy = { gapsMs: [5_000, 25_000, 150_000], maxMisses: 7, windowMs: 10 * 60_000 };
+
+/**
+ * A17 step 7 (the review of PR 136): the longest a member who follows `LOBBY_REJOIN` can take to be back after the
+ * lobby's PC has registered its room again, one failed ask included: the longest gap between two asks (150 s: the
+ * ask before may have missed a moment before the return), then an ask that fails for another reason (the socket,
+ * 5 s; the acknowledgement, 4 s), then the engine's own longest gap before it tries again (30 s,
+ * `LOBBY_RECONNECT_GAP_MAX_MS` in client.ts), then an ask that is answered. The lobby's PC is given this number
+ * (`LobbyOptions.returnAllowMs`): until it has passed since its return, neither clock counts against a member who
+ * was away at that moment. `transport-relay.test.ts` holds the two numbers together.
+ */
+export const LOBBY_RETURN_ALLOW_MS = 200_000;
+
+/**
+ * How long the next ask for a room waits after a miss, when `misses` of them (this one included) fall inside the
+ * policy's window: `gapsMs[misses - 1]`, the last gap repeating. A17 step 7: on its own so that a policy can be
+ * checked against ArcAid's lockout without ten minutes of real time (`transport-relay.test.ts`: a lobby's slow asks).
+ */
+export function rejoinGapAfter(policy: RejoinPolicy, misses: number): number {
+  const gaps = policy.gapsMs;
+  return gaps[Math.min(Math.max(1, misses), gaps.length) - 1] ?? 0;
+}
+
 const DEFAULT_CONNECT_TIMEOUT_MS = 5_000;
 const DEFAULT_ACK_TIMEOUT_MS = 4_000;
 /** After a reconnect, `match:host` is tried again until it is accepted: after this long, then twice as long each time. */
 const REHOST_RETRY_MS = 3_000;
+/**
+ * A17 step 8 (2026-11-26; the review of PR 138): how often in a row a host is answered that its device is not
+ * accepted (`unauthorized`) before it asks the second question (`RelayOptions.confirmUnpaired`). The relay's answer
+ * alone is never final: it is also what the relay says when its own read of the device failed. Three in a row, over
+ * about ten seconds (the first at once, then 3 s and 6 s later), and then, only when the pairing check says so too,
+ * the room is given up as `unauthorized`. Anything else is ArcAid being away: asked again, every half minute at the
+ * most, and the second question again after every three such answers.
+ */
+export const REHOST_UNAUTHORIZED_MAX = 3;
 /** ... up to this (the server allows a device 20 `match:host` / `match:join` a minute). */
 const REHOST_RETRY_MAX_MS = 30_000;
 const DEFAULT_RELOCK_WAIT_MS = 60_000;
@@ -154,6 +231,31 @@ const FINAL_FOR_CLIENT: ReadonlySet<string> = new Set(['host_left', 'replaced'])
 export const RELAY_UNPAIRED = 'This PC is no longer paired with ArcAid';
 /** A second RELINK to the same peer waits this long (its frames keep arriving until it acts on the first). */
 const RELINK_GAP_MS = 2_000;
+/**
+ * A18: socket.io's first reconnect after a drop, before its jitter (half to one and a half times this) and doubling:
+ * what crosses while the socket is away is lost and must be resumed, so the gap is kept short. The later tries back
+ * off as before, up to 5 s (an ArcAid restart takes about 8 s).
+ */
+const RECONNECT_FIRST_MS = 250;
+
+/**
+ * A18: why socket.io says the connection closed, for the log. `transport close`: the WebSocket was closed under it (the
+ * network, a proxy on the way, ArcAid going down); `ping timeout`: nothing came from ArcAid for its ping interval and
+ * timeout; `transport error`: the socket failed; `io server disconnect`: ArcAid closed it on purpose. No address and no
+ * error text of the system's is taken, only socket.io's own words and the close code.
+ */
+export function dropWords(reason: string, details: unknown, upMs: number | null, pingAgoMs: number | null): string {
+  const d = typeof details === 'object' && details !== null ? (details as { description?: unknown; context?: unknown }) : {};
+  const ctx = typeof d.context === 'object' && d.context !== null ? (d.context as { code?: unknown }) : {};
+  const parts = [reason.replace(/[^A-Za-z ]/g, '').slice(0, 40)];
+  // Letters and spaces only ("websocket connection closed", "websocket error"): an error text with a number or a
+  // slash in it could be an address or a path.
+  if (typeof d.description === 'string' && /^[A-Za-z ]{1,60}$/.test(d.description)) parts.push(d.description);
+  if (typeof ctx.code === 'number') parts.push(`close code ${ctx.code}`);
+  const up = upMs === null ? '' : ` after ${seconds(upMs)} s`;
+  const ping = pingAgoMs === null ? 'no ping from ArcAid on this connection yet' : `ArcAid's last ping came ${seconds(pingAgoMs)} s before`;
+  return `the connection to ArcAid closed (${parts.join('; ')})${up}; ${ping}`;
+}
 
 // ------------------------------------------------------------------------------------------ pacer --
 
@@ -240,8 +342,6 @@ export class RelayPacer<T> {
 
 // ------------------------------------------------------------------------------------------- base --
 
-const seconds = (ms: number): number => Math.round(ms / 100) / 10;
-
 type RelayEvent = 'match:host' | 'match:join' | 'match:lock';
 type Ack = { ok: true; peer?: unknown; peers?: unknown } | { ok: false; error?: unknown };
 
@@ -304,6 +404,9 @@ export abstract class RelayBase {
    */
   private refusal: RelayError | null = null;
   private readonly reportedAt = new Map<string, number>();
+  /** A18: when the connection came up and when ArcAid last pinged it, for the line a drop leaves in the log. */
+  private upAt: number | null = null;
+  private pingAt: number | null = null;
 
   constructor(protected readonly opts: RelayOptions) {
     this.localId = opts.localId;
@@ -314,6 +417,25 @@ export abstract class RelayBase {
   protected abstract onSocketUp(socket: Socket): void;
   protected abstract onSocketDown(reason: string): void;
   protected abstract wire(socket: Socket): void;
+
+  /** The credentials the socket was last given (`renewAuth`). */
+  private authNow: { deviceId: string; deviceToken: string } | null = null;
+
+  /**
+   * The final review (2026-11-28, finding 6): the socket is connected again with this device's credentials as they
+   * are now (`RelayOptions.freshAuth`), when they are others than the ones it holds. True: it was.
+   */
+  protected renewAuth(): boolean {
+    const fresh = this.opts.freshAuth?.() ?? null;
+    const held = this.authNow ?? this.opts.auth;
+    const socket = this.socket;
+    if (!fresh || !socket || (fresh.deviceId === held.deviceId && fresh.deviceToken === held.deviceToken)) return false;
+    this.authNow = { deviceId: fresh.deviceId, deviceToken: fresh.deviceToken };
+    socket.auth = { deviceId: fresh.deviceId, deviceToken: fresh.deviceToken };
+    socket.disconnect();
+    socket.connect();
+    return true;
+  }
 
   /** The socket, created on first use. Events are wired once; socket.io reconnects it by itself. */
   protected ensureSocket(): Socket {
@@ -327,16 +449,27 @@ export abstract class RelayBase {
       forceNew: true,
       autoConnect: false,
       reconnection: true,
-      reconnectionDelay: 500,
+      reconnectionDelay: RECONNECT_FIRST_MS,
       reconnectionDelayMax: 5_000,
       timeout: this.connectTimeoutMs,
     });
     this.socket = socket;
     socket.on('connect', () => {
       this.refusal = null;
+      this.upAt = Date.now();
+      this.pingAt = null;
       this.onSocketUp(socket);
     });
-    socket.on('disconnect', (reason) => {
+    socket.io.on('ping', () => {
+      this.pingAt = Date.now();
+    });
+    socket.on('disconnect', (reason, details) => {
+      // A18: why, for the log (not for a close of our own).
+      if (!this.closed && reason !== 'io client disconnect') {
+        const now = Date.now();
+        this.fail(new RelayError('unreachable', dropWords(reason, details, this.upAt === null ? null : now - this.upAt, this.pingAt === null ? null : now - this.pingAt)), null);
+      }
+      this.upAt = null;
       this.onSocketDown(reason);
       // The server closed it (a restart, a kick): socket.io leaves that one to us.
       if (reason === 'io server disconnect' && !this.closed) socket.connect();
@@ -472,12 +605,31 @@ export class RelayHostTransport extends RelayBase implements Transport {
   private readonly links = new Map<string, HostLink>();
   /** The newest relay peer of each player (a player that re-joined has a new one). */
   private readonly byPlayer = new Map<PlayerId, string>();
+  /** 2026-11-25: relay peers whose opening frame is with the engine and has no verdict yet. Not links. */
+  private readonly candidates = new Map<string, OpenedCandidate>();
+  /**
+   * 2026-11-25: what is reported about one relay peer at most once in ten seconds: an opening frame of its that was
+   * refused, and frames of its that did not decode. Kept while the peer has a seat (`forgetPeer`).
+   */
+  private readonly gates = new Map<string, { refused: ReportGate; undecoded: ReportGate }>();
   /** Relay peers that had a link when the socket dropped: told to RELINK once the room is ours again. */
   private stale = new Set<string>();
   private readonly relinkAt = new Map<string, number>();
   private readonly stateHandlers = new Set<(s: RelayHostState) => void>();
   private rehostTimer: ReturnType<typeof setTimeout> | null = null;
   private rehostDelayMs = REHOST_RETRY_MS;
+  /** A17 step 8: `unauthorized` answers to `match:host` in a row since the room was last held. */
+  private unauthorizedAsks = 0;
+  /** A17 step 8: why this transport gave its room up for good (`closedWhy`); null while it has not. */
+  private gaveUpFor: string | null = null;
+  private readonly confirmUnpaired: (() => Promise<boolean>) | null;
+  /** The second question is being asked (one at a time). */
+  private confirming = false;
+
+  constructor(opts: RelayOptions) {
+    super(opts);
+    this.confirmUnpaired = opts.confirmUnpaired ?? null;
+  }
   private seqForRefuse = 0;
   /** `lock()` was called: the room is locked again whenever it had to be opened anew. */
   private wantLocked = false;
@@ -523,6 +675,21 @@ export class RelayHostTransport extends RelayBase implements Transport {
   }
 
   /**
+   * A17 step 8 (the review of PR 138): take back the room of `code`, which this device held before this process
+   * started, without waiting for it and without giving up because ArcAid does not answer in this moment. The state
+   * is `reconnecting` until the room is held (`registered`), exactly as for a host that lost its room while
+   * running: the socket is opened, and opened again, by itself, and the room is asked for each time it is up and
+   * every few seconds while it is refused for a reason that can pass.
+   */
+  reclaim(code: string): void {
+    if (this.closed || this.current === 'closed') return;
+    this.code = code;
+    this.setState('reconnecting');
+    const socket = this.ensureSocket();
+    if (socket.connected) this.rehost(socket);
+  }
+
+  /**
    * The match started: from now on ArcAid refuses a device that never had a seat in the room (`locked`); a player who
    * drops may still come back. Kept across a room that had to be opened again. Rejects with a `RelayError` when the
    * server did not take it (one without `match:lock` never answers: `unreachable`); the match is not affected.
@@ -560,6 +727,15 @@ export class RelayHostTransport extends RelayBase implements Transport {
     return this.current;
   }
 
+  /**
+   * A17 step 8: once `closed`: why the room was given up: `unauthorized` (this device is no longer paired with
+   * ArcAid), the server's reason for closing the room for good (`replaced`, `host_left`), or the refusal of the ask
+   * for it (`code_in_use`, `refused`). Null while the room is held or being taken back.
+   */
+  get closedWhy(): string | null {
+    return this.gaveUpFor;
+  }
+
   onState(cb: (s: RelayHostState) => void): () => void {
     this.stateHandlers.add(cb);
     return () => this.stateHandlers.delete(cb);
@@ -588,6 +764,7 @@ export class RelayHostTransport extends RelayBase implements Transport {
       // room is a link only from its first frame.
       if (typeof p?.peer !== 'string' || p.state !== 'left') return;
       this.stale.delete(p.peer);
+      this.dropCandidate(p.peer);
       this.closeLink(p.peer, true);
       this.forgetPeer(p.peer);
     });
@@ -597,10 +774,13 @@ export class RelayHostTransport extends RelayBase implements Transport {
     socket.on('match:error', (p: { error?: unknown }) => {
       const word = typeof p?.error === 'string' ? p.error : 'unknown';
       if (word === 'unauthorized' && this.code !== null && this.current === 'registered') {
-        // This device's pairing was revoked mid-match: ArcAid closes the room (`host_gone` follows). Not opened again.
-        this.fail(new RelayError('unauthorized', RELAY_UNPAIRED), null);
+        // The relay could not confirm this device during the match. A pairing that was revoked, or the relay's own
+        // read of the device failing once (the review of PR 138): the word is the same. The room is asked for
+        // again, as after any loss of it; `rehost` asks the second question before anything is given up.
+        this.fail(new RelayError('unauthorized', 'ArcAid did not accept this device'), null);
         this.dropLinks();
-        return this.giveUp();
+        this.setState('reconnecting');
+        return this.rehost(socket);
       }
       this.reportDropped(word, null);
       if (this.code === null || this.current !== 'registered') return;
@@ -617,6 +797,7 @@ export class RelayHostTransport extends RelayBase implements Transport {
 
   /** That peer id is gone for good (a client that comes back has a new one): its pacer goes with it. */
   private forgetPeer(relayPeer: string): void {
+    this.gates.delete(relayPeer);
     const pacer = this.pacers.get(relayPeer);
     if (!pacer) return;
     this.shedGone += pacer.shed;
@@ -630,6 +811,11 @@ export class RelayHostTransport extends RelayBase implements Transport {
       this.stale.add(peer);
       if (this.wantLocked) this.awaited.add(link.player);
     }
+    // A peer whose opening frame had no verdict yet is told to relink like the others: its answer may be lost.
+    for (const peer of [...this.candidates.keys()]) {
+      this.stale.add(peer);
+      this.dropCandidate(peer);
+    }
     this.clearPacers();
     for (const peer of [...this.links.keys()]) this.closeLink(peer, true);
   }
@@ -642,17 +828,21 @@ export class RelayHostTransport extends RelayBase implements Transport {
   private onRoomClosed(socket: Socket, reason: string): void {
     if (this.code === null || this.closed || this.current === 'closed') return;
     this.dropLinks();
-    if (REOPENABLE.has(reason)) {
+    // `host_gone` to a host that is here (the review of PR 138): the server gave this host's room up because it could
+    // not confirm the device (a pairing that was revoked, or its own read failing). Asked for again like the others;
+    // `rehost` is where "not paired" is decided, and never from the relay's word alone.
+    if (REOPENABLE.has(reason) || reason === 'host_gone') {
       this.fail(new RelayError('closed', `ArcAid closed the room (${reason}); opening it again`), null);
       this.setState('reconnecting');
       if (socket.connected) this.rehost(socket);
       return;
     }
     this.fail(new RelayError('closed', `ArcAid closed the room (${reason})`), null);
-    this.giveUp();
+    this.giveUp(reason);
   }
 
-  private giveUp(): void {
+  private giveUp(why: string): void {
+    this.gaveUpFor = why;
     if (this.rehostTimer) clearTimeout(this.rehostTimer);
     this.rehostTimer = null;
     if (this.relockTimer) clearTimeout(this.relockTimer);
@@ -671,8 +861,9 @@ export class RelayHostTransport extends RelayBase implements Transport {
       (ack) => {
         const present = peerList(ack.peers);
         if (!present || this.closed || this.socket !== socket || this.current !== 'registered') return;
-        for (const peer of [...this.links.keys()]) {
+        for (const peer of [...this.links.keys(), ...this.candidates.keys()]) {
           if (present.includes(peer)) continue;
+          this.dropCandidate(peer);
           this.closeLink(peer, true);
           this.forgetPeer(peer);
         }
@@ -701,6 +892,7 @@ export class RelayHostTransport extends RelayBase implements Transport {
       (ack) => {
         if (this.closed || this.socket !== socket || !socket.connected || this.current !== 'reconnecting') return;
         this.rehostDelayMs = REHOST_RETRY_MS;
+        this.unauthorizedAsks = 0;
         this.setState('registered');
         // The clients that were linked lost whatever crossed while we were away: they resume with RECONNECT. A room
         // that had to be opened anew holds none of them (`peers` says who is there): those come back by themselves.
@@ -716,13 +908,41 @@ export class RelayHostTransport extends RelayBase implements Transport {
         if (this.closed || this.socket !== socket || this.current !== 'reconnecting') return;
         this.fail(e, null);
         // Another device has the code now: asking again changes nothing. (`unauthorized` is asked again: the server
-        // also answers it when it could not read the device just now.)
-        if (e instanceof RelayError && (e.code === 'code_in_use' || e.code === 'refused')) return this.giveUp();
+        // also answers it when it could not read the device just now. A17 step 8: a few times, not for ever.)
+        if (e instanceof RelayError && (e.code === 'code_in_use' || e.code === 'refused')) return this.giveUp(e.code);
+        if (e instanceof RelayError && e.code === 'unauthorized') {
+          this.unauthorizedAsks += 1;
+          if (this.unauthorizedAsks >= REHOST_UNAUTHORIZED_MAX) {
+            this.unauthorizedAsks = 0;
+            this.askWhetherUnpaired();
+          }
+        } else this.unauthorizedAsks = 0;
         if (!socket.connected) return;
         this.rehostTimer = setTimeout(() => this.rehost(socket), this.rehostDelayMs);
         this.rehostDelayMs = Math.min(this.rehostDelayMs * 2, REHOST_RETRY_MAX_MS);
       },
     );
+  }
+
+  /**
+   * The second question (`confirmUnpaired`), asked while the room goes on being asked for. Only its own "yes, this
+   * device is not paired" ends the asking; anything else leaves this host a host whose ArcAid is away.
+   */
+  private askWhetherUnpaired(): void {
+    const ask = this.confirmUnpaired;
+    if (!ask || this.confirming) return;
+    this.confirming = true;
+    void ask()
+      .catch(() => false)
+      .then((unpaired) => {
+        this.confirming = false;
+        // The final review (finding 6): paired, and still refused: the socket holds the credentials of before a new
+        // pairing. It is made again with the ones the device has now; the room is asked for when it is up.
+        if (!unpaired && !this.closed && this.current === 'reconnecting') this.renewAuth();
+        if (!unpaired || this.closed || this.current !== 'reconnecting') return;
+        this.fail(new RelayError('unauthorized', RELAY_UNPAIRED), null);
+        this.giveUp('unauthorized');
+      });
   }
 
   private relink(relayPeer: string): void {
@@ -732,38 +952,104 @@ export class RelayHostTransport extends RelayBase implements Transport {
     this.emitTo(relayPeer, RELINK, false);
   }
 
+  /**
+   * Review of PR 127: a frame from a relay peer that is not linked (it has a seat in the room and has not said HELLO
+   * or RECONNECT) never throws out of the socket's handler: whatever goes wrong is reported through `onError`.
+   */
   private onFrame(relayPeer: string, text: string): void {
-    let link = this.links.get(relayPeer) ?? null;
+    if (this.links.has(relayPeer)) return this.takeFrame(relayPeer, text);
+    try {
+      this.takeFrame(relayPeer, text);
+    } catch (e) {
+      try {
+        this.fail(e, null);
+      } catch {
+        /* nothing more to do for a peer nobody knows */
+      }
+    }
+  }
+
+  private takeFrame(relayPeer: string, text: string): void {
+    const link = this.links.get(relayPeer) ?? null;
     let msg: AnyMessage;
     try {
       msg = decodeFrame(text);
     } catch (e) {
       if (!link) {
+        // A17 (2026-11-24): a frame already, written in the asker's version (a HELLO's REFUSE, a RECONNECT's RECONNECT_ACK).
+        // Null for anything else, and it never throws. The answer is a REFUSE or a RECONNECT_ACK, which nobody answers.
         const refuse = foreignVersionRefusal(text, this.localId, this.seqForRefuse + 1);
         if (refuse) {
           this.seqForRefuse += 1;
-          this.emitTo(relayPeer, encodeFrame(refuse), false);
+          this.emitTo(relayPeer, refuse, false);
         }
       }
-      this.fail(e, link?.player ?? null);
+      // 2026-11-25: one line for the first, then at most one in ten seconds per relay peer, with how many there were.
+      const times = this.gateOf(relayPeer).undecoded.pass();
+      if (times !== null) this.fail(undecodedFrames(e, times), link?.player ?? null);
       return;
     }
     if (!link) {
+      // 2026-11-25: its opening frame is with the engine: nothing more is read from this peer until the verdict.
+      if (this.candidates.has(relayPeer)) return;
       if (msg.type !== 'HELLO' && msg.type !== 'RECONNECT') {
         // A client that does not know its link closed (this socket dropped and came back): it must resume.
         this.relink(relayPeer);
         return;
       }
-      link = { relayPeer, player: msg.from };
-      this.links.set(relayPeer, link);
-      const previous = this.byPlayer.get(link.player);
-      this.byPlayer.set(link.player, relayPeer);
-      if (previous !== undefined && previous !== relayPeer) this.links.delete(previous);
-      else for (const cb of [...this.joinHandlers]) cb(link.player);
-      // The last of the players a re-opened room was waiting for: it is locked again now.
-      if (this.awaited.delete(link.player) && this.awaited.size === 0 && this.relockTimer) this.relock();
+      // 2026-11-25: a relay peer is a player's link only once the engine has accepted its opening frame
+      // (`LinkCandidate`). Until then the player it names keeps the link it has, and the answer goes to this peer.
+      const player = msg.from;
+      const candidate = openCandidate(
+        player,
+        {
+          send: (m) => {
+            const frame = this.frameOf(m, player);
+            if (frame !== null) this.emitTo(relayPeer, frame, false);
+          },
+          bind: () => this.bind(relayPeer, player),
+          // The relay has no kick: a peer that was refused is simply nobody's link. What it sends next is read as
+          // any unlinked peer's is: an opening frame is judged on its own, anything else is answered with RELINK.
+          close: () => void this.candidates.delete(relayPeer),
+          // The peer keeps its seat and may open again: at most one line in ten seconds, with how many there were.
+          refused: (code) => {
+            const times = this.gateOf(relayPeer).refused.pass();
+            if (times !== null) this.fail(refusedOpening(msg.type, player, code, times), null);
+          },
+        },
+        this.opts.verdictMs,
+      );
+      this.candidates.set(relayPeer, candidate);
+      for (const cb of [...this.messageHandlers]) cb(player, msg, candidate);
+      return;
     }
     for (const cb of [...this.messageHandlers]) cb(link.player, msg);
+  }
+
+  /** The engine accepted `relayPeer`'s opening frame: it is `player`'s link now, in place of the one that player had. */
+  private bind(relayPeer: string, player: PlayerId): void {
+    this.candidates.delete(relayPeer);
+    this.links.set(relayPeer, { relayPeer, player });
+    const previous = this.byPlayer.get(player);
+    this.byPlayer.set(player, relayPeer);
+    if (previous !== undefined && previous !== relayPeer) this.links.delete(previous);
+    else for (const cb of [...this.joinHandlers]) cb(player);
+    // The last of the players a re-opened room was waiting for: it is locked again now.
+    if (this.awaited.delete(player) && this.awaited.size === 0 && this.relockTimer) this.relock();
+  }
+
+  /** A relay peer that is gone, or whose room is: a verdict that comes later binds nothing. */
+  private dropCandidate(relayPeer: string): void {
+    this.candidates.get(relayPeer)?.gone();
+  }
+
+  private gateOf(relayPeer: string): { refused: ReportGate; undecoded: ReportGate } {
+    let g = this.gates.get(relayPeer);
+    if (!g) {
+      g = { refused: new ReportGate(), undecoded: new ReportGate() };
+      this.gates.set(relayPeer, g);
+    }
+    return g;
   }
 
   private closeLink(relayPeer: string, report: boolean): void {
@@ -818,6 +1104,8 @@ export class RelayHostTransport extends RelayBase implements Transport {
     this.rehostTimer = null;
     if (this.relockTimer) clearTimeout(this.relockTimer);
     this.relockTimer = null;
+    for (const peer of [...this.candidates.keys()]) this.dropCandidate(peer);
+    this.gates.clear();
     this.clearPacers();
     this.pacers.clear();
     this.links.clear();
@@ -849,6 +1137,8 @@ export class RelayClientTransport extends RelayBase implements Transport {
   private readonly rejoin: RejoinPolicy;
   /** When this transport was answered `no_such_match` (inside the policy's window). */
   private misses: number[] = [];
+  /** `RelayOptions.missLog`: every miss of this device the shell knows of; null: this transport counts its own alone. */
+  private readonly missLog: number[] | null;
   /** No `match:join` before this (the gap after a miss). */
   private nextJoinAt = 0;
   /** Why the room is not asked for again: a final `match:closed` reason, `unauthorized` (the pairing was revoked), or a resume answered `locked`. */
@@ -858,6 +1148,7 @@ export class RelayClientTransport extends RelayBase implements Transport {
   constructor(opts: RelayOptions) {
     super(opts);
     this.rejoin = { ...DEFAULT_REJOIN, ...opts.rejoin };
+    this.missLog = opts.missLog ?? null;
     this.pacer = new RelayPacer((p) => {
       if (this.socket?.connected && this.joined) this.socket.emit('match:relay', p);
     }, opts.pace);
@@ -881,11 +1172,15 @@ export class RelayClientTransport extends RelayBase implements Transport {
     try {
       ack = await this.request(socket, 'match:join', code);
     } catch (e) {
+      // Every miss of the device is written down where the shell keeps them, a first join's (a mistyped code) too.
+      if (e instanceof RelayError && e.code === 'no_such_match' && this.missLog) {
+        this.missLog.push(Date.now());
+        if (this.missLog.length > 64) this.missLog.splice(0, this.missLog.length - 64);
+      }
       if (again && e instanceof RelayError && e.code === 'no_such_match') {
         const now = Date.now();
         this.misses.push(now);
-        const gaps = this.rejoin.gapsMs;
-        this.nextJoinAt = now + (gaps[Math.min(this.misses.length, gaps.length) - 1] ?? 0);
+        this.nextJoinAt = now + rejoinGapAfter(this.rejoin, this.misses.length);
       }
       if (again && e instanceof RelayError) {
         // A lock is never lifted, and a device ArcAid no longer accepts mid-match is out: the engine's remaining
@@ -910,8 +1205,10 @@ export class RelayClientTransport extends RelayBase implements Transport {
     if (this.ended !== null) throw new RelayError('closed', `the match ${code} was closed (${this.ended})`);
     const now = Date.now();
     this.misses = this.misses.filter((t) => now - t < this.rejoin.windowMs);
-    if (this.misses.length >= this.rejoin.maxMisses) {
-      throw new RelayError('no_such_match', `no match with the code ${code} (ArcAid said so ${this.misses.length} times; not asking again)`);
+    // The device's misses, not this transport's alone, where the shell keeps them: ArcAid counts the device.
+    const counted = this.missLog ? this.missLog.filter((t) => now - t < this.rejoin.windowMs).length : this.misses.length;
+    if (counted >= this.rejoin.maxMisses) {
+      throw new RelayError('no_such_match', `no match with the code ${code} (ArcAid said so ${counted} times; not asking again)`);
     }
     const wait = this.nextJoinAt - now;
     if (wait > 0) {
@@ -931,6 +1228,15 @@ export class RelayClientTransport extends RelayBase implements Transport {
   /** The server's id for this socket in the room, once joined. */
   get peerId(): string | null {
     return this.relayPeer;
+  }
+
+  /**
+   * A17 step 7 (the handoff's item 13): why this transport does not ask for the room again, when ArcAid said the
+   * room is gone for good (`host_left`: its host closed it; `replaced`: another device hosts the code now); null
+   * while the room may come back. The shell ends a lobby's wait for its PC on it (`ClientMatch.hostLeft`).
+   */
+  get roomEnded(): string | null {
+    return this.ended !== null && FINAL_FOR_CLIENT.has(this.ended) ? this.ended : null;
   }
 
   /**
@@ -965,7 +1271,8 @@ export class RelayClientTransport extends RelayBase implements Transport {
       try {
         msg = decodeFrame(p.data);
       } catch (e) {
-        this.fail(e, this.hostId);
+        // A17 (2026-11-24): an answer in another protocol version (a host up to 0.2.50) is said as that.
+        this.fail(undecodable(p.data, e), this.hostId);
         return;
       }
       if (this.hostId === null) this.hostId = msg.from;
