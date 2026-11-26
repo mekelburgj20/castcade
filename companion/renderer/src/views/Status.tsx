@@ -110,6 +110,12 @@ export function Status({ state }: { state: CastcadeState }) {
       <dl className="facts">
         <dt>VPX exe seen</dt>
         <dd title={status.vpxExe ?? ''}>{status.vpxExe ?? 'not yet (launch a table)'}</dd>
+        {status.vrSetupWarning && (
+          <>
+            <dt>VR setup</dt>
+            <dd className="warn">{status.vrSetupWarning}</dd>
+          </>
+        )}
         <dt>NVRAM dir</dt>
         <dd title={status.nvramDir ?? ''}>{status.nvramDir ?? 'not found'}</dd>
         <dt>Maps version</dt>

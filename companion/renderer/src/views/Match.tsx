@@ -151,6 +151,7 @@ export function Match({ state }: { state: CastcadeState }) {
   return (
     <section className="view">
       <h2>Match</h2>
+      {state.status?.vrSetupWarning && <p className="warn">{state.status.vrSetupWarning}</p>}
 
       {/* A14: a link that waits for a click, the join link while hosting, and what the table start is doing. */}
       <OneStepCard bridge={bridge} one={one} role={st.role} phase={st.phase} />
