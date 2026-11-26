@@ -24,6 +24,14 @@
 // Either way the board is turned to face the place the head was at and kept upright: its right edge is level (no roll),
 // whatever the head's roll was.
 //
+// D8.12.3.2 (2026-11-24, layer 0.8.1): the board puts itself back in view. The first place is taken the first time the
+// scoreboard is shown, and on the match night of 2026-11-23 that was while the owner still faced his PC; he then
+// turned about 130 degrees to his arcade controls and recentred the table in VPX, which the layer cannot see, and the
+// board stood "almost behind me when playing". So the layer keeps watching the head: a board that has been out of view
+// for a while, as the head kept facing one way, is placed again by the corner rule from the head as it is then. The
+// second half of this file is that decision (scoreboardSight, scoreboardOutOfView, scoreboardWatchStep), again plain
+// numbers; layer.cpp reads the head ten times a second and applies the answer.
+//
 // Conventions (OpenXR's): +X right, +Y up, -Z ahead; a quad's front is its +Z. Yaw is a turn about +Y, 0 facing -Z,
 // positive to the left; pitch is the angle of the forward above the horizon.
 #pragma once
@@ -109,6 +117,13 @@ struct ScoreboardAnchor {
   bool atGaze = false;
 };
 
+// Whether an orientation is a rotation at all: zeros or a value that is not finite is what a runtime without a pose
+// for the head leaves behind.
+inline bool placeIsRotation(const PlaceQuat& q) {
+  const float n2 = q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w;
+  return std::isfinite(n2) && n2 >= 0.5f && n2 <= 2.0f;
+}
+
 // The head's yaw and pitch from its orientation; its roll is not read at all. The yaw is the heading of the forward
 // (-Z) on the floor; a head pointing nearly straight down or up (the forward within about 6 degrees of vertical) has
 // no such heading, and the top of the head (+Y) gives it instead: looking down it points the way the player faces,
@@ -116,8 +131,7 @@ struct ScoreboardAnchor {
 // reads as level and facing -Z.
 inline void placeHeadAngles(const PlaceQuat& q, float& yaw, float& pitch) {
   yaw = 0.0f, pitch = 0.0f;
-  const float n2 = q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w;
-  if (!std::isfinite(n2) || n2 < 0.5f || n2 > 2.0f) return;
+  if (!placeIsRotation(q)) return;
   const PlaceVec f = placeRotate(q, {0.0f, 0.0f, -1.0f});
   const float horiz2 = f.x * f.x + f.z * f.z;
   if (horiz2 > 0.01f) {
@@ -160,6 +174,123 @@ inline PlacePose scoreboardRoomPose(const ScoreboardAnchor& a, bool left, const 
   out.orientation = placeQuatMul(qYaw, level.orientation);
   out.position = {a.head.x + at.x, a.head.y + at.y, a.head.z + at.z};
   return out;
+}
+
+// ---- D8.12.3.2 (2026-11-24, layer 0.8.1): the board puts itself back in view ---------------------------------------
+//
+// The rule: while the board is shown in the room, it is placed again by the corner rule, from the head as it is then,
+// once it has been OUT OF VIEW for kScoreboardLostHoldSec of watched time during which the head KEPT FACING ONE WAY.
+// The numbers, and why these:
+//   - out of view, by the turn: the board's centre is more than 90 degrees to the side of where the head faces. Both
+//     directions are taken on the floor (the head's yaw, as the corner rule reads it, against the heading from the
+//     head to the board), so looking down at the playfield, up at the backglass or with the head tilted changes
+//     nothing. A headset shows about 50 degrees to each side and a neck turns 60 to 70 in comfort: past 90 the board
+//     cannot be read without turning the body. The item's first number was 110; 90 because of the very case that
+//     asked for this: after a turn of 130 degrees the board (33 degrees to one side) stands at 163 degrees if the
+//     turn was away from its side, and at 97 if it was towards it, which 110 would have left where it was. From its
+//     own place it takes a turn of 57 degrees to the far side (or 123 to its own) to put it past 90: no look at
+//     anything on a table, a backglass or a theater screen does that;
+//   - out of view, by the distance: the head is more than twice as far from the board as the board was placed from
+//     the head, and at least a metre further (2.4 m for the layer's 1.2 m: its text is then half the size it was
+//     drawn for). That is a player who walked away from where the place was taken, never one who leans, sits down
+//     or steps back from the lockdown bar;
+//   - the hold, 8 s: what makes a glance over the shoulder, a word to someone beside the cabinet or a reach for a
+//     drink nothing at all. A wrong move costs more than a late one (the board leaves a good place, against a few
+//     more seconds without it in a match of many minutes), so the hold is on the long side of the 5 s first named;
+//   - one way: the time counts only while the head's yaw stays within 30 degrees of the yaw it had when the count
+//     began; past that the count begins again from the new yaw. The place is taken from the head at the instant the
+//     hold ends, so without this a player caught mid-turn would get the board in the corner of wherever that was. A
+//     player at a table, or watching the theater screen, keeps well inside 30 degrees; the turn itself does not;
+//   - a head, not a headset on a desk: the yaw must also have moved half a degree from where the count began. A head
+//     on a neck does that within seconds; a headset that was taken off and put down, or a pose the runtime has
+//     frozen, does not, and would otherwise move the board to wherever it happens to point between two turns;
+//   - time the head was not seen does not count, and breaks nothing: a sample without a tracked pose is skipped
+//     (never placed from, never counted), and a sample counts for half a second at most however long ago the last
+//     one was (VPX can stall for seconds on the owner's rig).
+// A board the player put somewhere with "place it again" is under the same rule: behind the player it is as useless
+// as any other, and the layer cannot know where "there" would be from the new facing, so it goes back to the corner.
+constexpr float kScoreboardLostAngleRad = 1.570796f;    // 90 degrees
+constexpr float kScoreboardLostFarFactor = 2.0f;        // twice the distance it was placed at ...
+constexpr float kScoreboardLostFarMinM = 1.0f;          // ... and at least this much further
+constexpr float kScoreboardLostHoldSec = 8.0f;
+constexpr float kScoreboardLostSteadyRad = 0.5235988f;  // 30 degrees
+constexpr float kScoreboardLostStirRad = 0.008726646f;  // 0.5 degrees
+constexpr float kScoreboardLostMaxStepSec = 0.5f;
+// A board more than 60 degrees above or below the head (a "place it again" with the head pointing far up or down may
+// stand there), or within 5 cm of it on the floor, has no side to be on: a lean of a hand's width would throw its
+// heading from ahead to behind. Its turn reads as 0; only the distance can call it out of view.
+constexpr float kScoreboardNoSideTan = 1.732051f;  // tan 60 degrees
+constexpr float kScoreboardNoSideM = 0.05f;
+
+// An angle brought into -180..180 degrees.
+inline float placeWrapAngle(float a) { return std::remainder(a, 6.2831853f); }
+
+// How the board stands to the head at one instant. `known` false: the pose is no reading of a head (an orientation
+// that is not a rotation, a position that is not finite), and nothing else here means anything.
+struct ScoreboardSight {
+  bool known = false;
+  float yaw = 0.0f;       // the head's yaw
+  float angle = 0.0f;     // the board's centre to the side of where the head faces, on the floor: 0 (ahead) .. pi (behind)
+  float distance = 0.0f;  // head to the board's centre, metres
+};
+
+inline ScoreboardSight scoreboardSight(const PlaceVec& head, const PlaceQuat& orientation, const PlaceVec& board) {
+  ScoreboardSight s;
+  if (!placeIsRotation(orientation)) return s;
+  const float dx = board.x - head.x, dy = board.y - head.y, dz = board.z - head.z;
+  const float horiz = std::sqrt(dx * dx + dz * dz);
+  const float distance = std::sqrt(horiz * horiz + dy * dy);
+  if (!std::isfinite(distance)) return s;
+  float pitch = 0.0f;
+  placeHeadAngles(orientation, s.yaw, pitch);
+  s.distance = distance;
+  // The heading from the head to the board, as a yaw (0 towards -Z, positive to the left), against the head's own.
+  if (horiz >= kScoreboardNoSideM && std::fabs(dy) <= horiz * kScoreboardNoSideTan) s.angle = std::fabs(placeWrapAngle(std::atan2(-dx, -dz) - s.yaw));
+  s.known = true;
+  return s;
+}
+
+// How far from the head the board was placed: from the capture's head to the board that capture gives.
+inline float scoreboardPlacedDistance(const ScoreboardAnchor& a, const PlaceVec& board) {
+  const float dx = board.x - a.head.x, dy = board.y - a.head.y, dz = board.z - a.head.z;
+  return std::sqrt(dx * dx + dy * dy + dz * dz);
+}
+
+// The distance past which the head has walked away from a board placed `placedM` from it.
+inline float scoreboardFarLimit(float placedM) { return std::fmax(placedM * kScoreboardLostFarFactor, placedM + kScoreboardLostFarMinM); }
+
+inline bool scoreboardOutOfView(const ScoreboardSight& s, float placedM) {
+  return s.known && (s.angle > kScoreboardLostAngleRad || s.distance > scoreboardFarLimit(placedM));
+}
+
+// The hold, as a state the layer keeps between samples: whether a count runs, the yaw it began at, the watched time
+// the board has been out of view since, and the furthest the yaw has been from where it began.
+struct ScoreboardWatch {
+  bool counting = false;
+  float fromYaw = 0.0f;
+  float heldSec = 0.0f;
+  float stirred = 0.0f;
+};
+
+// One sample of the head, `dtSec` after the one before (0 for the first). True: place the board again from this very
+// pose, by the corner rule, and clear the watch (`w = {}`; heldSec is still there to be logged first). The board in
+// view ends the count; a pose that is no reading leaves it as it was.
+inline bool scoreboardWatchStep(ScoreboardWatch& w, const ScoreboardSight& sight, float placedM, float dtSec) {
+  if (!sight.known) return false;
+  if (!scoreboardOutOfView(sight, placedM)) {
+    w = {};
+    return false;
+  }
+  const float turned = w.counting ? std::fabs(placeWrapAngle(sight.yaw - w.fromYaw)) : 0.0f;
+  if (!w.counting || turned > kScoreboardLostSteadyRad) {
+    w = {};
+    w.counting = true;
+    w.fromYaw = sight.yaw;
+    return false;
+  }
+  if (std::isfinite(dtSec) && dtSec > 0.0f) w.heldSec += std::fmin(dtSec, kScoreboardLostMaxStepSec);
+  w.stirred = std::fmax(w.stirred, turned);
+  return w.heldSec >= kScoreboardLostHoldSec && w.stirred >= kScoreboardLostStirRad;
 }
 
 }  // namespace castcade
