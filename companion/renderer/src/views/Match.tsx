@@ -327,6 +327,13 @@ export function Match({ state }: { state: CastcadeState }) {
           </div>
         )}
 
+        {/* A6.3: AskToTurnOn = 1 in front of OpenComposite starts the table on the desktop; said before a table starts. */}
+        {state.status?.vrSetupWarning && (
+          <div className="cc-panel--wide">
+            <Note state="attention">{state.status.vrSetupWarning}</Note>
+          </div>
+        )}
+
         {/* A14: a link that waits for a click, the join link while hosting, and what the table start is doing. */}
         <OneStepCard bridge={bridge} one={one} role={st.role} phase={st.phase} lobby={st.lobby !== null} />
 

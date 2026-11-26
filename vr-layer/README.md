@@ -6,7 +6,8 @@ submits by the mode the companion asks for: **hidden** (VPX's frame untouched: t
 match panel as a head-locked quad, low in the view) or **theater** (VPX's own world removed; the opponent's video fixed
 in the room: a life-size stereo window onto the sender's view when the sender's VR preview shows both eyes, else a large
 screen). Since 0.7.0 (D8.12) it also draws the **scoreboard**, a small quad in hidden and theater: fixed at a place in
-the room since 0.8.0 (D8.12.3), or head-locked in a top corner of the view as 0.7.0 drew it ("The scoreboard" below).
+the room since 0.8.0 (D8.12.3), or head-locked in a top corner of the view as 0.7.0 drew it ("The scoreboard" below);
+since 0.8.1 (D8.12.3.2) a board in the room that ends up out of view puts itself back.
 The companion side is
 `companion/src/media/vr-layer.ts`; it registers the layer and feeds it over a named pipe.
 
@@ -28,7 +29,8 @@ cmake --build build --config Release
 
 The build also makes and runs `scoreboard_place_test.exe` (0.8.0, D8.12.3; `tools/scoreboard_place_test.cpp`): the
 checks of the scoreboard's place in the room that need no headset (the pose maths of `src/scoreboard_place.h`, the
-reading of the control's `scoreboard` object). A failed check fails the build. It is never shipped, like `ring_feed.exe`.
+reading of the control's `scoreboard` object and, since 0.8.1, the rule that puts the board back in view: which head
+poses count as out of view, and the hold). A failed check fails the build. It is never shipped, like `ring_feed.exe`.
 
 Static CRT (`/MT`), `/O2` with link-time code generation. CI (`.github/workflows/vr-layer.yml`) is the build of record:
 it uploads the three files as the artifact `castcade-vr-layer-win-x64` on every change here, and on a `v*` tag attaches
@@ -275,7 +277,7 @@ Log lines to read after the first run (`vr-layer.log`):
 - `camera: off (why): N frames sent in S s (F fps), D dropped (ring full a, worker behind b, write failed c); average …` — the summary, with the drops that say which side was slow;
 - `camera: refused: …` — why the companion fell back to the screen capture.
 
-## The scoreboard (layer 0.7.0, D8.12; in the room since 0.8.0, D8.12.3)
+## The scoreboard (layer 0.7.0, D8.12; in the room since 0.8.0, D8.12.3; back in view by itself since 0.8.1, D8.12.3.2)
 
 A small scoreboard during a match: each player's name and score in turn order with the player up marked, the game and
 the ball, and the session tally (games played, wins per player). The picture is the companion's
@@ -293,7 +295,7 @@ control says `"anchor": "room"` (the companion's default); without the key it is
   `src/layer.cpp` the capture): a quad in `LOCAL` space, 0.32 m wide, its height by the frame's aspect (0.24 m for 4:3).
   `LOCAL` is gravity-aligned and does not move while the head moves or turns; it is the space the theater screen has
   stood in since D7.4. The place is worked out once from the head's pose (`xrLocateSpace` of `VIEW` in `LOCAL` at the
-  frame's display time) and kept for the session:
+  frame's display time) and kept until it is taken again (a "place it again", or the board out of view: below):
   - *the corner rule*, the first time the scoreboard is shown so in a session: **0.64 m to the side, 0.21 m up, 0.99 m
     ahead** of where the head was, in a level frame turned by the head's yaw: 33° to the side (the corner's side: right,
     or left), 10° above eye level, 1.20 m away, 15° wide. Only the yaw is read: a head that looks down at the playfield
@@ -308,8 +310,38 @@ control says `"anchor": "room"` (the companion's default); without the key it is
   The capture needs the head's orientation from the runtime; until it has one the quad is drawn head-locked, and a
   request that gets none within a second is dropped (both logged). A position the runtime cannot give is `LOCAL`'s
   origin, as for theater. The place is the session's: a new VPX captures anew. It is fixed in the runtime's space, not
-  to the table: recentring the table with VPX's own key moves the table and not the board (place it again), and what
-  a runtime does to `LOCAL` at its own recentre is the runtime's.
+  to the table: recentring the table with VPX's own key moves the table and not the board (place it again; a
+  board that ends up out of view comes back by itself, next point), and what a runtime does to `LOCAL` at its own
+  recentre is the runtime's.
+- **Back in view by itself** (0.8.1, D8.12.3.2; the decision is in `src/scoreboard_place.h`, `watchScoreboard` in
+  `src/layer.cpp` reads the head for it ten times a second while the board is shown in the room). Match night
+  2026-11-23: the first place was taken while the owner still faced his PC; he turned about 130° to his arcade
+  controls and recentred the table in VPX, which the layer cannot see, and the board stood "almost behind me when
+  playing". The rule: a board that has been **out of view for 8 s while the head kept facing one way** is placed
+  again by the corner rule, from the head as it is at that instant. No message and no setting: the companion is not
+  told and need not know (pipe protocol 5, unchanged).
+  - *out of view* is either of: the board's centre **more than 90° to the side** of where the head faces, both taken
+    on the floor (the head's yaw, as the corner rule reads it, against the heading from the head to the board), so
+    looking down at the playfield, up at the backglass or with a tilted head changes nothing; or the head **more than
+    twice as far** from the board as the board was placed from it, and at least 1 m further (2.4 m for the layer's
+    1.2 m): a player who walked away from where the place was taken. 90° and not the 110° first proposed: after a
+    130° turn the board stands at 163° if the turn was away from its side and at 97° if towards it. From its own
+    place (33°) it takes a turn of 57° to the far side, or 123° to its own, to put it past 90°. A board more than 60°
+    above or below the head has no side to be on and is never out of view by the turn.
+  - *8 s* (5 s was first proposed): a glance over the shoulder or a word to someone beside the cabinet is nothing; a
+    wrong move costs more than a late one. Back in view for one sample ends the count; nothing adds up over glances.
+  - *one way*: the time counts only while the yaw stays within 30° of the yaw the count began at; beyond, it begins
+    again from there. The place is taken from the pose at the instant the hold ends, so a head caught mid-turn must
+    not be that pose.
+  - *a head, not a headset on a desk*: the yaw must also have moved 0.5° from where the count began; a headset that
+    was put down, or a pose the runtime froze, never does.
+  - *a pose that can be trusted*: the runtime must call the head's orientation valid and tracked; a sample that is
+    not is never placed from and its time is not counted (the count is kept). A sample counts for 0.5 s at most
+    however late it comes (VPX stalls), and frames the app submits without layers are not looked at at all. A
+    position the runtime cannot give is taken to be where the head was at the capture.
+  - A board put somewhere with "Put the scoreboard where I look" is under the same rule, and goes back to the corner
+    rule: behind the player it is as useless as any other, and the layer cannot know where "there" is from the new
+    facing. The head-locked placement is not watched at all.
 - **Placement on the head** (no anchor: a protocol-4 companion, or "Follows my head"): a quad in `VIEW` space
   (head-locked, like the panel), the same size, centred at `±0.46, 0.40, -1.0` m and turned to face the eye: 17° to 32°
   to the side, 14° to 25° up (a two-player card, which hugs the frame's bottom edge, ends about 20° up). Far above a
@@ -326,12 +358,19 @@ control says `"anchor": "room"` (the companion's default); without the key it is
   untouched.
 - **Log**: `pipe: scoreboard asked, top right (drawn in hidden and theater), fixed in the room` / `pipe: scoreboard
   off`, `pipe: first scoreboard frame 512x384`, `session: scoreboard swapchain …`, `scoreboard: placed in the room, up
-  and to the side of where the head faced (the head at x, y, z m, yaw N degrees), in LOCAL space; it stays there for
-  this session`, `pipe: the companion asked to place the scoreboard again, where the head points`, `scoreboard: placed
+  and to the side of where the head faced (the head at x, y, z m, yaw N degrees), in LOCAL space; it stays there while
+  it is in view`, `scoreboard: out of view for 8 s (163 degrees to the side of where the head faces, 1.41 m away; the
+  limits are 90 degrees and 2.40 m): placed again, up and to the side of where the head faces now (the head at x, y, z
+  m, yaw N degrees), in LOCAL space` (0.8.1; `, where the player had put it` after the bracket when the board had been
+  placed by the gaze rule), `scoreboard: the runtime gives a pose for the head that it does not call tracked; …`
+  (once), `pipe: the companion asked to place the scoreboard again, where the head points`, `scoreboard: placed
   again where the head points (…, pitch N degrees), 1.20 m away, in LOCAL space`, `scoreboard: shown fixed in the room,
   512x384 frame` / `scoreboard: shown top right, 512x384 frame` / `scoreboard: not shown` (one line per change).
 - **Not seen in a headset yet** (0.8.0): the numbers are a first placement, and that `LOCAL` holds the board still
-  against the table on Virtual Desktop's runtime through OpenComposite is inferred from theater, which does.
+  against the table on Virtual Desktop's runtime through OpenComposite is inferred from theater, which does. 0.8.1's
+  rule is proven as arithmetic only: whether 90° and 8 s feel right in play, whether Virtual Desktop's runtime sets
+  the tracked flag at all (without it the board never moves by itself, and the log says so once), and what it
+  reports for a headset that was taken off between turns are for a headset to show.
 
 ## The rings (layer 0.6.0, D10.2)
 
@@ -431,7 +470,8 @@ skipped, publish 0.45 ms a frame.
   pixel-unpack buffer restored. A video frame is uploaded only in theater mode.
 - **Modes**, each `xrEndFrame` with at least one app layer (a frame without layers passes untouched):
   - *hidden*: the app's frame as it is (0.7.0: plus the scoreboard's quad while one is asked and live; 0.8.0: in
-    `LOCAL` space when the control anchors it to the room, else in `VIEW` space).
+    `LOCAL` space when the control anchors it to the room, else in `VIEW` space; 0.8.1: one `xrLocateSpace` of `VIEW`
+    in `LOCAL` every 100 ms while it is shown in the room, for "back in view by itself").
   - *panel*: the app's layers plus a quad in `VIEW` space, 0.40 m wide at `0, -0.42, -0.9` m turned to face the eye
     (below the playfield's line of sight: the D7.3 placement covered it); `panelPos: center` is the D7.3 placement,
     0.55 m at `0, -0.28, -0.9`. Blended by the source alpha as premultiplied.

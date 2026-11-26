@@ -37,7 +37,10 @@
 //   - D8.12 (2026-11-15), the scoreboard: a small quad over hidden and theater, head-locked in a top corner; D8.12.3
 //     (2026-11-21, layer 0.8.0): fixed in the room instead when the control says "anchor": "room" (LOCAL space, a place
 //     captured once per session from the head's pose, scoreboard_place.h; "place": true captures it again where the
-//     head points); a control without the anchor keeps the head-locked corner exactly as it was;
+//     head points); a control without the anchor keeps the head-locked corner exactly as it was; D8.12.3.2
+//     (2026-11-24, layer 0.8.1): a board in the room that has been out of view for 8 s (more than 90 degrees to the
+//     side of where the head faces, or twice as far away as it was placed) is placed again from the head as it is
+//     then (watchScoreboard; the rule is in scoreboard_place.h);
 //   - never throws across the API: an exception (or, with /EHa, a structured exception) turns the layer off for the
 //     process; an OpenXR call of ours that fails turns it off for that session. Each logs once.
 #include <windows.h>
@@ -280,13 +283,18 @@ struct Session {
   int scoreboardShown = -1;  // what the last frame drew, for one log line per change: -1 none, 0 top right, 1 top left, +2 in the room
   // D8.12.3 (0.8.0): the scoreboard's place in the room: the capture of the head it is worked out from (none until the
   // scoreboard is first shown with "anchor": "room" in this session; kept for the session's life, whatever the control
-  // does meanwhile), the corner the control named at the last look, the pipe's place-request serial at the last look
-  // and, while a request waits for the head's pose, when it was seen (0: none waits).
+  // does meanwhile; taken again by "place it again" and, since 0.8.1, when the board has stood out of view), the corner
+  // the control named at the last look, the pipe's place-request serial at the last look and, while a request waits for
+  // the head's pose, when it was seen (0: none waits).
   bool scoreAnchored = false;
   ScoreboardAnchor scoreAnchor;
   bool scoreCornerLeft = false;
   uint32_t scorePlaceSerial = 0;
   uint64_t scoreGazeAskedAt = 0;
+  // D8.12.3.2 (0.8.1): the board puts itself back in view: the hold's state (scoreboard_place.h) and when the head was
+  // last read for it (0: not watching: the board is not shown in the room).
+  ScoreboardWatch scoreWatch;
+  uint64_t scoreWatchAt = 0;
   std::vector<uint8_t> pixels, staging;
   uint32_t pixelsW = 0, pixelsH = 0;
   // D7.4: the mode on screen, the fade (0 clear .. 1 black), the shade's uploaded level, the screen's place.
@@ -1322,7 +1330,8 @@ void recentre(Session& s, XrTime when) {
 // is the room's), does not move while the head moves or turns, and is the space the theater screen has stood in on
 // every rig since D7.4; the app's own spaces are never touched (the layer does not hook them), and a table VPX moves
 // with its own recentre key moves in VPX's maths, which no space of the runtime follows: that is what "place it again"
-// is for. `atGaze` false: the corner rule (up and to the side of where the head faced); true: where the head points.
+// is for (and, since 0.8.1, watchScoreboard below, when the board ends up out of view). `atGaze` false: the corner rule
+// (up and to the side of where the head faced); true: where the head points.
 // False when the runtime gives no orientation for the head at this instant (tracking not up yet, or the call failed):
 // nothing is kept, the caller draws the board head-locked this frame and asks again at the next. A position the
 // runtime cannot give is LOCAL's origin (the head at the session's start, by the spec), as for theater.
@@ -1345,12 +1354,58 @@ bool placeScoreboard(Session& s, XrTime when, bool atGaze) {
   const XrQuaternionf& q = loc.pose.orientation;
   s.scoreAnchor = scoreboardAnchor(head, {q.x, q.y, q.z, q.w}, atGaze);
   s.scoreAnchored = true;
+  s.scoreWatch = {};  // D8.12.3.2: a count against the place it had is not one against this place
   const std::string from = fmt("the head at %.2f, %.2f, %.2f m", s.scoreAnchor.head.x, s.scoreAnchor.head.y, s.scoreAnchor.head.z) +
                            (positioned ? "" : " (no position from the runtime: LOCAL's origin)") + fmt(", yaw %.0f degrees", s.scoreAnchor.yaw * kDegPerRad);
   logLine(atGaze ? "scoreboard: placed again where the head points (" + from +
                        fmt(", pitch %.0f degrees), %.2f m away, in LOCAL space", s.scoreAnchor.pitch * kDegPerRad, kScoreboardGazeDistanceM)
-                 : "scoreboard: placed in the room, up and to the side of where the head faced (" + from + "), in LOCAL space; it stays there for this session");
+                 : "scoreboard: placed in the room, up and to the side of where the head faced (" + from +
+                       "), in LOCAL space; it stays there while it is in view");
   return true;
+}
+
+// D8.12.3.2 (2026-11-24, layer 0.8.1): the board puts itself back in view. Match night 2026-11-23: the place above was
+// taken while the owner still faced his PC; he turned about 130 degrees to his arcade controls and recentred the table
+// in VPX (in VPX's own maths: nothing the layer can see), and the board stood "almost behind me when playing". So
+// while the board is shown in the room the head is read ten times a second (VIEW in LOCAL at the frame's display
+// time, as the capture reads it), and scoreboard_place.h decides: out of view for 8 s as the head kept facing one way
+// → the corner rule again, from this very pose. No word from the companion and none to it: the pipe protocol is as
+// it was.
+// A pose counts only when the runtime says the head's orientation is valid AND tracked (a headset asleep or one that
+// lost tracking gives a last or a guessed pose: never placed from, and that time is not counted). A position the
+// runtime cannot give is taken to be where the head was at the capture, so the turn alone decides there.
+constexpr uint64_t kScoreboardWatchStepMs = 100;
+
+void watchScoreboard(Session& s, XrTime when, const Control& c) {
+  const uint64_t now = GetTickCount64();
+  if (s.scoreWatchAt != 0 && now - s.scoreWatchAt < kScoreboardWatchStepMs) return;
+  const float dt = s.scoreWatchAt == 0 ? 0.0f : static_cast<float>(now - s.scoreWatchAt) / 1000.0f;
+  s.scoreWatchAt = now;
+  if (s.view == XR_NULL_HANDLE || s.local == XR_NULL_HANDLE) return;
+  XrSpaceLocation loc{XR_TYPE_SPACE_LOCATION};
+  if (XR_FAILED(s.next.locateSpace(s.view, s.local, when, &loc))) return;
+  if (!(loc.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT)) return;
+  if (!(loc.locationFlags & XR_SPACE_LOCATION_ORIENTATION_TRACKED_BIT)) {
+    logOnce("scoreboard_untracked", "scoreboard: the runtime gives a pose for the head that it does not call tracked; while that holds, the time does not "
+                                    "count towards putting the board back in view");
+    return;
+  }
+  const bool positioned = (loc.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) != 0;
+  const PlaceVec head = positioned ? PlaceVec{loc.pose.position.x, loc.pose.position.y, loc.pose.position.z} : s.scoreAnchor.head;
+  const PlaceQuat q{loc.pose.orientation.x, loc.pose.orientation.y, loc.pose.orientation.z, loc.pose.orientation.w};
+  const PlaceVec board = scoreboardRoomPose(s.scoreAnchor, c.scoreboardLeft, c.scoreboardPlaced ? c.scoreboardOffset : kScoreboardRoomOffset).position;
+  const float placed = scoreboardPlacedDistance(s.scoreAnchor, board);
+  const ScoreboardSight sight = scoreboardSight(head, q, board);
+  if (!scoreboardWatchStep(s.scoreWatch, sight, placed, dt)) return;
+  const float held = s.scoreWatch.heldSec;
+  const bool wasAtGaze = s.scoreAnchor.atGaze;
+  s.scoreWatch = {};
+  s.scoreAnchor = scoreboardAnchor(head, q, false);
+  logLine(fmt("scoreboard: out of view for %.0f s (%.0f degrees to the side of where the head faces, %.2f m away", held, sight.angle * kDegPerRad, sight.distance) +
+          fmt("; the limits are %.0f degrees and %.2f m)", kScoreboardLostAngleRad * kDegPerRad, scoreboardFarLimit(placed)) +
+          (wasAtGaze ? ", where the player had put it" : "") + ": placed again, up and to the side of where the head faces now (" +
+          fmt("the head at %.2f, %.2f, %.2f m", s.scoreAnchor.head.x, s.scoreAnchor.head.y, s.scoreAnchor.head.z) +
+          (positioned ? "" : " (no position from the runtime: where it was)") + fmt(", yaw %.0f degrees), in LOCAL space", s.scoreAnchor.yaw * kDegPerRad));
 }
 
 // What the companion's mode means now, given what has arrived: theater needs a picture (the video, else the panel
@@ -1968,6 +2023,14 @@ bool compose(Session& s, const XrFrameEndInfo& info, const Control& c) {
     scoreRoom = s.scoreAnchored;
   } else {
     s.scoreGazeAskedAt = 0;  // a request without the room anchor on the control places nothing
+  }
+  // D8.12.3.2: while the board is shown in the room (and no "place it again" waits for a pose), watch whether the head
+  // can still see it. Not shown, or on the head: nothing to watch, and a count that ran is forgotten.
+  if (scoreUp && scoreRoom && s.scoreGazeAskedAt == 0) {
+    watchScoreboard(s, info.displayTime, c);
+  } else {
+    s.scoreWatch = {};
+    s.scoreWatchAt = 0;
   }
   const int scoreNow = scoreUp ? (c.scoreboardLeft ? 1 : 0) + (scoreRoom ? 2 : 0) : -1;
   if (scoreNow != s.scoreboardShown) {

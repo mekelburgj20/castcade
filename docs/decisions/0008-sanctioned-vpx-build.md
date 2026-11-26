@@ -39,9 +39,11 @@ existing Sanctioned rules (ADR 0005), not instead of them.
 ### 2. What the sanctioned build is
 
 A fork whose Sanctioned mode is enforced inside the process: the settings a player could use to cheat (physics
-overrides, difficulty, ini keys the fairness doc lists, VPinMAME's cheat flag, machine adjustments beyond a factory
+overrides, difficulty, ini keys the fairness doc lists, machine adjustments beyond a factory
 reset) are locked or fixed while a Sanctioned game runs, and the fairness evidence Castcade gathers from outside today
-is produced from inside the build and carried on the score. The build identifies itself to ArcAid in a way a stock or
+is produced from inside the build and carried on the score. **Amended 2026-11-24 (owner ruling, WORK B27.1):**
+VPinMAME's `cheat` option was on that list and is off it. It is the "Skip Pinball Startup Test" checkbox, a boot
+shortcut; the build reports it and never refuses or marks a session on it, in any kind of tournament. The build identifies itself to ArcAid in a way a stock or
 modified VPX cannot fake cheaply: a signed binary plus an attestation that ArcAid can verify (mechanism: item I4).
 
 ### 3. Castcade stays, and stays primary for everything else

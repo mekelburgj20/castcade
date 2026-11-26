@@ -397,9 +397,18 @@ As shipped by companion 0.2.5–0.2.8 (JSON strings, URL-encoded as query params
   fairness design). **Expect `known: null` often:** VR players run community builds (the owner's rig does) and
   many run VPinMAME nightlies. `require_known_build` therefore means: `official` and `panasony` pass by default
   (**owner ruling 2026-10-19: the Panasony VR mod of VPX is allowed even in Sanctioned play**), `nightly` passes
-  by default behind a runner toggle, and `unknown` passes only when the runner has blessed that hash for the
-  tournament (their own, or one several devices report). Never "official only". `cheat` is VPinMAME's per-ROM
-  cheat option; Sanctioned refuses `true`. `VpxScoreIngestService`: match candidates by `vps_game` against
+  by default behind a runner toggle, and (widened 2026-11-24 by the owner; ArcAid 2.267.0, W125) any other VPX
+  from 10.8.0 and VPinMAME from 3.6.0 passes by its `version` text whatever the family (the Castcade fork,
+  self-compiled), so Castcade needs no family of its own (F36 dropped; B30 is the companion's wording). An older
+  build, or one with no version, passes only when the runner has blessed that hash for the tournament (their own,
+  or one several devices report). Never "official only". `cheat` is VPinMAME's per-ROM
+  cheat option. **Owner ruling 2026-11-24 (Castcade B27.1): it matters in no kind of tournament.** It is the
+  checkbox VPinMAME calls "Skip Pinball Startup Test" (a boot shortcut; fairness §5), so it is evidence a reviewer
+  may read and never a reason to refuse. As built, ArcAid still refuses `true` in every Sanctioned tournament and flags it in Open play, with
+  no runner toggle (`src/utils/sanctionedRules.ts`, the `cheat` rule), and the admin panel labels the value
+  "VPinMAME cheat: ON" (`admin-ui/src/components/IntegrityPanel.tsx`). **Asked of ArcAid (Castcade F30, ArcAid W127):** drop the
+  `cheat` rule from the verdict in both modes (keep parsing and storing `build.cheat`), and where the value is shown,
+  say "startup test skipped: yes / no". `VpxScoreIngestService`: match candidates by `vps_game` against
 `global_games.vps_id` **first**, falling back to today's name keys (so every v0.2.x companion keeps
 working); in a Sanctioned tournament apply the per-game rules the way `engineExcluded` already refuses a
 score, returning a new wire status `not_sanctioned` with `reasons: string[]` (the companion maps it to
@@ -646,6 +655,15 @@ uploads to the id it returns, at once (not at the next heartbeat). What the comp
   same request; the companion sends `logs/fail` only for a refusal of the bundle itself;
 - the bundle carries no note: `sendToSupport` gets `null` from the on-receipt path. A note typed in the app would need
   a `note` parameter on this route (not asked for).
+
+**The bundle is wider from Castcade E8.4 (2026-11-24, owner).** The same tar, to the same route, also holds
+`vpx/VPinballX.ini` (VPX's settings file, secret-looking values removed), `vpx/vpinball.log`, `vpx/crash.txt` and
+`vpx-stream-<match|play|watch>.log`. Nothing in the route, the tar check or the storage changes.
+
+**Asked of ArcAid (one line of wording, Castcade F37):** the sentence under **Send to Arcaid support** for a
+Castcade PC in `WitnessDeviceSupport.tsx` reads "Sends Castcade's logs, its VR layer log and recent table journals
+from that PC to the Arcaid team." It is the player's consent line, so it should name what is new: Visual Pinball's
+settings file (VPinballX.ini), its log and its last crash report. ADR 0040's amendment lists the same four items.
 
 ## 25. Midnight Madness: a tournament option, refuse or flag (Castcade B26.6 / F29, owner ruling 2026-11-22)
 

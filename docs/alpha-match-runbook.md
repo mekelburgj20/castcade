@@ -26,6 +26,9 @@ Table: ________ (ROM ______)
 - [ ] **VPX in VR** with the preview window on. In your `VPinballX.ini`, under `[PlayerVR]`, set
   `VRPreview = 1`, `PreviewWidth = 1280`, `PreviewHeight = 720`. The other player sees this window, so a small
   window means a poor picture.
+- [ ] **Through OpenComposite (no SteamVR): `AskToTurnOn = 0`** under `[PlayerVR]`, set with VPX closed. At 1 VPX
+  shows "OpenComposite DLLMain ERROR: Cannot init VR: unsupported apptype 3" and the table opens on the desktop;
+  Castcade's Status and Match tabs say so before the table starts (A6.3).
 - [ ] **One eye, not Both Eyes (ADR 0009, 2026-11-04):** the other player sees your table as a flat screen, so keep
   VPX's VR preview on **Left Eye** (`VRPreview = 1`, as above). Both Eyes (`VRPreview = 3`) sends two pictures side
   by side and the Match tab tells you to switch back. A window the size of the monitor (1920x1080 on 1080p) is

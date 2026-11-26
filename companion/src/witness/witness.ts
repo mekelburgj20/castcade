@@ -73,7 +73,8 @@ import { adjustmentsReport, decodeAdjustments, describeAdjustments } from './adj
 import { adjustmentsWire, buildWire, iniWire, type Attestation, describeEngine, engineWire } from './attestation-types.js';
 import { describeScorePlausibility, ROM_SCORE_STEP, ScoreTrack, scorePlausibilityWire, type ScorePlausibility } from './score-plausibility.js';
 import { createBuildAttester, describeBuild, vpmCheatFlag } from './build-attestation.js';
-import { NO_VR_PROBE, createPowershellVrProbe, describeVr, describeVrEvidence, playDeviceFor, type VrObservation, type VrProbe } from './vr-detect.js';
+import { NO_VR_PROBE, createPowershellVrProbe, describeVr, describeVrEvidence, playDeviceFor, vrRuntimeOf, type VrObservation, type VrProbe } from './vr-detect.js';
+import { askToTurnOnWarning, describeAskToTurnOn, readAskToTurnOn, type OpenVrDllCache } from './ask-to-turn-on.js';
 import { createIdentityResolver } from './identity-resolver.js';
 import { createIdentityStore } from './identity-store.js';
 import { attemptKey, createPostedGames, postedGameKey } from './posted-games.js';
@@ -537,6 +538,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     attemptStart: null,
     patchNow: null,
     lastClose: null,
+    vrSetupWarning: null,
   };
 
   const sessions = new Map<number, OpenSession>();
@@ -1998,7 +2000,31 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
 
   // ----------------------------------------------------------------------------- sessions --
 
+  /** A6.3: the openvr_api dll's verdict per file, so a start reads the dll again only when it changed. */
+  const openVrDlls: OpenVrDllCache = new Map();
+  /**
+   * A6.3 (2026-11-25): `[PlayerVR] AskToTurnOn = 1` with OpenComposite (`ask-to-turn-on.ts`): the sentence goes on
+   * Status and the Match tab (`vrSetupWarning`) and, with `say`, in the log. Checked at the witness's start for the
+   * remembered exe and at every VPX start, with that start's `-Ini` and table. Never throws.
+   */
+  const checkVrSetup = async (exe: string | null, launch: Pick<VpxLaunch, 'iniPath' | 'tablePath' | 'tableIniPath'> | null, say: boolean): Promise<void> => {
+    if (!exe) return;
+    try {
+      const seenRuntime = vrRuntimeOf(status.currentAttestation?.vr ?? status.lastCapture?.attestation?.vr ?? null);
+      const facts = await readAskToTurnOn({ fs, exe, iniPath: launch?.iniPath, tablePath: launch?.tablePath, tableIniPath: launch?.tableIniPath, env, seenRuntime, cache: openVrDlls });
+      const warning = askToTurnOnWarning(facts, exe);
+      if (warning && say) log(`witness: VR setup: ${warning} (${describeAskToTurnOn(facts)})`);
+      if (warning === (status.vrSetupWarning ?? null)) return;
+      status.vrSetupWarning = warning;
+      emitStatus();
+    } catch (err) {
+      log(`witness: VR setup not checked: ${errText(err)}`);
+    }
+  };
+
   const onLaunch = async (launch: VpxLaunch): Promise<void> => {
+    // A6.3: first, so the line is in the log before VPX reaches its player.
+    void checkVrSetup(launch.exe, launch, true);
     // I11.4.1: the VPX fork is witnessed like any VPX, but never becomes "the VPX exe" tables are started with.
     if (!isForkExe(launch.exe)) status.vpxExe = launch.exe;
     if (status.nvramDir === null) status.nvramDir = await resolveDir(launch.exe);
@@ -2143,6 +2169,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       queue.resume();
       startHeartbeat();
       await startRomMap();
+      void checkVrSetup(store.get().vpxExe ?? null, null, true);
       watch.start();
       // A table that was being followed when `stop()` paused the watching: its journal continues where it stopped.
       for (const s of sessions.values()) s.live?.tail.start();

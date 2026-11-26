@@ -126,6 +126,12 @@ export function Status({ state }: { state: CastcadeState }) {
           <dl className="cc-facts">
             <dt>VPX exe seen</dt>
             <dd className={status.vpxExe ? 'cc-mono' : undefined} title={status.vpxExe ?? ''}>{status.vpxExe ?? 'not yet (launch a table)'}</dd>
+            {status.vrSetupWarning && (
+              <>
+                <dt>VR setup</dt>
+                <dd className="cc-attention">{status.vrSetupWarning}</dd>
+              </>
+            )}
             <dt>NVRAM dir</dt>
             <dd className={status.nvramDir ? 'cc-mono' : undefined} title={status.nvramDir ?? ''}>{status.nvramDir ?? 'not found'}</dd>
             <dt>Maps version</dt>

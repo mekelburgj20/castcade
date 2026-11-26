@@ -251,6 +251,8 @@ interface WitnessStatus {
   patchNow?: { table: string; vpxPath: string } | null;
   /** C11: why the last closed table's score was read only at close; `vpxPath` set when Patch now fixes it. */
   lastClose?: { table: string; at: string; rung: string; kind: string; text: string; vpxPath: string | null } | null;
+  /** A6.3: VPX will not reach the headset (AskToTurnOn = 1 with OpenComposite): what to set and where; null otherwise. */
+  vrSetupWarning?: string | null;
 }
 
 interface TablesPatchNowResult {

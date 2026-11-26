@@ -54,6 +54,7 @@ import { APP_USER_MODEL_ID, ensureStartMenuShortcut } from './start-menu.js';
 import { createResumeStore, RESUME_FILE, resumeFreshness } from './match-resume.js';
 import { createPowershellLister, isVpxExe } from '../witness/process-watch.js';
 import { collectLogBundle } from '../witness/log-bundle.js';
+import { locateMainIni } from '../witness/ini-attestation.js';
 import { createWitnessHost, needsWitnessRestart, type WitnessHost } from './witness-host.js';
 import { smokeJournalPipe, startJournalPipe, type JournalPipe } from '../witness/journal-pipe.js';
 import { journalDir } from '../witness/journal-tail.js';
@@ -909,13 +910,24 @@ async function main(): Promise<void> {
     hideProcess: (p) => hiddenVpx.hides(p),
     // C16.2: before the witness acts on a VPX exit, the lines that table sent through the pipe are in its journal file.
     journalDrain: (path) => journalPipe?.drain(path) ?? Promise.resolve(true),
-    logBundle: () =>
-      collectLogBundle({
+    logBundle: async () => {
+      // E8.4: VPX's own files, from the exe the witness last saw run. `-Ini` on a command line is not seen here.
+      const vpxExe = store.get().vpxExe ?? null;
+      const vpxIni = vpxExe ? await locateMainIni({ fs: nodeFs, exe: vpxExe, env: process.env }).catch(() => null) : null;
+      return collectLogBundle({
         companionLog: logger.file,
         layerLog: localAppData ? join(localAppData, 'Castcade', 'logs', 'vr-layer.log') : null,
         journalDir: localAppData ? join(localAppData, 'Castcade', 'journal') : null,
-        about: [`castcade ${appVersion} protocol ${PROTOCOL_VERSION} edition ${edition}`, `device ${store.get().deviceLabel} (${store.get().deviceId})`],
-      }),
+        vpxIni,
+        vpxDirs: [...new Set([vpxExe, vpxIni].filter((p): p is string => p !== null).map((p) => dirname(p)))],
+        about: [
+          `castcade ${appVersion} protocol ${PROTOCOL_VERSION} edition ${edition}`,
+          `device ${store.get().deviceLabel} (${store.get().deviceId})`,
+          `vpx exe ${vpxExe ?? 'not seen yet'}`,
+          `vpx ini ${vpxIni ?? 'not found'}`,
+        ],
+      });
+    },
   });
   witnessHost = host;
   store.onChange((next, prev) => {
