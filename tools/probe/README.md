@@ -61,4 +61,4 @@ It reports, with the Windows user name replaced by `<user>`:
 How to run it: start a table the usual way (from the frontend, if the player uses one) and leave it
 running, double-click `Castcade Build Check.cmd`, and send back the
 `castcade-build-check-<date>-<time>.txt` it writes on the Desktop (`-OutDir <folder>` to choose).
-First used 2026-11-25 for a player whose VPinMAME was older than 3.6.0.
+Written on 2026-11-25 for a player whose scores failed "Known build" (WORK B32, B32.1, B33).
