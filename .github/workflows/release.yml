@@ -69,7 +69,7 @@ jobs:
       # failed here). Its files live in the Actions cache video-helper.yml keeps on main: same path and key, so the same
       # archive. fetch-ffmpeg.mjs checks the folder against the sha256 pin and downloads only on a miss.
       - name: Restore the video helper's pinned FFmpeg from the cache video-helper.yml keeps
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: video-helper/deps/ffmpeg
           key: video-ffmpeg-${{ runner.os }}-${{ hashFiles('video-helper/ffmpeg.sha256') }}
