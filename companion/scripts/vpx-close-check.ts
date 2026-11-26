@@ -10,8 +10,15 @@
  *   connection to this script, and the line `quit` is sent on it (rung 1).
  * - With any other VPX the table is started the way Castcade starts one (`-Play` and nothing else) and its main window
  *   is asked to close with the app's own code, `askVpxWindowToClose` (rung 2: the front-end close request,
- *   `PinSim::FrontEndControls` CLOSE_APP, after the window said it takes it; never `WM_CLOSE`, which left VPX with
- *   exit code 0x80000003 and its NVRAM not written on the owner's rig, 2026-11-25).
+ *   `PinSim::FrontEndControls` CLOSE_APP, after the window said it takes it; not `WM_CLOSE`: `src/launch/vpx-close.ts`
+ *   says why).
+ *
+ * The table counts as open only when the player window is up and no dialog of that VPX shows (its "Preparing Table"
+ * progress, an error of the VR runtime), and, for a table that carries the Castcade hook, when the hook's journal
+ * (`%LOCALAPPDATA%\Castcade\journal`) shows the ROM's NVRAM lines written since VPX started: then the ROM has run. A
+ * table without the hook writes nothing there and gets the window rule alone; the result says which sign was used. A dialog that shows after that and before the request stops the run with
+ * nothing asked: a table that is not playing says nothing about closing (2026-11-25: twice OpenComposite found no
+ * headset, VPX stayed behind its error dialog, and OpenComposite's abort ended it with 0x80000003 when the dialog went).
  *
  * Options:
  *   --seconds N        how long the table stays open before it is asked to close (default 30): time to start a game
@@ -26,12 +33,13 @@
  * Windows only.
  */
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from 'node:fs';
 import { createServer, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { win32 } from 'node:path';
 import { askVpxWindowToClose, powershellWindows, type VpxProcessWindow } from '../src/launch/vpx-close.js';
 import { forkMatchEnv } from '../src/launch/vpx-launch.js';
+import { journalDir } from '../src/witness/journal-tail.js';
 import { isForkExe, isVpxExe } from '../src/witness/process-watch.js';
 
 const args = process.argv.slice(2);
@@ -117,17 +125,103 @@ child.on('exit', (code) => (exit = { code, at: Date.now() }));
 child.on('error', (e) => stop(`VPX did not start: ${e.message}`));
 const pid = child.pid ?? stop('VPX did not start (no process id)');
 
-// The table is open when the build says hello, or when the player window is there.
+/** The dialogs (window class `#32770`) of the VPX that are showing now. */
+const dialogsOf = (wins: VpxProcessWindow[]): VpxProcessWindow[] => wins.filter((w) => w.visible && w.className === '#32770');
+
+// The surest sign that the table plays: the Castcade hook's journal (a patched table; Castcade is quit, so the hook
+// writes the file itself) has the ROM's NVRAM lines written since this VPX started. Only what grew since the start is read.
+const journals = process.env.LOCALAPPDATA ? journalDir(process.env.LOCALAPPDATA) : null;
+const sizeOf = (file: string): number => {
+  try {
+    return statSync(file).size;
+  } catch {
+    return 0;
+  }
+};
+const listJournals = (): string[] => {
+  try {
+    return journals ? readdirSync(journals).filter((n) => n.toLowerCase().endsWith('.jsonl')).map((n) => win32.join(journals, n)) : [];
+  } catch {
+    return [];
+  }
+};
+const journalAt = new Map(listJournals().map((f) => [f, sizeOf(f)] as const));
+/** What the journals say since VPX started: `rom` (an NVRAM line), `hook` (the hook's lines, no NVRAM line yet), or null (nothing). */
+const journalSign = (): 'rom' | 'hook' | null => {
+  let hook = false;
+  for (const file of listJournals()) {
+    const from = journalAt.get(file) ?? 0;
+    const size = sizeOf(file);
+    if (size <= from) continue;
+    let text: string;
+    try {
+      const fd = openSync(file, 'r');
+      try {
+        const length = Math.min(size - from, 8 * 1024 * 1024);
+        const buffer = Buffer.alloc(length);
+        readSync(fd, buffer, 0, length, from);
+        text = buffer.toString('utf8');
+      } finally {
+        closeSync(fd);
+      }
+    } catch {
+      continue;
+    }
+    if (/"event":"nvram_(?:delta|full)"/.test(text)) return 'rom';
+    if (text.includes('"event":')) hook = true;
+  }
+  return hook ? 'hook' : null;
+};
+
+// The table is open when the build says hello, or when the player window is there, and no dialog of this VPX shows:
+// its "Preparing Table" progress, or an error that stops it (2026-11-25: OpenComposite with no headset). Each dialog
+// seen while it loads is said once.
 const loadBy = Date.now() + 240_000;
+const seen = new Set<string>();
+let sign: 'rom' | 'window' = 'window';
+let readySince: number | null = null;
+let hookSaid = false;
 for (;;) {
   if (exit) stop(`VPX ended by itself before the table was open (exit ${String((exit as { code: number | null }).code)})`);
   if (Date.now() > loadBy) stop('the table did not open in 4 minutes; VPX is left as it is');
-  if (fork ? hello !== null : (await windowsOf(pid).catch(() => [])).some((w) => /^Visual Pinball(?: X)? Player\b/i.test(w.title))) break;
+  const wins = await windowsOf(pid).catch(() => []);
+  const dialogs = dialogsOf(wins);
+  for (const d of dialogs) {
+    if (seen.has(d.title)) continue;
+    seen.add(d.title);
+    say(`VPX shows a dialog while it loads: "${d.title}"`);
+  }
+  const ready = dialogs.length === 0 && (fork ? hello !== null : wins.some((w) => /^Visual Pinball(?: X)? Player\b/i.test(w.title)));
+  const journal = journalSign();
+  if (journal === 'hook' && !hookSaid) {
+    hookSaid = true;
+    say('the table carries the Castcade hook: waiting for its ROM to run (its NVRAM lines in the journal)');
+  }
+  if (ready && journal === 'rom') {
+    sign = 'rom';
+    break;
+  }
+  if (ready) {
+    readySince ??= Date.now();
+    // A table without the hook writes nothing: the window rule, after 10 s. One with it waits for its ROM, 60 s at most.
+    if (journal === null && Date.now() - readySince > 10_000) break;
+    if (journal === 'hook' && Date.now() - readySince > 60_000) {
+      say('the journal shows the hook but no NVRAM line 60 s after the player window came up (a table with no ROM?): the window rule is used');
+      break;
+    }
+  } else readySince = null;
   await sleep(3_000);
 }
-say(`the table is open. It is asked to close in ${seconds} s: start a game and score now, if the question is whether a high score survives`);
-await sleep(seconds * 1000);
-if (exit) stop('VPX was closed by hand before it was asked');
+const signWords = sign === 'rom' ? 'the ROM ran (its NVRAM lines are in the Castcade journal)' : 'the player window was up with no dialog (the weaker sign: no NVRAM line from a Castcade hook)';
+say(`the table is open: ${signWords}. It is asked to close in ${seconds} s: start a game and score now, if the question is whether a high score survives`);
+// A table that is not playing says nothing about closing: a dialog before the request stops the run, nothing asked.
+const askAt = Date.now() + seconds * 1000;
+while (Date.now() < askAt) {
+  await sleep(Math.max(0, Math.min(2_000, askAt - Date.now())));
+  if (exit) stop('VPX was closed by hand before it was asked');
+  const dialog = dialogsOf(await windowsOf(pid).catch(() => []))[0];
+  if (dialog) stop(`VPX shows a dialog before it was asked: "${dialog.title}". The table is not playing, so this run says nothing about closing. Nothing was asked and VPX is left as it is: close the dialog and VPX, and run the check again`);
+}
 
 const askedAt = Date.now();
 if (fork) {
@@ -151,6 +245,7 @@ const done = exit as { code: number | null; at: number } | null;
 console.log('');
 if (done) say(`RESULT: VPX left ${((done.at - askedAt) / 1000).toFixed(1)} s after it was asked, exit code ${String(done.code)}${done.code === 0 ? '' : ' (NOT a clean exit: a clean one is 0)'}${done.at - askedAt > 15_000 ? ' (later than the 15 s the app waits: the app would have asked the person)' : ''}`);
 else say('RESULT: VPX is STILL OPEN 30 s after it was asked (not clean). It is left open: close it by hand and say what was on screen');
+say(`the sign that the table was playing: ${signWords}`);
 if (nvram) say(before === after ? `NVRAM NOT written (${nvram}: ${before ?? 'no such file'})` : `NVRAM written (${nvram}: ${before ?? 'no file'} -> ${after ?? 'no file'})`);
 if (fork && existsSync(streamLog)) {
   const lines = readFileSync(streamLog, 'utf8').split(/\r?\n/).filter((l) => /quit|role match:|control/.test(l));

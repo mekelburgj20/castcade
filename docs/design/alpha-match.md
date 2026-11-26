@@ -1159,9 +1159,9 @@ countdown come off. While a start counts down or waits:
      unknown line, rule 13, and falls to the next rung);
   2. any other VPX: its main window gets the front-end close request (the window message `PinSim::FrontEndControls`,
      CLOSE_APP, the protocol PinballY uses; VPX 10.8.0 answers it with the close the held exit button makes), after
-     it said it takes the protocol, by the PowerShell route `media/window-geometry.ts` already uses. Never `WM_CLOSE`:
-     on the owner's rig (check 11, 2026-11-25) a `WM_CLOSE` to the main window left VPX with exit code 0x80000003 and
-     its NVRAM not written. A VPX that does not answer (older, hung, or running as administrator) goes to rung 3;
+     it said it takes the protocol, by the PowerShell route `media/window-geometry.ts` already uses. Not `WM_CLOSE`:
+     read in the source, that closes the player from the window procedure, outside its frame loop. A VPX that does
+     not answer (older, hung, or running as administrator) goes to rung 3;
   3. still open 15 s later, or a table Castcade cannot follow: this PC's Match tab and row say "Close the table on
      this PC: Castcade opens Monster Bash when it is closed", and the wish waits for the witness's `table_exit`.
      Never a forced end of the process.
@@ -1823,10 +1823,11 @@ four for 14 to 20; both in headsets where it says so):
    device that was never a member ("This lobby is not taking new people"); S, in step 9, no ArcAid work. The lock
    on ArcAid's side (item 1 of §11.10) can follow.
 3. **Closing VPX from Castcade** (§11.5) has never been done by this app, and whether a stock VPX 10.8.0 started with
-   `-Play` leaves cleanly on `WM_CLOSE` (NVRAM written, no dialog) is not known. *Answered 2026-11-25 (check 11 on the
-   owner's rig, Panasony 10.8.0.2078, Monster Bash):* it does not (exit code 0x80000003, NVRAM not written). Rung 2 is
-   now VPX's front-end close request (`PinSim::FrontEndControls`, CLOSE_APP), which takes the held exit button's path;
-   its run on the rig is the check again. *Recommended:* build step 3 with
+   `-Play` leaves cleanly on `WM_CLOSE` (NVRAM written, no dialog) is not known. *2026-11-25:* rung 2 is VPX's front-end
+   close request (`PinSim::FrontEndControls`, CLOSE_APP), which takes the held exit button's path in the source, and
+   `WM_CLOSE` is not used. The first two runs of check 11 on the owner's rig never reached a playing table
+   (OpenComposite found no headset; its abort ended VPX with 0x80000003 when its error dialog went), so the question
+   is still open; the check now stops by itself when a dialog shows before the request. *Recommended:* build step 3 with
    the three rungs and run check 11 on the owner's rig and on Krobs' official build before step 10 depends on it;
    if the second rung is not clean, stock VPX gets the third rung only (the person closes the table, Castcade opens
    the next), and the fork's `quit` carries the automatic case.

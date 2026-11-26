@@ -17,11 +17,13 @@
  *    must answer 1. The request itself is posted, never sent: VPX's handler then closes any modal dialog in a loop.
  *    A VPX that does not answer (an older build, a hung one, or one that runs elevated, whose window Windows keeps
  *    from Castcade's messages) is asked nothing and goes to the third rung.
- *    **Never `WM_CLOSE`**: the rig check of 2026-11-25 (`scripts/vpx-close-check.ts`, the owner's Panasony
- *    `VPinballX_GL64.exe` 10.8.0.2078 on Monster Bash) had VPX leave 2.2 s after a `WM_CLOSE` to its main window with
- *    exit code 0x80000003 and its NVRAM not written: that handler closes the player from outside its frame loop. The
- *    player window is never asked either: it does not take the request, and its `WM_CLOSE` only goes back to the
- *    editor when VPX was started with `-Play` alone, leaving the table open there.
+ *    **Not `WM_CLOSE`**: read in the 10.8.0 source, a `WM_CLOSE` to the main window calls `Player::OnClose` from the
+ *    window procedure, outside the player's frame loop, where the front-end request and the held exit button have the
+ *    frame loop close it. (The first two rig runs of 2026-11-25, `scripts/vpx-close-check.ts`, say nothing either way:
+ *    OpenComposite found no headset, VPX never got past loading the table, and it ended with OpenComposite's abort,
+ *    exit code 0x80000003, when its error dialog went.) The player window is never asked: it does not take the
+ *    request, and its `WM_CLOSE` only goes back to the editor when VPX was started with `-Play` alone, leaving the
+ *    table open there.
  * 3. **The person**: when VPX is still running `CLOSE_WAIT_MS` after the first request, or nothing could be asked, the
  *    answer is `ask`: the caller says "Close the table on this PC" and waits for the witness to see the table go.
  *
