@@ -70,8 +70,8 @@ You need a keyboard and a mouse on the PC for this part. On a cabinet the Castca
 display, which is usually the playfield.
 
 1. **Download** the newest `Castcade-Witness-Setup-<version>.exe` from
-   <https://github.com/mekelburgj20/castcade/releases> (the first one is
-   [`Castcade-Witness-Setup-0.2.47.exe`](https://github.com/mekelburgj20/castcade/releases/download/v0.2.47/Castcade-Witness-Setup-0.2.47.exe)).
+   <https://github.com/mekelburgj20/castcade/releases> (at the time of writing,
+   [`Castcade-Witness-Setup-0.2.51.exe`](https://github.com/mekelburgj20/castcade/releases/download/v0.2.51/Castcade-Witness-Setup-0.2.51.exe)).
    Take the file with **Witness** in its name. `Castcade-Setup-…` without it is the full app, with the match and
    VR streaming features this test does not use.
 2. **Install.** It is not code-signed yet, so SmartScreen says *Windows protected your PC*: click
