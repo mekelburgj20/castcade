@@ -25,7 +25,7 @@ changed; step 5 adds one script file beside each table and one in VPX's `scripts
 - **VR through OpenComposite** (Virtual Desktop or a Quest without SteamVR): in `VPinballX.ini` (the one beside your
   VPX exe, else `%APPDATA%\VPinballX`), under `[PlayerVR]`, set **`AskToTurnOn = 0`**, with VPX closed. At 1 VPX
   shows *"OpenComposite DLLMain ERROR: Cannot init VR: unsupported apptype 3"* at every table start and plays on the
-  desktop. Castcade (a build after 0.2.50) says so on **Status** and the **Match** tab before you start a table.
+  desktop. Castcade 0.2.51 or later says so on **Status** and the **Match** tab before you start a table.
 
 ## Steps
 
